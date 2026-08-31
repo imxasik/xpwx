@@ -169,6 +169,20 @@
             <button id="m-manual" onclick="setMode('manual')">Manual</button>
           </div>
         </div>
+        <div class="field" style="width:100%;max-width:440px">
+          <label>DOMAIN</label>
+          <select id="domain" onchange="run()">
+            <option value="global" selected>Default Global</option>
+            <option value="indian_ocean">Indian Ocean</option>
+            <option value="pacific">Pacific Ocean</option>
+            <option value="atlantic">Atlantic Ocean</option>
+            <option value="south_asia">South Asia</option>
+            <option value="se_asia">SouthEast Asia</option>
+            <option value="east_asia">East Asia</option>
+            <option value="europe">Europe</option>
+            <option value="asia">Asia</option>
+          </select>
+        </div>
         <div class="rowf">
           <div class="field">
             <label>END DATE</label>
@@ -213,6 +227,10 @@
 
   const PROD = {{ products | tojson }};
   const P = id => PROD.find(x => x.id === id);
+  const DLABEL = {"global":"Default Global","indian_ocean":"Indian Ocean",
+                  "pacific":"Pacific Ocean","atlantic":"Atlantic Ocean",
+                  "south_asia":"South Asia","se_asia":"SouthEast Asia",
+                  "east_asia":"East Asia","europe":"Europe","asia":"Asia"};
 
   // ---------- mobile menu ----------
   function toggleMenu(){ document.body.classList.toggle("menu-open"); }
@@ -233,8 +251,9 @@
     DATE.disabled = m === "auto";
   }
   function key(){
-    return JSON.stringify({p:current, m:mode, d:DATE.value||null, n:+nd()});
+    return JSON.stringify({p:current, m:mode, d:DATE.value||null, n:+nd(), g:dom()});
   }
+  function dom(){ return document.getElementById("domain").value; }
   function nd(){ return parseInt(document.getElementById("ndays").value,10)||5; }
 
   async function run(){
@@ -249,7 +268,7 @@
     PH.style.display = "flex"; PT.textContent = "Rendering…"; IMG.style.display = "none"; DL.style.display = "none";
     LOG.textContent = p.title + "\n" + (mode==="manual" ? "to "+DATE.value : "auto") + " · " + ndv + "-day mean";
 
-    const body = { product: current, mode, n_days: ndv };
+    const body = { product: current, mode, n_days: ndv, domain: dom() };
     if (mode === "manual") body.date = DATE.value;
 
     try{
@@ -267,12 +286,13 @@
   function show(url){
     IMG.src = url; IMG.style.display = "block";
     DL.href = url; DL.style.display = "inline-block";
-    META.innerHTML = "<b>" + P(current).name + "</b> · " + (mode==="manual" ? "to "+DATE.value : "auto") + " · " + nd() + "-day";
+    META.innerHTML = "<b>" + P(current).name + "</b> · " + (DLABEL[dom()]||dom()) + " · "
+      + (mode==="manual" ? "to "+DATE.value : "auto") + " · " + nd() + "-day";
   }
 
   const p0 = P(current);
   if(p0){ DL.setAttribute("download", current+".png"); }
   run();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a33b27dc5f1f5658',t:'MTc4ODE3MDA4NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</body>
 </html>
