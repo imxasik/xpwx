@@ -634,7 +634,7 @@ PRODUCTS = {
                     "cb_label": "Ageostrophic Wind Speed  (m/s)"},
 
     # ---- Hovmöller diagrams (daily, latitude-band averaged, longitude–time) ----
-    "hov_u850": {"id": "hov_u850", "title": "Hovmöller — Zonal Wind 850 hPa",
+    "hov_u850": {"id": "hov_u850", "title": "Zonal Wind 850 hPa",
                  "name": "Hovmöller U850", "tag": "Hovmöller",
                  "desc": "Longitude–time Hovmöller of the 850-hPa zonal-wind "
                          "anomaly averaged 5°S–5°N (equatorial waves / MJO).",
@@ -643,7 +643,7 @@ PRODUCTS = {
                  "plot_scale": 1.0,
                  "vlim": 6.0, "cint": 1.0,
                  "cb_label": "Zonal Wind Anomaly 850 hPa  (m/s)"},
-    "hov_chi200": {"id": "hov_chi200", "title": "Hovmöller — Velocity Potential 200 hPa",
+    "hov_chi200": {"id": "hov_chi200", "title": "Velocity Potential 200 hPa",
                    "name": "Hovmöller χ200", "tag": "Hovmöller",
                    "desc": "Longitude–time Hovmöller of the 200-hPa velocity-"
                            "potential anomaly averaged 15°S–15°N (convection "
@@ -1460,7 +1460,8 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
 
 def render_hov(day_dates, lon, matrix, pkg, out_buf=None, title=None,
                cbar_label=None, lat_lab=None):
-    """Render a Hovmöller: longitude (x) vs date (y) as a filled contour."""
+    """Render a Hovmöller: longitude (x) vs date (y) as a filled contour.
+    The time axis runs top (oldest) -> bottom (latest date)."""
     vlim, cint = pkg["vlim"], pkg["cint"]
     ntime, nlon = matrix.shape
     # date axis as fractional day for even spacing
@@ -1468,9 +1469,12 @@ def render_hov(day_dates, lon, matrix, pkg, out_buf=None, title=None,
     days = np.array([(d - t0).days for d in day_dates], dtype=np.float64)
     LON2D, DAY2D = np.meshgrid(lon, days)
 
-    fig = plt.figure(figsize=(12, 7), facecolor="white")
-    ax = fig.add_axes([0.06, 0.14, 0.88, 0.76])
+    # taller figure so the date axis has more vertical room
+    fig = plt.figure(figsize=(12, 8.6), facecolor="white")
+    ax = fig.add_axes([0.06, 0.15, 0.88, 0.77])
     ax.set_facecolor("#f4f0e8")
+    # latest (newest) date at the bottom
+    ax.set_ylim(days.max(), days.min())
 
     invert = pkg.get("invert_cbar", False)
     n_fill = 25 if vlim >= 100 else 20
@@ -1528,8 +1532,9 @@ def render_hov(day_dates, lon, matrix, pkg, out_buf=None, title=None,
         ttext = title
     ax.set_title(ttext, fontsize=16, fontweight="bold", color="#111100", pad=14)
     if lat_lab:
-        ax.text(1.0, 1.01, lat_lab, transform=ax.transAxes, ha="right",
-                va="bottom", fontsize=10, color="#666655", fontweight="semibold")
+        ax.text(0.006, 0.035, lat_lab, transform=ax.transAxes, ha="left",
+                va="bottom", fontsize=10.5, color="#555544",
+                fontweight="semibold", zorder=9)
     ax.text(0.985, 0.016, "@XPWEATHER", transform=ax.transAxes, fontsize=11,
             va="bottom", ha="right", color="#222211", fontweight="semibold",
             bbox=dict(boxstyle="round,pad=0.35", fc="white",
@@ -1574,8 +1579,9 @@ def _resolve_dates(mode, manual_date, n_days):
 # Public API
 # ================================================================
 # sidebar groups, in display order (any tag not listed goes last)
-GROUP_ORDER = ["Hovmöller", "Upper", "Mid", "Low", "Dynamics", "Thermo",
-               "Moisture", "Torque", "Flow", "Advanced", "Surface"]
+GROUP_ORDER = ["Upper", "Mid", "Low", "Dynamics", "Thermo",
+               "Moisture", "Torque", "Flow", "Advanced", "Surface",
+               "Hovmöller"]
 
 
 def list_products():
