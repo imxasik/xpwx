@@ -416,7 +416,8 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None):
     LON2D, LAT2D = np.meshgrid(lon, lat)
 
     fig = plt.figure(figsize=(12, 7), facecolor="white")
-    ax = fig.add_axes([0.045, 0.145, 0.910, 0.785])
+    # reserve a clean title band above the axes so the title never overlaps the map
+    ax = fig.add_axes([0.045, 0.145, 0.910, 0.750])
     ax.set_facecolor("#f4f0e8")
     lon_min, lon_max = lon.min(), lon.max()
     ax.set_xlim(lon_min, lon_max)
@@ -497,8 +498,8 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None):
     cax.text(0.5, -1.55, pkg["cb_label"], transform=cax.transAxes, ha="center",
              va="top", fontsize=12, color="#222211", fontstyle="italic")
 
-    # title & branding  (single line — no \n)
-    fig.text(0.50, 0.985,
+    # title & branding  (single line, in its own band — never over the map)
+    fig.text(0.50, 0.965,
              f"{pkg['title']}  ·  {dates[0]:%-d %b} – {dates[-1]:%-d %b %Y}"
              f"  ({len(dates)}-day mean)",
              ha="center", va="top", fontsize=16, fontweight="bold",
