@@ -95,6 +95,14 @@ def load_coastlines():
 # ================================================================
 # OPeNDAP helpers (cached)
 # ================================================================
+# file-prefix key -> actual pydap variable name (pydap splits on '.')
+_PVAR = {"uwnd.sfc": "uwnd", "vwnd.sfc": "vwnd"}
+
+
+def _pvar(key):
+    return _PVAR.get(key, key)
+
+
 def _open(varname, year=None):
     if year is None:
         url = f"{PSL}/{varname}.day.ltm.1991-2020.nc"
@@ -137,8 +145,13 @@ def _time_idx(ds, target):
 
 
 def _read_slice(ds, varname, t, lv):
-    raw = np.array(ds[varname][t, lv, :, :].data).squeeze().astype(np.float64)
-    attr = ds[varname].attributes
+    """Read one time slice. If the dataset has a 'level' dim use it, else surface."""
+    var = _pvar(varname)
+    if "level" in ds:
+        raw = np.array(ds[var][t, lv, :, :].data).squeeze().astype(np.float64)
+    else:
+        raw = np.array(ds[var][t, :, :].data).squeeze().astype(np.float64)
+    attr = ds[var].attributes
     sf = float(attr.get("scale_factor", 1.0))
     ao = float(attr.get("add_offset", 0.0))
     mv = float(attr.get("missing_value", 32767.0))
@@ -182,10 +195,48 @@ def _mean_field(var, level, dates, kind):
     return mean
 
 
+def _mean_multi(var, levels, dates, kind):
+    """Period-mean field over several pressure levels -> (nlevels, nlat, nlon)."""
+    key = (var, "multi", tuple(levels), tuple(d.isoformat() for d in dates), kind)
+    if key in _FIELD_CACHE:
+        return _FIELD_CACHE[key]
+
+    if kind == "obs":
+        by_year = {}
+        for d in dates:
+            by_year.setdefault(d.year, []).append(d)
+        stack = []
+        for year, ydates in sorted(by_year.items()):
+            ds = _open(var, year)
+            for lv in range(len(levels)):
+                sl = []
+                for d in ydates:
+                    ti = _time_idx(ds, d)
+                    sl.append(_read_slice(ds, var, ti, lv))
+                stack.append(np.nanmean(sl, axis=0))
+    else:
+        ds = _open(var)
+        n = len(np.array(ds["time"][:]))
+        stack = []
+        for lv in range(len(levels)):
+            sl = []
+            for d in dates:
+                doy = d.timetuple().tm_yday
+                ti = min(doy - 1, n - 1)
+                sl.append(_read_slice(ds, var, ti, lv))
+            stack.append(np.nanmean(sl, axis=0))
+
+    arr = np.stack(stack, axis=0)          # (nlevels, nlat, nlon)
+    _FIELD_CACHE[key] = arr
+    return arr
+
+
 # ================================================================
 # Physics
 # ================================================================
 R_EARTH = 6.371e6
+# pressure levels available in the NCEP/NCAR daily multi-level files
+AAM_LEVELS = [1000, 850, 700, 500, 400, 300, 250, 200, 150, 100, 70, 50]
 
 
 def divergence(u, v, lat, lon):
@@ -345,6 +396,24 @@ PRODUCTS = {
              "show_wind": False, "plot_scale": 1.0,
              "vlim": 8.0, "cint": 2.0,
              "cb_label": "Temperature Anomaly  (K)"},
+
+    # ---- angular momentum budget ----
+    "aam": {"id": "aam", "title": "Relative Atmospheric Angular Momentum Anomaly",
+            "name": "AAM", "tag": "Global",
+            "desc": "Column-integrated relative angular momentum anomaly "
+                    "(vertical mean of the zonal-wind anomaly).",
+            "kind": "aam", "level": None, "variables": [],
+            "show_wind": False, "plot_scale": 1e-3,
+            "vlim": 150.0, "cint": 30.0,
+            "cb_label": "Relative AAM Anomaly  (scaled)"},
+    "frict": {"id": "frict", "title": "Frictional (Surface Stress) Torque Anomaly",
+              "name": "Friction τx", "tag": "Surface",
+              "desc": "Surface zonal wind-stress anomaly (the frictional-torque "
+                      "driver), from 10-m winds via bulk drag.",
+              "kind": "ft", "level": None, "variables": [],
+              "show_wind": False, "plot_scale": 100.0,
+              "vlim": 36.0, "cint": 6.0,
+              "cb_label": "Surface Zonal Stress Anomaly  (×10⁻² N/m²)"},
 }
 
 
@@ -371,6 +440,44 @@ def compute(pkg, dates):
             zeta = vorticity(u_anom, v_anom, lat, lon)
             main = gaussian_filter(poisson_fft(zeta, lat, lon), sigma=2.0) * pkg["plot_scale"]
         return lat, lon, {"main": main, "u": u_anom, "v": v_anom}
+
+    elif kind == "aam":
+        # Relative (wind) component of atmospheric angular momentum anomaly.
+        # Column integral of u·cos²φ over the pressure depth, minus climatology.
+        levels = AAM_LEVELS
+        lat, lon = _latlon("uwnd")
+        u_obs = _mean_multi("uwnd", levels, dates, "obs")
+        u_clim = _mean_multi("uwnd", levels, dates, "clim")
+        u_anom = gaussian_filter(u_obs - u_clim, sigma=1.5)  # (nlev,nlat,nlon)
+        coslat = np.cos(np.deg2rad(lat))[None, :, None]
+        p_pa = np.array(levels, dtype=np.float64) * 100.0    # hPa -> Pa, descending
+        # integrate downward from top(50) to bottom(1000) over dp; dp>0
+        dp = np.diff(-p_pa)                                  # thickness (Pa) upward
+        # weight per level, use trapezoid approximation over levels
+        col = (u_anom * coslat**2) * (-1.0)                  # sign for p increasing downward
+        # integrate with trapezoid in p (ascending: 50->1000)
+        integ = np.trapezoid(col, x=p_pa[::-1], axis=0) / 9.80665
+        # integ has no strong global meaning; scale for display
+        main = integ * pkg["plot_scale"]
+        return lat, lon, {"main": main}
+
+    elif kind == "ft":
+        # Frictional torque driver: surface zonal wind stress anomaly.
+        # tau_x = rho * Cd * |V10| * u10  (bulk drag law), observed minus climatology.
+        lat, lon = _latlon("uwnd.sfc")
+        u_obs = _mean_field("uwnd.sfc", None, dates, "obs")
+        u_clim = _mean_field("uwnd.sfc", None, dates, "clim")
+        v_obs = _mean_field("vwnd.sfc", None, dates, "obs")
+        v_clim = _mean_field("vwnd.sfc", None, dates, "clim")
+
+        rho, cd = 1.225, 1.4e-3
+        def stress(u, v):
+            spd = np.sqrt(u * u + v * v)
+            return rho * cd * spd * u
+        tau_obs = stress(u_obs, v_obs)
+        tau_clim = stress(u_clim, v_clim)
+        anom = gaussian_filter(tau_obs - tau_clim, sigma=1.5) * pkg["plot_scale"]
+        return lat, lon, {"main": anom}
 
     else:  # "anom" — single-variable anomaly
         var = pkg["variable"]
@@ -410,13 +517,15 @@ def _ylabel(v):
     return "EQ" if v == 0 else f"{abs(v)}°{'N' if v > 0 else 'S'}"
 
 
-def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None):
+def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
+           title=None, cbar_label=None):
     fplot = data["main"]
     vlim, cint = pkg["vlim"], pkg["cint"]
     LON2D, LAT2D = np.meshgrid(lon, lat)
 
     fig = plt.figure(figsize=(12, 7), facecolor="white")
-    ax = fig.add_axes([0.045, 0.145, 0.910, 0.785])
+    # reserve a clean title band above the axes so the title never overlaps the map
+    ax = fig.add_axes([0.045, 0.145, 0.910, 0.750])
     ax.set_facecolor("#f4f0e8")
     lon_min, lon_max = lon.min(), lon.max()
     ax.set_xlim(lon_min, lon_max)
@@ -494,15 +603,18 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None):
                             color="#222211")
     cbar.outline.set_edgecolor("#999988")
     cbar.outline.set_linewidth(0.7)
-    cax.text(0.5, -1.55, pkg["cb_label"], transform=cax.transAxes, ha="center",
+    cb_lbl = cbar_label if cbar_label is not None else pkg["cb_label"]
+    cax.text(0.5, -1.55, cb_lbl, transform=cax.transAxes, ha="center",
              va="top", fontsize=12, color="#222211", fontstyle="italic")
 
-    # title & branding  (single line — no \n)
-    fig.text(0.50, 0.985,
-             f"{pkg['title']}  ·  {dates[0]:%-d %b} – {dates[-1]:%-d %b %Y}"
-             f"  ({len(dates)}-day mean)",
-             ha="center", va="top", fontsize=16, fontweight="bold",
-             color="#111100", fontfamily="DejaVu Sans")
+    # title & branding  (single line, in its own band — never over the map)
+    if title is None:
+        ttext = (f"{pkg['title']}  ·  {dates[0]:%-d %b} – {dates[-1]:%-d %b %Y}"
+                 f"  ({len(dates)}-day mean)")
+    else:
+        ttext = title
+    fig.text(0.50, 0.965, ttext, ha="center", va="top", fontsize=16,
+             fontweight="bold", color="#111100", fontfamily="DejaVu Sans")
     ax.text(0.985, 0.016, "@XPWEATHER", transform=ax.transAxes, fontsize=11,
             va="bottom", ha="right", color="#222211", fontweight="semibold",
             bbox=dict(boxstyle="round,pad=0.35", fc="white",
@@ -573,4 +685,43 @@ def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
     meta = {"product": pkg["id"], "title": pkg["title"],
             "date_start": dates[0].isoformat(), "date_end": dates[-1].isoformat(),
             "n_days": len(dates), "level": pkg["level"]}
+    return buf, meta
+
+
+def generate_diff(product_id=DEFAULT_PRODUCT, date1=None, n_days1=DEFAULT_N_DAYS,
+                  date2=None, n_days2=DEFAULT_N_DAYS, inverse=False, log=None):
+    """Return one map of (Range A − Range B), or (B − A) if inverse=True."""
+    pkg = PRODUCTS.get(product_id, PRODUCTS[DEFAULT_PRODUCT])
+    say = (lambda m: log.append(m)) if log is not None else (lambda m: None)
+
+    dates_a = _resolve_dates("manual", date1, n_days1)
+    dates_b = _resolve_dates("manual", date2, n_days2)
+    say(f"[diff] {pkg['title']}: A={dates_a[0]}→{dates_a[-1]}  "
+        f"B={dates_b[0]}→{dates_b[-1]}")
+
+    say("[0] Loading coastline …")
+    coast_segs = load_coastlines()
+
+    say("[1] Computing Range A …")
+    lat, lon, data_a = compute(pkg, dates_a)
+    say("[2] Computing Range B …")
+    _, _, data_b = compute(pkg, dates_b)
+
+    say("[3] Difference …")
+    sign = -1.0 if inverse else 1.0     # A−B default; B−A when inverse
+    data = {"main": sign * (data_a["main"] - data_b["main"])}
+    if "u" in data_a and "u" in data_b:
+        data["u"] = sign * (data_a["u"] - data_b["u"])
+        data["v"] = sign * (data_a["v"] - data_b["v"])
+
+    tag = "B − A" if inverse else "A − B"     # only shown on the colorbar, not the title
+    # concise title: just the product (no operation tag, no long date string)
+    title = pkg["title"]
+    buf = render(lat, lon, data, pkg, coast_segs, dates_a,
+                 title=title, cbar_label=pkg["cb_label"] + f"  ({tag})")
+
+    meta = {"product": pkg["id"], "title": pkg["title"],
+            "date_start": dates_a[0].isoformat(), "date_end": dates_a[-1].isoformat(),
+            "date_b_start": dates_b[0].isoformat(), "date_b_end": dates_b[-1].isoformat(),
+            "n_days": len(dates_a), "level": pkg["level"], "diff": True, "inverse": inverse}
     return buf, meta
