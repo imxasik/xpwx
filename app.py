@@ -61,8 +61,6 @@ def generate():
     manual_date = body.get("date")
     n_days = int(body.get("n_days", metmap.DEFAULT_N_DAYS))
     n_days = max(1, min(30, n_days))
-    domain = body.get("domain", "global")
-
     if product_id not in metmap.PRODUCTS:
         return jsonify({"error": f"unknown product '{product_id}'",
                         "code": "unknown_product"}), 400
@@ -75,7 +73,7 @@ def generate():
         except ValueError:
             return jsonify({"error": "invalid date format, use YYYY-MM-DD"}), 400
 
-    key = json.dumps([product_id, mode, manual_date, n_days, domain])
+    key = json.dumps([product_id, mode, manual_date, n_days])
     if key in _cache:
         return _serve_png(_cache[key])
 
@@ -83,7 +81,7 @@ def generate():
     try:
         buf, meta = metmap.generate(product_id=product_id, mode=mode,
                                     manual_date=manual_date, n_days=n_days,
-                                    log=log, domain=domain)
+                                    log=log)
     except Exception as exc:  # noqa: BLE001
         app.logger.exception("map generation failed")
         return jsonify({"error": str(exc), "code": "generation_failed",
@@ -105,7 +103,6 @@ def diff():
     n_days1 = max(1, min(30, n_days1))
     n_days2 = max(1, min(30, n_days2))
     inverse = bool(body.get("inverse", False))
-    domain = body.get("domain", "global")
 
     if product_id not in metmap.PRODUCTS:
         return jsonify({"error": f"unknown product '{product_id}'"}), 400
@@ -117,7 +114,7 @@ def diff():
     except ValueError:
         return jsonify({"error": "invalid date format, use YYYY-MM-DD"}), 400
 
-    key = json.dumps(["diff", product_id, date1, n_days1, date2, n_days2, inverse, domain])
+    key = json.dumps(["diff", product_id, date1, n_days1, date2, n_days2, inverse])
     if key in _cache:
         return _serve_png(_cache[key])
 
@@ -126,7 +123,7 @@ def diff():
         buf, meta = metmap.generate_diff(product_id=product_id,
                                          date1=date1, n_days1=n_days1,
                                          date2=date2, n_days2=n_days2,
-                                         inverse=inverse, log=log, domain=domain)
+                                         inverse=inverse, log=log)
     except Exception as exc:  # noqa: BLE001
         app.logger.exception("diff generation failed")
         return jsonify({"error": str(exc), "code": "diff_failed",
