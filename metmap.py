@@ -489,7 +489,7 @@ PRODUCTS = {
 
     # ---- advanced diagnostics ----
     "waf200": {"id": "waf200",
-               "title": "Takaya–Nakamura Wave Activity Flux — 200 hPa",
+               "title": "Wave Flux — 200 hPa",
                "name": "Wave Flux 200", "tag": "Advanced",
                "desc": "Takaya–Nakamura wave-activity flux vectors over 200-hPa "
                        "streamfunction anomaly (Rossby wave propagation source/sink).",
