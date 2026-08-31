@@ -399,14 +399,6 @@ PRODUCTS = {
              "cb_label": "Temperature Anomaly  (K)"},
 
     # ---- angular momentum budget ----
-    "aam": {"id": "aam", "title": "Relative Atmospheric Angular Momentum Anomaly",
-            "name": "AAM", "tag": "Global",
-            "desc": "Column-integrated relative angular momentum anomaly "
-                    "(vertical mean of the zonal-wind anomaly).",
-            "kind": "aam", "level": None, "variables": [],
-            "show_wind": False, "plot_scale": 1e-3,
-            "vlim": 150.0, "cint": 30.0,
-            "cb_label": "Relative AAM Anomaly  (scaled)"},
     "frict": {"id": "frict", "title": "Frictional (Surface Stress) Torque Anomaly",
               "name": "Friction τx", "tag": "Surface",
               "desc": "Surface zonal wind-stress anomaly (the frictional-torque "
@@ -612,8 +604,9 @@ def takaya_nakamura_flux(psi_anom, u_bar, v_bar, lat, lon, p_pa=20000.0, a=R_EAR
     Wx = pref * (ub * A + vb * B)
     Wy = pref * (ub * B + vb * C)
 
-    # Mask the degenerate polar rows (gradient noise as cosφ→0).
-    bad = np.abs(lat)[:, None] > 76.0
+    # Mask only the topmost rows where the streamfunction inversion is
+    # genuinely degenerate as cosφ→0; keep the field out to ±80°.
+    bad = np.abs(lat)[:, None] > 80.0
     Wx = np.where(bad, np.nan, Wx)
     Wy = np.where(bad, np.nan, Wy)
     return Wx, Wy
@@ -723,26 +716,6 @@ def compute(pkg, dates):
             main = gaussian_filter(poisson_fft(zeta, lat, lon), sigma=2.0) * pkg["plot_scale"]
         return lat, lon, {"main": main, "u": u_anom, "v": v_anom}
 
-    elif kind == "aam":
-        # Relative (wind) component of atmospheric angular momentum anomaly.
-        # Column integral of u·cos²φ over the pressure depth, minus climatology.
-        levels = AAM_LEVELS
-        lat, lon = _latlon("uwnd")
-        u_obs = _mean_multi("uwnd", levels, dates, "obs")
-        u_clim = _mean_multi("uwnd", levels, dates, "clim")
-        u_anom = gaussian_filter(u_obs - u_clim, sigma=1.5)  # (nlev,nlat,nlon)
-        coslat = np.cos(np.deg2rad(lat))[None, :, None]
-        p_pa = np.array(levels, dtype=np.float64) * 100.0    # hPa -> Pa, descending
-        # integrate downward from top(50) to bottom(1000) over dp; dp>0
-        dp = np.diff(-p_pa)                                  # thickness (Pa) upward
-        # weight per level, use trapezoid approximation over levels
-        col = (u_anom * coslat**2) * (-1.0)                  # sign for p increasing downward
-        # integrate with trapezoid in p (ascending: 50->1000)
-        integ = np.trapezoid(col, x=p_pa[::-1], axis=0) / 9.80665
-        # integ has no strong global meaning; scale for display
-        main = integ * pkg["plot_scale"]
-        return lat, lon, {"main": main}
-
     elif kind == "ft":
         # Frictional torque driver: surface zonal wind stress anomaly.
         # tau_x = rho * Cd * |V10| * u10  (bulk drag law), observed minus climatology.
@@ -780,8 +753,9 @@ def compute(pkg, dates):
 
         main = psi * pkg["plot_scale"]
         vec_sc = pkg["vec_scale"]
-        # NaN mask must match the flux mask so no garbage arrows are drawn.
-        return lat, lon, {"main": np.where(np.abs(lat)[:, None] <= 72.0,
+        # NaN mask must match the flux mask ({>80°} treated as NaN) so no
+        # garbage arrows or shading are drawn right at the poles.
+        return lat, lon, {"main": np.where(np.abs(lat)[:, None] <= 80.0,
                                            main, np.nan),
                           "vec_u": waf_u * vec_sc, "vec_v": waf_v * vec_sc}
 
