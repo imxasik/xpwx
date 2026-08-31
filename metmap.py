@@ -582,8 +582,8 @@ def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
 
 
 def generate_diff(product_id=DEFAULT_PRODUCT, date1=None, n_days1=DEFAULT_N_DAYS,
-                  date2=None, n_days2=DEFAULT_N_DAYS, log=None):
-    """Return one map of (Range A − Range B) for the given product."""
+                  date2=None, n_days2=DEFAULT_N_DAYS, inverse=False, log=None):
+    """Return one map of (Range A − Range B), or (B − A) if inverse=True."""
     pkg = PRODUCTS.get(product_id, PRODUCTS[DEFAULT_PRODUCT])
     say = (lambda m: log.append(m)) if log is not None else (lambda m: None)
 
@@ -600,20 +600,21 @@ def generate_diff(product_id=DEFAULT_PRODUCT, date1=None, n_days1=DEFAULT_N_DAYS
     say("[2] Computing Range B …")
     _, _, data_b = compute(pkg, dates_b)
 
-    say("[3] Difference B − A …")
-    data = {"main": data_b["main"] - data_a["main"]}
+    say("[3] Difference …")
+    sign = -1.0 if inverse else 1.0     # A−B default; B−A when inverse
+    data = {"main": sign * (data_a["main"] - data_b["main"])}
     if "u" in data_a and "u" in data_b:
-        data["u"] = data_b["u"] - data_a["u"]
-        data["v"] = data_b["v"] - data_a["v"]
+        data["u"] = sign * (data_a["u"] - data_b["u"])
+        data["v"] = sign * (data_a["v"] - data_b["v"])
 
-    f_ab = lambda d: f"{d[0]:%-d %b}–{d[-1]:%-d %b %Y}"
-    title = (f"{pkg['title']}  ·  B−A   "
-             f"({f_ab(dates_b)}) − ({f_ab(dates_a)})")
+    tag = "B − A" if inverse else "A − B"     # only shown on the colorbar, not the title
+    # concise title: just the product (no operation tag, no long date string)
+    title = pkg["title"]
     buf = render(lat, lon, data, pkg, coast_segs, dates_a,
-                 title=title, cbar_label=pkg["cb_label"] + "  (B − A)")
+                 title=title, cbar_label=pkg["cb_label"] + f"  ({tag})")
 
     meta = {"product": pkg["id"], "title": pkg["title"],
             "date_start": dates_a[0].isoformat(), "date_end": dates_a[-1].isoformat(),
             "date_b_start": dates_b[0].isoformat(), "date_b_end": dates_b[-1].isoformat(),
-            "n_days": len(dates_a), "level": pkg["level"], "diff": True}
+            "n_days": len(dates_a), "level": pkg["level"], "diff": True, "inverse": inverse}
     return buf, meta

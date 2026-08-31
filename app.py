@@ -103,6 +103,7 @@ def diff():
     n_days2 = int(body.get("n_days2", metmap.DEFAULT_N_DAYS))
     n_days1 = max(1, min(30, n_days1))
     n_days2 = max(1, min(30, n_days2))
+    inverse = bool(body.get("inverse", False))
 
     if product_id not in metmap.PRODUCTS:
         return jsonify({"error": f"unknown product '{product_id}'"}), 400
@@ -114,7 +115,7 @@ def diff():
     except ValueError:
         return jsonify({"error": "invalid date format, use YYYY-MM-DD"}), 400
 
-    key = json.dumps(["diff", product_id, date1, n_days1, date2, n_days2])
+    key = json.dumps(["diff", product_id, date1, n_days1, date2, n_days2, inverse])
     if key in _cache:
         return _serve_png(_cache[key])
 
@@ -122,7 +123,8 @@ def diff():
     try:
         buf, meta = metmap.generate_diff(product_id=product_id,
                                          date1=date1, n_days1=n_days1,
-                                         date2=date2, n_days2=n_days2, log=log)
+                                         date2=date2, n_days2=n_days2,
+                                         inverse=inverse, log=log)
     except Exception as exc:  # noqa: BLE001
         app.logger.exception("diff generation failed")
         return jsonify({"error": str(exc), "code": "diff_failed",
