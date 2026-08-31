@@ -206,11 +206,11 @@
           <div class="ph" id="ph"><span class="spin"></span><span id="phText">Select a product…</span></div>
           <img id="img" alt="reanalysis map" style="display:none" />
         </div>
+
         <div class="dlrow"><a class="btn ghost sm dl" id="dl" style="display:none" download="map.png">&#8615; Download</a></div>
       </section>
 
       <div id="status"></div>
-      <details><summary>Processing log</summary><pre id="log"></pre></details>
     </main>
   </div>
 
@@ -225,7 +225,7 @@
         S = document.getElementById("status"),
         PH = document.getElementById("ph"), PT = document.getElementById("phText"),
         IMG = document.getElementById("img"), DL = document.getElementById("dl"),
-        LOG = document.getElementById("log"), META = document.getElementById("meta");
+        META = document.getElementById("meta");
 
   const PROD = {{ products | tojson }};
   const P = id => PROD.find(x => x.id === id);
@@ -268,14 +268,13 @@
 
     document.getElementById("go").disabled = true;
     PH.style.display = "flex"; PT.textContent = "Rendering…"; IMG.style.display = "none"; DL.style.display = "none";
-    LOG.textContent = p.title + "\n" + (mode==="manual" ? "to "+DATE.value : "auto") + " · " + ndv + "-day mean";
 
     const body = { product: current, mode, n_days: ndv, domain: dom() };
     if (mode === "manual") body.date = DATE.value;
 
     try{
       const r = await fetch("/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-      if(!r.ok){ let m="Server error "+r.status; try{const j=await r.json(); m=j.error||m; if(j.log)LOG.textContent=j.log.join("\n");}catch(e){} throw new Error(m); }
+      if(!r.ok){ let m="Server error "+r.status; try{const j=await r.json(); m=j.error||m;}catch(e){} throw new Error(m); }
       const url = URL.createObjectURL(await r.blob());
       cache[k] = url; show(url);
       S.textContent = "Ready."; S.className = "ok";
@@ -296,5 +295,5 @@
   if(p0){ DL.setAttribute("download", current+".png"); }
   run();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a33d8dc43a51f335',t:'MTc4ODE5NTIzMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a33db97f1eb78e79',t:'MTc4ODE5NzAyMg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
