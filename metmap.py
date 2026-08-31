@@ -497,10 +497,10 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None):
     cax.text(0.5, -1.55, pkg["cb_label"], transform=cax.transAxes, ha="center",
              va="top", fontsize=12, color="#222211", fontstyle="italic")
 
-    # title & branding
+    # title & branding  (single line — no \n)
     fig.text(0.50, 0.985,
-             f"{pkg['title']}\n"
-             f"{dates[0]:%-d %b} – {dates[-1]:%-d %b %Y}  ({len(dates)}-day mean)",
+             f"{pkg['title']}  ·  {dates[0]:%-d %b} – {dates[-1]:%-d %b %Y}"
+             f"  ({len(dates)}-day mean)",
              ha="center", va="top", fontsize=16, fontweight="bold",
              color="#111100", fontfamily="DejaVu Sans")
     ax.text(0.985, 0.016, "@XPWEATHER", transform=ax.transAxes, fontsize=11,
