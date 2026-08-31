@@ -66,6 +66,9 @@
   .side{border-right:1px solid var(--line);background:#fbfaf7;padding:16px 14px}
   .side h4{margin:2px 6px 12px;font-size:11px;letter-spacing:1.2px;color:var(--mut);font-weight:700}
   .side-list{display:flex;flex-direction:column;gap:7px}
+  .group-h{margin:14px 6px 7px;font-size:10.5px;font-weight:800;letter-spacing:1.4px;
+    text-transform:uppercase;color:var(--acc2)}
+  .group:first-child .group-h{margin-top:0}
   .side-item{border:1px solid var(--line);border-radius:9px;padding:11px 12px;background:#fff;
     cursor:pointer;transition:.12s}
   .side-item:hover{border-color:#c3bba8;background:#faf9f4}
@@ -151,12 +154,16 @@
     <aside class="side">
       <h4>PRODUCTS</h4>
       <div class="side-list">
-        {% for p in products %}
-        <div class="side-item {{ 'active' if p.id == default_product }}" data-id="{{ p.id }}"
-             onclick="pick('{{ p.id }}')">
-          <span class="tag">{{ p.tag }}</span>
-          <div class="nm">{{ p.name }}</div>
-          <div class="ds">{{ p.desc }}</div>
+        {% for g in groups %}
+        <div class="group">
+          <div class="group-h">{{ g.tag }}</div>
+          {% for p in g.product_list %}
+          <div class="side-item {{ 'active' if p.id == default_product }}" data-id="{{ p.id }}"
+               onclick="pick('{{ p.id }}')">
+            <div class="nm">{{ p.name }}</div>
+            <div class="ds">{{ p.desc }}</div>
+          </div>
+          {% endfor %}
         </div>
         {% endfor %}
       </div>
@@ -276,5 +283,5 @@
   if(p0){ DL.setAttribute("download", current+".png"); }
   run();
 </script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a33f04062dba94e9',t:'MTc4ODIxMDU2MA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
