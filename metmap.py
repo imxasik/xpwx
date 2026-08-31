@@ -1248,7 +1248,7 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
         if vec[0] is not None:
             U0, V0 = vec
             ref_mag = pkg.get("vec_ref", 5.0)
-            ref_unit = pkg.get("vec_unit", "5 m/s")
+            #ref_unit = pkg.get("vec_unit", "5 m/s")
             vscale = pkg.get("wind_scale", 50.0)
         else:
             U0, V0 = data["u"], data["v"]
