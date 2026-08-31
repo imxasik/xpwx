@@ -39,7 +39,8 @@ def index():
                            today=datetime.date.today().isoformat(),
                            default_n_days=metmap.DEFAULT_N_DAYS,
                            default_product=metmap.DEFAULT_PRODUCT,
-                           products=metmap.list_products())
+                           products=metmap.list_products(),
+                           groups=metmap.group_products())
 
 
 @app.route("/health")
@@ -50,6 +51,7 @@ def health():
 @app.route("/products")
 def products():
     return jsonify({"products": metmap.list_products(),
+                    "groups": metmap.group_products(),
                     "default": metmap.DEFAULT_PRODUCT})
 
 

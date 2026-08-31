@@ -632,6 +632,27 @@ PRODUCTS = {
                     "vec_step": 5, "vec_min": 2.5, "one_sided": True,
                     "vlim": 20.0, "cint": 4.0,
                     "cb_label": "Ageostrophic Wind Speed  (m/s)"},
+
+    # ---- Hovmöller diagrams (daily, latitude-band averaged, longitude–time) ----
+    "hov_u850": {"id": "hov_u850", "title": "Hovmöller — Zonal Wind 850 hPa",
+                 "name": "Hovmöller U850", "tag": "Hovmöller",
+                 "desc": "Longitude–time Hovmöller of the 850-hPa zonal-wind "
+                         "anomaly averaged 5°S–5°N (equatorial waves / MJO).",
+                 "kind": "hov", "variable": "uwnd", "level": 850,
+                 "lat_band": (-5, 5), "window": 120,
+                 "plot_scale": 1.0,
+                 "vlim": 6.0, "cint": 1.0,
+                 "cb_label": "Zonal Wind Anomaly 850 hPa  (m/s)"},
+    "hov_chi200": {"id": "hov_chi200", "title": "Hovmöller — Velocity Potential 200 hPa",
+                   "name": "Hovmöller χ200", "tag": "Hovmöller",
+                   "desc": "Longitude–time Hovmöller of the 200-hPa velocity-"
+                           "potential anomaly averaged 15°S–15°N (convection "
+                           "propagation / MJO).",
+                   "kind": "hov", "variable": "chi", "level": 200,
+                   "lat_band": (-15, 15), "window": 120,
+                   "plot_scale": 1e-6,
+                   "vlim": 5.0, "cint": 1.0,
+                   "cb_label": "Velocity-Potential Anomaly  (1e6 m²s)"},
 }
 
 
@@ -889,6 +910,93 @@ def _temp_advection(level, dates, lat, lon):
     dTdx = _grad_x(T, lat, lon)
     dTdy = _grad_y(T, lat, lon)
     return -(u * dTdx + v * dTdy)
+
+
+# ================================================================
+# Hovmöller helpers  (daily data, latitude-band averaged, time×longitude)
+# ================================================================
+def _daily_stack(var, level, dates, kind):
+    """Daily per-day field (ntime, nlat, nlon) for obs or climatology."""
+    key = (var, level, tuple(d.isoformat() for d in dates), "daily", kind)
+    if key in _FIELD_CACHE:
+        return _FIELD_CACHE[key]
+    if kind == "obs":
+        by_year = {}
+        for d in dates:
+            by_year.setdefault(d.year, []).append(d)
+        rows = []
+        for year, ydates in sorted(by_year.items()):
+            ds = _open(var, year)
+            lv = _level_idx(ds, level) if level is not None else 0
+            for d in ydates:
+                ti = _time_idx(ds, d)
+                rows.append(_read_slice(ds, var, ti, lv))
+    else:
+        ds = _open(var)
+        lv = _level_idx(ds, level) if level is not None else 0
+        n = len(np.array(ds["time"][:]))
+        rows = []
+        for d in dates:
+            ti = min(d.timetuple().tm_yday - 1, n - 1)
+            rows.append(_read_slice(ds, var, ti, lv))
+    arr = np.stack(rows, axis=0)
+    _FIELD_CACHE[key] = arr
+    return arr
+
+
+def _band_axis(lat, lat_min, lat_max):
+    """Indices of the latitude rows inside [lat_min, lat_max]."""
+    return np.where((lat >= lat_min) & (lat <= lat_max))[0]
+
+
+def _band_label(band):
+    """'5°S–5°N' style label for a (lat_min, lat_max) band."""
+    lo, hi = band
+    f = lambda x: f"{abs(x):g}°{'S' if x < 0 else 'N'}"
+    return f"averaged {f(lo)}–{f(hi)}"
+
+
+def compute_hov(pkg, dates):
+    """Approach: build a daily time×longitude Hovmöller for pkg['variable'] at
+    pkg['level'], averaged over the latitude band pkg['lat_band'], over the last
+    pkg['window'] days ending at the latest requested date. Returns
+    (day_dates, lon, matrix) where matrix is (ntime, nlon) already scaled."""
+    var = pkg["variable"]
+    level = pkg["level"]
+    lat_min, lat_max = pkg["lat_band"]
+    window = int(pkg.get("window", 120))
+    end = dates[-1]
+    day_dates = [end - datetime.timedelta(days=i) for i in range(window)][::-1]
+
+    lat, lon = _latlon("uwnd")          # shared 73×144 grid
+    band = _band_axis(lat, lat_min, lat_max)
+
+    if var == "chi":
+        # velocity potential: per-day u,v anomaly -> divergence -> Poisson
+        u = _daily_stack("uwnd", level, day_dates, "obs")
+        uc = _daily_stack("uwnd", level, day_dates, "clim")
+        v = _daily_stack("vwnd", level, day_dates, "obs")
+        vc = _daily_stack("vwnd", level, day_dates, "clim")
+        u_a = gaussian_filter(u - uc, sigma=1.2)
+        v_a = gaussian_filter(v - vc, sigma=1.2)
+        rows = []
+        for i in range(day_dates.__len__()):
+            div = divergence(u_a[i], v_a[i], lat, lon)
+            chi = gaussian_filter(poisson_fft(div, lat, lon), sigma=2.0)
+            rows.append(chi[band].mean(axis=0))
+        matrix = np.stack(rows, axis=0) * pkg["plot_scale"]
+    else:
+        obs = _daily_stack(var, level, day_dates, "obs")
+        clim = _daily_stack(var, level, day_dates, "clim")
+        anom = gaussian_filter(obs - clim, sigma=1.2)
+        matrix = anom[:, band, :].mean(axis=1) * pkg["plot_scale"]
+        scale = 1.0
+    # Remove the daily zonal mean so the eastward-propagating wave structure is
+    # visible (the band-mean otherwise keeps a large global-mean baseline, e.g.
+    # the planetary-scale chi component that would saturate the colour scale).
+    if pkg.get("zonal_anom", True):
+        matrix = matrix - np.nanmean(matrix, axis=1, keepdims=True)
+    return day_dates, lon, matrix
 
 
 def compute(pkg, dates):
@@ -1248,7 +1356,7 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
         if vec[0] is not None:
             U0, V0 = vec
             ref_mag = pkg.get("vec_ref", 5.0)
-            #ref_unit = pkg.get("vec_unit", "5 m/s")
+            ref_unit = pkg.get("vec_unit", "5 m/s")
             vscale = pkg.get("wind_scale", 50.0)
         else:
             U0, V0 = data["u"], data["v"]
@@ -1350,6 +1458,92 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
     return out_buf
 
 
+def render_hov(day_dates, lon, matrix, pkg, out_buf=None, title=None,
+               cbar_label=None, lat_lab=None):
+    """Render a Hovmöller: longitude (x) vs date (y) as a filled contour."""
+    vlim, cint = pkg["vlim"], pkg["cint"]
+    ntime, nlon = matrix.shape
+    # date axis as fractional day for even spacing
+    t0 = day_dates[0]
+    days = np.array([(d - t0).days for d in day_dates], dtype=np.float64)
+    LON2D, DAY2D = np.meshgrid(lon, days)
+
+    fig = plt.figure(figsize=(12, 7), facecolor="white")
+    ax = fig.add_axes([0.06, 0.14, 0.88, 0.76])
+    ax.set_facecolor("#f4f0e8")
+
+    invert = pkg.get("invert_cbar", False)
+    n_fill = 25 if vlim >= 100 else 20
+    levels = np.linspace(-vlim, vlim, n_fill)
+    cmap = _chi_cmap_inv() if invert else _chi_cmap()
+    cf = ax.contourf(LON2D, DAY2D, np.nan_to_num(matrix, nan=0.0),
+                     levels=levels, cmap=cmap, extend="both", zorder=1, alpha=0.9)
+    line_lev = np.arange(-vlim, vlim + 0.01, cint)
+    line_lev = line_lev[line_lev != 0]
+    ax.contour(LON2D, DAY2D, np.nan_to_num(matrix, nan=0.0),
+               levels=line_lev[line_lev > 0], colors="#5c3d11",
+               linewidths=0.55, alpha=0.55, zorder=2)
+    ax.contour(LON2D, DAY2D, np.nan_to_num(matrix, nan=0.0),
+               levels=line_lev[line_lev < 0], colors="#1b4f6b",
+               linewidths=0.55, linestyles="--", alpha=0.55, zorder=2)
+
+    # longitude ticks
+    xticks = _domain_xticks(lon.min(), lon.max())
+    ax.set_xticks(xticks)
+    ax.set_xticklabels([_xlabel(x) for x in xticks], fontsize=9.5,
+                       color="#333322")
+    # date ticks (about 6 evenly spaced)
+    nd = min(6, ntime)
+    idxs = np.linspace(0, ntime - 1, nd).round().astype(int)
+    ax.set_yticks([days[i] for i in idxs])
+    ax.set_yticklabels([day_dates[i].strftime("%d %b") for i in idxs],
+                       fontsize=9.5, color="#333322")
+
+    # zero-dateline vertical reference + equator label
+    ax.axvline(0, color="#666655", lw=0.7, alpha=0.6)
+    ax.grid(True, ls=":", color="#b0a898", lw=0.35, alpha=0.7)
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#999988")
+        spine.set_linewidth(0.8)
+
+    # colorbar
+    cax = fig.add_axes([0.12, 0.055, 0.760, 0.028])
+    ticks = np.array([round(v, 8) for v in np.arange(-vlim, vlim + 0.001, cint)])
+    ticks = ticks[~np.isclose(ticks, 0.0, atol=cint * 0.01)]
+    ticks = np.append(0.0, ticks)
+    ticks = np.unique(ticks)
+    cbar = plt.colorbar(cf, cax=cax, orientation="horizontal", ticks=ticks)
+    cbar.ax.tick_params(labelsize=8.5, color="#222211", length=3.5, width=0.7)
+    cbar.ax.set_xticklabels([f"{v:g}" for v in ticks], fontsize=8.5,
+                            color="#222211")
+    cbar.outline.set_edgecolor("#999988"); cbar.outline.set_linewidth(0.7)
+    cb_lbl = cbar_label if cbar_label is not None else pkg["cb_label"]
+    cax.text(0.5, -1.55, cb_lbl, transform=cax.transAxes, ha="center",
+             va="top", fontsize=12, color="#222211", fontstyle="italic")
+
+    if title is None:
+        ttext = (f"{pkg['title']}  ·  Longitude–Time (Hovmöller)  ·  "
+                 f"{day_dates[0]:%-d %b} – {day_dates[-1]:%-d %b %Y}")
+    else:
+        ttext = title
+    ax.set_title(ttext, fontsize=16, fontweight="bold", color="#111100", pad=14)
+    if lat_lab:
+        ax.text(1.0, 1.01, lat_lab, transform=ax.transAxes, ha="right",
+                va="bottom", fontsize=10, color="#666655", fontweight="semibold")
+    ax.text(0.985, 0.016, "@XPWEATHER", transform=ax.transAxes, fontsize=11,
+            va="bottom", ha="right", color="#222211", fontweight="semibold",
+            bbox=dict(boxstyle="round,pad=0.35", fc="white",
+                      ec="#ccccbb", alpha=0.92, lw=0.9), zorder=10)
+
+    if out_buf is None:
+        out_buf = io.BytesIO()
+    plt.savefig(out_buf, format="png", dpi=220, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.close(fig)
+    out_buf.seek(0)
+    return out_buf
+
+
 # ================================================================
 # Date resolution
 # ================================================================
@@ -1379,10 +1573,32 @@ def _resolve_dates(mode, manual_date, n_days):
 # ================================================================
 # Public API
 # ================================================================
+# sidebar groups, in display order (any tag not listed goes last)
+GROUP_ORDER = ["Hovmöller", "Upper", "Mid", "Low", "Dynamics", "Thermo",
+               "Moisture", "Torque", "Flow", "Advanced", "Surface"]
+
+
 def list_products():
     return [{"id": p["id"], "title": p["title"], "name": p["name"],
-             "desc": p["desc"], "level": p["level"], "tag": p["tag"]}
+             "desc": p["desc"], "level": p["level"], "tag": p["tag"],
+             "kind": p["kind"]}
             for p in PRODUCTS.values()]
+
+
+def group_products():
+    """Products grouped by tag, in GROUP_ORDER."""
+    by_tag = {}
+    for p in PRODUCTS.values():
+        by_tag.setdefault(p["tag"], []).append(p)
+    order = [t for t in GROUP_ORDER if t in by_tag] + \
+            [t for t in by_tag if t not in GROUP_ORDER]
+    out = []
+    for tag in order:
+        out.append({"tag": tag, "product_list": [
+            {"id": p["id"], "title": p["title"], "name": p["name"],
+             "desc": p["desc"], "level": p["level"], "tag": p["tag"],
+             "kind": p["kind"]} for p in by_tag[tag]]})
+    return out
 
 
 def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
@@ -1391,6 +1607,21 @@ def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
     say = (lambda m: log.append(m)) if log is not None else (lambda m: None)
 
     dates = _resolve_dates(mode, manual_date, n_days)
+
+    if pkg["kind"] == "hov":
+        say(f"[0/3] {pkg['title']} | {pkg.get('window', 120)}-day Hovmöller")
+        say("[1/3] Fetching daily obs & climatology (cached) …")
+        day_dates, lon, matrix = compute_hov(pkg, dates)
+        say(f"  band {pkg['lat_band']} · {matrix.shape[0]} days × {matrix.shape[1]} lon")
+        say("[2/3] Rendering Hovmöller …")
+        lat_lab = _band_label(pkg["lat_band"])
+        buf = render_hov(day_dates, lon, matrix, pkg, lat_lab=lat_lab)
+        meta = {"product": pkg["id"], "title": pkg["title"], "hov": True,
+                "date_start": day_dates[0].isoformat(),
+                "date_end": day_dates[-1].isoformat(),
+                "n_days": len(day_dates), "level": pkg["level"]}
+        return buf, meta
+
     say(f"[0/4] {pkg['title']} | {dates[0]} → {dates[-1]} ({len(dates)}-day mean)")
     say("[0/4] Loading coastline …")
     coast_segs = load_coastlines()
