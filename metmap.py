@@ -1334,7 +1334,7 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
         for part in np.split(np.column_stack([lons, lats]), breaks):
             ax.plot(part[:, 0], part[:, 1], color="#2c2c2c", lw=0.80, zorder=7)
 
-    # grid lines (use the domain-aware tick positions)
+    # grid lines (use loop for visual elements / domain-aware tick positions)
     for x in xticks:
         ax.axvline(x, color="#b0a898", lw=0.35, ls=":", zorder=0, alpha=0.7)
     for y in yticks:
@@ -1381,8 +1381,23 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
                  f"  ({len(dates)}-day mean)")
     else:
         ttext = title
-    fig.text(0.50, 0.965, ttext, ha="center", va="top", fontsize=16,
-             fontweight="bold", color="#111100", fontfamily="DejaVu Sans")
+
+    # Dynamic Fontsize Calculation based on map/figure width & title length
+    target_width_ratio = 0.95
+    base_fs = 16.0
+    approx_char_width_in_pt = base_fs * 0.55
+    max_title_width_in_pt = (fig_w * target_width_ratio) * 72.0
+    text_width_in_pt = len(ttext) * approx_char_width_in_pt
+    
+    if text_width_in_pt > max_title_width_in_pt:
+        dynamic_fs = base_fs * (max_title_width_in_pt / text_width_in_pt)
+        dynamic_fs = max(dynamic_fs, 7.0)
+    else:
+        dynamic_fs = base_fs
+
+    fig.text(0.50, 0.965, ttext, ha="center", va="top", fontsize=dynamic_fs,
+             fontweight="bold", color="#111100", fontfamily="DejaVu Sans", wrap=False)
+
     ax.text(0.985, 0.016, "@XPWEATHER", transform=ax.transAxes, fontsize=11,
             va="bottom", ha="right", color="#222211", fontweight="semibold",
             bbox=dict(boxstyle="round,pad=0.35", fc="white",
