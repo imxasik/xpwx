@@ -97,6 +97,10 @@
   .comparebox{display:flex;flex-direction:column;gap:12px;width:100%;max-width:480px}
   .comparebox .rowf{max-width:100%}
   .range-tag{font-size:11px;color:var(--mut);font-weight:700;letter-spacing:.5px;text-align:center}
+  /* difference toggle */
+  .chk{display:flex;align-items:center;justify-content:center;gap:8px;font-size:13px;color:var(--ink);
+    cursor:pointer;user-select:none;font-weight:600}
+  .chk input{width:18px;height:18px;accent-color:var(--acc2);cursor:pointer}
   /* results — one or two maps */
   .cmpgrid{display:flex;flex-wrap:wrap;gap:14px}
   .mcard{flex:1 1 280px;min-width:0;background:#fff;border:1px solid var(--line);border-radius:9px;
@@ -118,7 +122,7 @@
     padding:9px 15px;border-bottom:1px solid var(--line);background:#faf9f4}
   .stage .bar .meta{font-size:12.5px;color:var(--mut)}
   .bar .meta b{color:var(--ink)}
-  .imgwrap{padding:12px;max-width:1240px;margin:0 auto}
+  .imgwrap{padding:12px;max-width:1700px;margin:0 auto}
   .imgwrap img{display:block;width:100%;height:auto;border-radius:7px;border:1px solid var(--line)}
   .ph{min-height:260px;display:flex;align-items:center;justify-content:center;gap:10px;
     color:var(--mut);font-size:13.5px}
@@ -211,6 +215,10 @@
             <div class="field"><label>DAYS</label>
               <input type="number" id="ndays2" value="{{ default_n_days }}" min="1" max="30" step="1"></div>
           </div>
+          <label class="chk">
+            <input type="checkbox" id="diffMode" onchange="run()">
+            Difference map &nbsp;(B − A)
+          </label>
         </div>
 
         <button class="btn" id="go" onclick="run()">&#9654; Map</button>
@@ -317,6 +325,13 @@
 
   async function run(){
     const p = P(current);
+
+    // ---- compare as a single difference map (B − A) ----
+    if (mode === "compare" && document.getElementById("diffMode").checked){
+      if (!D1.value || !D2.value){ S.textContent="Pick both end dates."; S.className="err"; return; }
+      return await runDiff();
+    }
+
     // gather jobs for the selected mode
     let jobs;
     if (mode === "compare"){
@@ -358,7 +373,40 @@
     S.textContent = (mode==="compare" ? "Comparison ready." : "Ready."); S.className = "ok";
   }
 
+  // ---- compare as ONE difference map (B − A) ----
+  async function runDiff(){
+    const p = P(current);
+    const body = { product: current, date1: D1.value, n_days1: money(N1),
+                   date2: D2.value, n_days2: money(N2) };
+    const key = "diff:" + JSON.stringify(body);
+
+    if (cache[key]){
+      renderCards([cache[key]]);
+      META.innerHTML = "<b>" + p.name + "</b> · Difference (B − A)";
+      S.textContent = "Cache · instant."; S.className = "ok";
+      return;
+    }
+
+    document.getElementById("go").disabled = true;
+    PH.style.display = "flex"; PT.textContent = "Computing difference (B − A)…";
+    try{
+      const r = await fetch("/diff",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      if(!r.ok){ let m="Server error "+r.status; try{const j=await r.json(); m=j.error||m; if(j.log)LOG.textContent=j.log.join("\n");}catch(e){} throw new Error(m); }
+      const url = URL.createObjectURL(await r.blob());
+      const entry = { url, key, slug:"diff",
+        label: "Difference (B − A)  ·  " + rangeLabel(D1.value, money(N1)) + "  −  " + rangeLabel(D2.value, money(N2)) };
+      cache[key] = entry;
+      renderCards([entry]);
+      META.innerHTML = "<b>" + p.name + "</b> · Difference (B − A)";
+      S.textContent = "Difference map ready."; S.className = "ok";
+    }catch(e){
+      S.textContent = "Error: " + (e.message||e); S.className = "err";
+    }finally{
+      PH.style.display = "none"; document.getElementById("go").disabled = false;
+    }
+  }
+
   run();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a33b542dce085658',t:'MTc4ODE3MTkwMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a33b6cd789d2f002',t:'MTc4ODE3MjkxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
