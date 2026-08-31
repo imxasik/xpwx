@@ -98,15 +98,16 @@
   .comparebox .rowf{max-width:100%}
   .range-tag{font-size:11px;color:var(--mut);font-weight:700;letter-spacing:.5px;text-align:center}
   /* difference toggle */
-  .chk{display:flex;align-items:center;justify-content:center;gap:8px;font-size:13px;color:var(--ink);
+  .chkrow{display:flex;align-items:center;justify-content:center;gap:18px;flex-wrap:wrap}
+  .chk{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink);
     cursor:pointer;user-select:none;font-weight:600}
   .chk input{width:18px;height:18px;accent-color:var(--acc2);cursor:pointer}
-  /* results — one or two maps */
-  .cmpgrid{display:flex;flex-wrap:wrap;gap:14px}
-  .mcard{flex:1 1 280px;min-width:0;background:#fff;border:1px solid var(--line);border-radius:9px;
-    padding:10px;display:flex;flex-direction:column;gap:8px}
+  /* results — one or two maps (tight spacing, wide) */
+  .cmpgrid{display:flex;flex-wrap:wrap;gap:8px}
+  .mcard{flex:1 1 320px;min-width:0;background:#fff;border:1px solid var(--line);border-radius:9px;
+    padding:8px;display:flex;flex-direction:column;gap:6px}
   .mcard img{width:100%;height:auto;border-radius:6px;border:1px solid var(--line);display:block}
-  .mcard figcaption{font-size:12px;color:var(--mut);text-align:center;line-height:1.4;font-weight:600}
+  .mcard figcaption{font-size:11.5px;color:var(--mut);text-align:center;line-height:1.4;font-weight:600}
   .mcard .dl{align-self:center}
   @media(max-width:820px){.mcard{flex:1 1 100%}}
   .btn{border:0;cursor:pointer;font-weight:700;font-size:14px;padding:9px 26px;border-radius:8px;
@@ -122,7 +123,7 @@
     padding:9px 15px;border-bottom:1px solid var(--line);background:#faf9f4}
   .stage .bar .meta{font-size:12.5px;color:var(--mut)}
   .bar .meta b{color:var(--ink)}
-  .imgwrap{padding:12px;max-width:1700px;margin:0 auto}
+  .imgwrap{padding:12px;max-width:1900px;margin:0 auto}
   .imgwrap img{display:block;width:100%;height:auto;border-radius:7px;border:1px solid var(--line)}
   .ph{min-height:260px;display:flex;align-items:center;justify-content:center;gap:10px;
     color:var(--mut);font-size:13.5px}
@@ -215,10 +216,14 @@
             <div class="field"><label>DAYS</label>
               <input type="number" id="ndays2" value="{{ default_n_days }}" min="1" max="30" step="1"></div>
           </div>
-          <label class="chk">
-            <input type="checkbox" id="diffMode" onchange="run()">
-            Difference map &nbsp;(B − A)
-          </label>
+          <div class="chkrow">
+            <label class="chk">
+              <input type="checkbox" id="diffMode" onchange="run()"> Difference (A − B)
+            </label>
+            <label class="chk">
+              <input type="checkbox" id="inverseMode" onchange="run()"> Inverse (B − A)
+            </label>
+          </div>
         </div>
 
         <button class="btn" id="go" onclick="run()">&#9654; Map</button>
@@ -376,8 +381,9 @@
   // ---- compare as ONE difference map (B − A) ----
   async function runDiff(){
     const p = P(current);
+    const inv = document.getElementById("inverseMode").checked;
     const body = { product: current, date1: D1.value, n_days1: money(N1),
-                   date2: D2.value, n_days2: money(N2) };
+                   date2: D2.value, n_days2: money(N2), inverse: inv };
     const key = "diff:" + JSON.stringify(body);
 
     if (cache[key]){
@@ -393,11 +399,12 @@
       const r = await fetch("/diff",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
       if(!r.ok){ let m="Server error "+r.status; try{const j=await r.json(); m=j.error||m; if(j.log)LOG.textContent=j.log.join("\n");}catch(e){} throw new Error(m); }
       const url = URL.createObjectURL(await r.blob());
+      const tag = inv ? "B − A" : "A − B";
       const entry = { url, key, slug:"diff",
-        label: "Difference (B − A)  ·  " + rangeLabel(D1.value, money(N1)) + "  −  " + rangeLabel(D2.value, money(N2)) };
+        label: "Difference (" + tag + ")  ·  " + rangeLabel(D1.value, money(N1)) + "  −  " + rangeLabel(D2.value, money(N2)) };
       cache[key] = entry;
       renderCards([entry]);
-      META.innerHTML = "<b>" + p.name + "</b> · Difference (B − A)";
+      META.innerHTML = "<b>" + p.name + "</b> · Difference (" + tag + ")";
       S.textContent = "Difference map ready."; S.className = "ok";
     }catch(e){
       S.textContent = "Error: " + (e.message||e); S.className = "err";
@@ -408,5 +415,5 @@
 
   run();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a33b6cd789d2f002',t:'MTc4ODE3MjkxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a33b802aca07870f',t:'MTc4ODE3MzcwMg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
