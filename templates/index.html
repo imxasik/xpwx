@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Velocity Potential &amp; Wind Anomaly Map</title>
+<style>
+  :root {
+    --bg: #f5f2ea;
+    --card: #ffffff;
+    --ink: #1b1b12;
+    --muted: #6b6b5a;
+    --line: #d8d2c2;
+    --accent: #b0392e;
+    --accent2: #1b4f6b;
+    --ok: #2e7d32;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 22px 18px 60px; }
+  header.top {
+    display: flex; align-items: baseline; justify-content: space-between;
+    flex-wrap: wrap; gap: 8px; margin-bottom: 18px;
+  }
+  h1 { font-size: 22px; margin: 0; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 18px; box-shadow: 0 2px 10px rgba(0,0,0,.04);
+  }
+  .controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin-bottom: 16px; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+  select, input {
+    font-size: 14px; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 8px; background: #fff; color: var(--ink); min-width: 150px;
+  }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    padding: 8px 16px; border: 0; background: #fff; cursor: pointer;
+    font-size: 14px; color: var(--muted);
+  }
+  .seg button.active { background: var(--accent2); color: #fff; }
+  .btn {
+    border: 0; cursor: pointer; font-size: 15px; font-weight: 600;
+    padding: 10px 22px; border-radius: 8px; background: var(--accent);
+    color: #fff; transition: filter .15s;
+  }
+  .btn:hover { filter: brightness(.95); }
+  .btn:disabled { opacity: .55; cursor: wait; }
+  .btn.ghost { background: #fff; color: var(--accent2); border: 1px solid var(--accent2); }
+  .right { margin-left: auto; display: flex; gap: 10px; }
+  #status { font-size: 13px; color: var(--muted); min-height: 18px; margin: 6px 2px; }
+  #status.err { color: var(--accent); font-weight: 600; }
+  #status.ok { color: var(--ok); font-weight: 600; }
+  #mapwrap {
+    margin-top: 14px; border: 1px solid var(--line); border-radius: 12px;
+    background: #fff; overflow: hidden; display: none; min-height: 200px;
+  }
+  #mapwrap img { width: 100%; display: block; }
+  .spinner {
+    display: none; text-align: center; padding: 40px 0; color: var(--muted); font-size: 14px;
+  }
+  pre.log {
+    background: #14141c; color: #cfe3cf; font-size: 12px; border-radius: 8px;
+    padding: 12px 14px; line-height: 1.5; overflow: auto; max-height: 220px; white-space: pre-wrap;
+  }
+  .logbox { margin-top: 16px; }
+  .logbox summary { cursor: pointer; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  a.dl { text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>Velocity-Potential &amp; Wind Anomaly (200 hPa)</h1>
+      <div class="sub">NCEP/NCAR Reanalysis · PSL/NOAA · @XPWEATHER</div>
+    </div>
+    <a class="btn ghost dl" id="download" style="display:none" download="vp.png">⬇ Download PNG</a>
+  </header>
+
+  <section class="card">
+    <div class="controls">
+      <div class="field">
+        <label>Mode</label>
+        <div class="seg">
+          <button type="button" id="m-auto" class="active" onclick="setMode('auto')">Auto (today)</button>
+          <button type="button" id="m-manual" onclick="setMode('manual')">Manual date</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>End date</label>
+        <input type="date" id="date" value="{{ today }}" disabled />
+      </div>
+
+      <div class="field">
+        <label>Days averaged</label>
+        <input type="number" id="ndays" value="{{ default_n_days }}" min="1" max="30" step="1" />
+      </div>
+
+      <div class="right">
+        <button class="btn" id="go" onclick="run()">▶ Generate Map</button>
+      </div>
+    </div>
+
+    <div id="status">Ready. Choose settings, then click Generate.</div>
+
+    <div class="spinner" id="spinner">Fetching reanalysis data and computing χ200 anomaly …<br><small>This can take 30–90 s on first run.</small></div>
+
+    <div id="mapwrap"><img id="mapimg" alt="Velocity potential map" /></div>
+
+    <details class="logbox">
+      <summary>Processing log</summary>
+      <pre class="log" id="log"></pre>
+    </details>
+    <div class="hint">Auto mode uses the latest available date in the current year's dataset; manual mode lets you pick any past date.</div>
+  </section>
+</div>
+
+<script>
+  let mode = "auto";
+  const dateEl = document.getElementById("date");
+  const statusEl = document.getElementById("status");
+  const spinner = document.getElementById("spinner");
+  const mapwrap = document.getElementById("mapwrap");
+  const mapimg = document.getElementById("mapimg");
+  const download = document.getElementById("download");
+
+  function setMode(m) {
+    mode = m;
+    document.getElementById("m-auto").classList.toggle("active", m === "auto");
+    document.getElementById("m-manual").classList.toggle("active", m === "manual");
+    dateEl.disabled = (m === "auto");
+  }
+
+  async function run() {
+    const go = document.getElementById("go");
+    const ndays = parseInt(document.getElementById("ndays").value, 10) || 5;
+    const payload = { mode: mode, n_days: ndays };
+    if (mode === "manual") {
+      if (!dateEl.value) { statusEl.textContent = "Pick a date first."; statusEl.className = "err"; return; }
+      payload.date = dateEl.value;
+    }
+
+    go.disabled = true;
+    statusEl.textContent = "Working …";
+    statusEl.className = "";
+    mapwrap.style.display = "none";
+    download.style.display = "none";
+    spinner.style.display = "block";
+
+    const logEl = document.getElementById("log");
+    const statusline = mode === "manual"
+      ? `Generating map for ${payload.date} (${ndays}-day mean)`
+      : `Generating map, auto date, ${ndays}-day mean`;
+    logEl.textContent = statusline;
+
+    try {
+      const resp = await fetch("/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!resp.ok) {
+        let msg = "Server error " + resp.status;
+        try { const j = await resp.json(); msg = j.error || msg; if (j.log) logEl.textContent = j.log.join("\n"); }
+        catch (e) {}
+        throw new Error(msg);
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      mapimg.src = url;
+      mapwrap.style.display = "block";
+      download.href = url;
+      download.style.display = "inline-block";
+      statusEl.textContent = "Map ready.";
+      statusEl.className = "ok";
+    } catch (err) {
+      statusEl.textContent = "Error: " + (err.message || err);
+      statusEl.className = "err";
+    } finally {
+      spinner.style.display = "none";
+      go.disabled = false;
+    }
+  }
+</script>
+</body>
+</html>
