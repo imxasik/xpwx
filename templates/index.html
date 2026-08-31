@@ -165,10 +165,10 @@
     <main>
       <section class="controls">
         <div class="field">
-          <label>MODE</label>
+          <label>CHOOSE MODE</label>
           <div class="seg">
-            <button id="m-auto" class="active" onclick="setMode('auto')">Auto</button>
-            <button id="m-manual" onclick="setMode('manual')">Manual</button>
+            <button id="m-auto" class="active" onclick="setMode('auto')">Auto Date</button>
+            <button id="m-manual" onclick="setMode('manual')">Manual Date</button>
           </div>
         </div>
         <div class="rowf">
@@ -193,6 +193,7 @@
             <option value="east_asia">East Asia</option>
             <option value="europe">Europe</option>
             <option value="asia">Asia</option>
+            <option value="india">India</option>
           </select>
         </div>
         <button class="btn" id="go" onclick="run()">&#9654; Map</button>
@@ -232,7 +233,7 @@
   const DLABEL = {"global":"Global","indian_ocean":"Indian Ocean",
                   "pacific":"Pacific Ocean","atlantic":"Atlantic Ocean",
                   "south_asia":"South Asia","se_asia":"SouthEast Asia",
-                  "east_asia":"East Asia","europe":"Europe","asia":"Asia"};
+                  "east_asia":"East Asia","europe":"Europe","asia":"Asia","india":"India"};
 
   // ---------- mobile menu ----------
   function toggleMenu(){ document.body.classList.toggle("menu-open"); }
@@ -295,5 +296,5 @@
   if(p0){ DL.setAttribute("download", current+".png"); }
   run();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a33db97f1eb78e79',t:'MTc4ODE5NzAyMg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a33e64830898d062',t:'MTc4ODIwNDAyNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
