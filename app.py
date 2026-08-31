@@ -93,6 +93,46 @@ def generate():
     return _serve_png(data)
 
 
+@app.route("/diff", methods=["POST"])
+def diff():
+    """Return one map of (Range A − Range B)."""
+    body = request.get_json(silent=True) or {}
+    product_id = body.get("product", metmap.DEFAULT_PRODUCT)
+    date1, date2 = body.get("date1"), body.get("date2")
+    n_days1 = int(body.get("n_days1", metmap.DEFAULT_N_DAYS))
+    n_days2 = int(body.get("n_days2", metmap.DEFAULT_N_DAYS))
+    n_days1 = max(1, min(30, n_days1))
+    n_days2 = max(1, min(30, n_days2))
+
+    if product_id not in metmap.PRODUCTS:
+        return jsonify({"error": f"unknown product '{product_id}'"}), 400
+    if not date1 or not date2:
+        return jsonify({"error": "both dates required for comparison"}), 400
+    try:
+        datetime.date.fromisoformat(date1)
+        datetime.date.fromisoformat(date2)
+    except ValueError:
+        return jsonify({"error": "invalid date format, use YYYY-MM-DD"}), 400
+
+    key = json.dumps(["diff", product_id, date1, n_days1, date2, n_days2])
+    if key in _cache:
+        return _serve_png(_cache[key])
+
+    log = []
+    try:
+        buf, meta = metmap.generate_diff(product_id=product_id,
+                                         date1=date1, n_days1=n_days1,
+                                         date2=date2, n_days2=n_days2, log=log)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("diff generation failed")
+        return jsonify({"error": str(exc), "code": "diff_failed",
+                        "log": log[-40:]}), 500
+
+    data = buf.getvalue()
+    _cache[key] = data
+    return _serve_png(data)
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=False)

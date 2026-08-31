@@ -410,7 +410,8 @@ def _ylabel(v):
     return "EQ" if v == 0 else f"{abs(v)}°{'N' if v > 0 else 'S'}"
 
 
-def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None):
+def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
+           title=None, cbar_label=None):
     fplot = data["main"]
     vlim, cint = pkg["vlim"], pkg["cint"]
     LON2D, LAT2D = np.meshgrid(lon, lat)
@@ -495,15 +496,18 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None):
                             color="#222211")
     cbar.outline.set_edgecolor("#999988")
     cbar.outline.set_linewidth(0.7)
-    cax.text(0.5, -1.55, pkg["cb_label"], transform=cax.transAxes, ha="center",
+    cb_lbl = cbar_label if cbar_label is not None else pkg["cb_label"]
+    cax.text(0.5, -1.55, cb_lbl, transform=cax.transAxes, ha="center",
              va="top", fontsize=12, color="#222211", fontstyle="italic")
 
     # title & branding  (single line, in its own band — never over the map)
-    fig.text(0.50, 0.965,
-             f"{pkg['title']}  ·  {dates[0]:%-d %b} – {dates[-1]:%-d %b %Y}"
-             f"  ({len(dates)}-day mean)",
-             ha="center", va="top", fontsize=16, fontweight="bold",
-             color="#111100", fontfamily="DejaVu Sans")
+    if title is None:
+        ttext = (f"{pkg['title']}  ·  {dates[0]:%-d %b} – {dates[-1]:%-d %b %Y}"
+                 f"  ({len(dates)}-day mean)")
+    else:
+        ttext = title
+    fig.text(0.50, 0.965, ttext, ha="center", va="top", fontsize=16,
+             fontweight="bold", color="#111100", fontfamily="DejaVu Sans")
     ax.text(0.985, 0.016, "@XPWEATHER", transform=ax.transAxes, fontsize=11,
             va="bottom", ha="right", color="#222211", fontweight="semibold",
             bbox=dict(boxstyle="round,pad=0.35", fc="white",
@@ -574,4 +578,42 @@ def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
     meta = {"product": pkg["id"], "title": pkg["title"],
             "date_start": dates[0].isoformat(), "date_end": dates[-1].isoformat(),
             "n_days": len(dates), "level": pkg["level"]}
+    return buf, meta
+
+
+def generate_diff(product_id=DEFAULT_PRODUCT, date1=None, n_days1=DEFAULT_N_DAYS,
+                  date2=None, n_days2=DEFAULT_N_DAYS, log=None):
+    """Return one map of (Range A − Range B) for the given product."""
+    pkg = PRODUCTS.get(product_id, PRODUCTS[DEFAULT_PRODUCT])
+    say = (lambda m: log.append(m)) if log is not None else (lambda m: None)
+
+    dates_a = _resolve_dates("manual", date1, n_days1)
+    dates_b = _resolve_dates("manual", date2, n_days2)
+    say(f"[diff] {pkg['title']}: A={dates_a[0]}→{dates_a[-1]}  "
+        f"B={dates_b[0]}→{dates_b[-1]}")
+
+    say("[0] Loading coastline …")
+    coast_segs = load_coastlines()
+
+    say("[1] Computing Range A …")
+    lat, lon, data_a = compute(pkg, dates_a)
+    say("[2] Computing Range B …")
+    _, _, data_b = compute(pkg, dates_b)
+
+    say("[3] Difference B − A …")
+    data = {"main": data_b["main"] - data_a["main"]}
+    if "u" in data_a and "u" in data_b:
+        data["u"] = data_b["u"] - data_a["u"]
+        data["v"] = data_b["v"] - data_a["v"]
+
+    f_ab = lambda d: f"{d[0]:%-d %b}–{d[-1]:%-d %b %Y}"
+    title = (f"{pkg['title']}  ·  B−A   "
+             f"({f_ab(dates_b)}) − ({f_ab(dates_a)})")
+    buf = render(lat, lon, data, pkg, coast_segs, dates_a,
+                 title=title, cbar_label=pkg["cb_label"] + "  (B − A)")
+
+    meta = {"product": pkg["id"], "title": pkg["title"],
+            "date_start": dates_a[0].isoformat(), "date_end": dates_a[-1].isoformat(),
+            "date_b_start": dates_b[0].isoformat(), "date_b_end": dates_b[-1].isoformat(),
+            "n_days": len(dates_a), "level": pkg["level"], "diff": True}
     return buf, meta
