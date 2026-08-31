@@ -1,27 +1,3 @@
-"""
-metmap.py — Fully data-driven map engine for NCEP/NCAR Reanalysis.
-
-Design goals
-------------
-1. ADD A MAP WITHOUT EDITING CODE:
-   Every product is a small config dict in PRODUCTS. One generic compute +
-   one generic renderer handle all of them. To add a map, append one dict
-   and restart — the sidebar, /products endpoint and /generate all pick it up.
-
-2. ACCURATE:
-   - Velocity potential chi inverts the divergence of the wind anomaly.
-   - Streamfunction psi inverts the relative vorticity of the wind anomaly
-     (zeta = (1/(R cosphi))[ dv/dlon - d(u cosphi)/dphi ], solved for del^2 psi
-     with a spherical FFT Poisson solver, band-limited planetary waves).
-   - Anomalies are always field minus the 1991-2020 daily climatology.
-   - Zonal-wind and temperature anomalies are straightforward obs - clim.
-
-3. SUPER FAST:
-   - OPeNDAP datasets cached (opened once) -> _DS_CACHE
-   - Raw obs/climatology field means cached per (var, level, dates) -> _FIELD_CACHE
-   - Rendered PNGs cached server-side (in app.py) -> near-instant repeats
-"""
-
 import os
 import io
 import re
@@ -37,7 +13,7 @@ from scipy.ndimage import gaussian_filter
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.plt as plt
+import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 
 import shapefile
