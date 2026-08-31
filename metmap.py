@@ -398,15 +398,39 @@ PRODUCTS = {
              "vlim": 8.0, "cint": 2.0,
              "cb_label": "Temperature Anomaly  (K)"},
 
-    # ---- angular momentum budget ----
-    "frict": {"id": "frict", "title": "Frictional (Surface Stress) Torque Anomaly",
-              "name": "Friction τx", "tag": "Surface",
-              "desc": "Surface zonal wind-stress anomaly (the frictional-torque "
-                      "driver), from 10-m winds via bulk drag.",
+    # ---- angular momentum budget: frictional torque (mountain torque needs
+    #      orography, which this dataset does not carry — see README) ----
+    "frict": {"id": "frict", "title": "Frictional Torque — Zonal (τx)",
+              "name": "Friction τx", "tag": "Torque",
+              "desc": "Surface zonal wind-stress anomaly (the zonal frictional-"
+                      "torque driver) with the full surface stress vector, from "
+                      "10-m winds via the bulk drag law.",
               "kind": "ft", "level": None, "variables": [],
-              "show_wind": False, "plot_scale": 100.0,
-              "vlim": 36.0, "cint": 6.0,
+              "comp": "x", "show_wind": True, "wind_scale": 55.0,
+              "vec_scale": 100.0, "vec_step": 5, "vec_min": 10.0,
+              "plot_scale": 100.0,
+              "vlim": 30.0, "cint": 6.0,
               "cb_label": "Surface Zonal Stress Anomaly  (×10⁻² N/m²)"},
+    "frict_y": {"id": "frict_y", "title": "Frictional Torque — Meridional (τy)",
+                "name": "Friction τy", "tag": "Torque",
+                "desc": "Surface meridional wind-stress anomaly (the meridional "
+                        "frictional-torque driver) with the full stress vector.",
+                "kind": "ft", "level": None, "variables": [],
+                "comp": "y", "show_wind": True, "wind_scale": 55.0,
+                "vec_scale": 100.0, "vec_step": 5, "vec_min": 10.0,
+                "plot_scale": 100.0,
+                "vlim": 18.0, "cint": 3.0,
+                "cb_label": "Surface Meridional Stress Anomaly  (×10⁻² N/m²)"},
+    "sstress": {"id": "sstress", "title": "Surface Wind Stress Magnitude (|τ|)",
+                "name": "Stress |τ|", "tag": "Torque",
+                "desc": "Magnitude of the surface wind-stress anomaly with the "
+                        "stress vector — the full frictional-forcing field.",
+                "kind": "ft", "level": None, "variables": [],
+                "comp": "mag", "show_wind": True, "wind_scale": 55.0,
+                "vec_scale": 100.0, "vec_step": 5, "vec_min": 10.0,
+                "plot_scale": 100.0, "one_sided": True,
+                "vlim": 30.0, "cint": 6.0,
+                "cb_label": "Surface Stress Magnitude Anomaly  (×10⁻² N/m²)"},
 
     # ---- meridional wind anomaly (V) ----
     "v200": {"id": "v200", "title": "Meridional Wind Anomaly — 200 hPa",
@@ -455,6 +479,14 @@ PRODUCTS = {
             "show_wind": False, "plot_scale": 1.0,
             "vlim": 35.0, "cint": 7.0,
             "cb_label": "Sea-Level Pressure Anomaly  (hPa)"},
+    "srfp": {"id": "srfp", "title": "Surface Pressure Anomaly (ps)",
+             "name": "ps", "tag": "Surface",
+             "desc": "Daily surface-pressure anomaly — the real terrain-influenced "
+                     "surface pressure field (not reduced to sea level).",
+             "kind": "anom", "variable": "srfp", "level": None,
+             "show_wind": False, "plot_scale": 1.0,
+             "vlim": 25.0, "cint": 5.0,
+             "cb_label": "Surface Pressure Anomaly  (hPa)"},
 
     # ---- streamfunction + wave train at 500 & 850 ----
     "psi500": {"id": "psi500", "title": "Streamfunction Anomaly — 500 hPa",
@@ -526,6 +558,80 @@ PRODUCTS = {
              "p_low": 850, "p_high": 500, "show_wind": False,
              "plot_scale": 1.0, "vlim": 1.2, "cint": 0.3,
              "cb_label": "Eady Growth Rate  (1/day)"},
+
+    # ---- integrated water vapour transport ----
+    "ivt": {"id": "ivt", "title": "Integrated Water Vapour Transport",
+            "name": "IVT", "tag": "Moisture",
+            "desc": "Column-integrated water-vapour transport |∫q·V dp| — the "
+                    "atmospheric-river 'moisture highway' map.",
+            "kind": "ivt", "level": None, "variables": ["uwnd", "vwnd", "air", "rhum"],
+            "show_wind": True, "wind_scale": 1400.0, "plot_scale": 1.0,
+            "vec_scale": 1.0, "vec_ref": 400.0, "vec_unit": "400 kg m⁻¹ s⁻¹",
+            "vec_step": 5, "vec_min": 80.0,
+            "one_sided": True,
+            "vlim": 400.0, "cint": 50.0,
+            "cb_label": "Integrated Water Vapour Transport  (kg m⁻¹ s⁻¹)"},
+
+    # ---- QG omega forcing ----
+    "qgforcing500": {"id": "qgforcing500", "title": "QG Omega Forcing — 500 hPa",
+                     "name": "QG ω-forcing 500", "tag": "Dynamics",
+                     "desc": "Quasi-geostrophic omega forcing −2∇·Q (Hoskins "
+                             "Q-vector): red = forced ascent, blue = descent.",
+                     "kind": "qgforcing", "level": 500,
+                     "variables": ["uwnd", "vwnd", "air", "hgt"],
+                     "min_lat": 12.0, "show_wind": False,
+                     "plot_scale": 1e12,
+                     "vlim": 4.0, "cint": 1.0,
+                     "cb_label": "QG Omega Forcing  (×10⁻¹² K m⁻² s⁻¹)"},
+
+    # ---- moist static energy anomaly ----
+    "mse850": {"id": "mse850", "title": "Moist Static Energy Anomaly — 850 hPa",
+               "name": "MSE 850", "tag": "Thermo",
+               "desc": "Moist Static Energy (Cp·T + Lv·q + g·z) anomaly at 850 hPa "
+                       "— boundary-layer convective/energetics field.",
+               "kind": "mse", "level": 850, "variables": ["air", "rhum", "hgt"],
+               "show_wind": False, "plot_scale": 1e-3,
+               "vlim": 12.0, "cint": 3.0,
+               "cb_label": "MSE Anomaly  (×10³ J/kg)"},
+    "mse500": {"id": "mse500", "title": "Moist Static Energy Anomaly — 500 hPa",
+               "name": "MSE 500", "tag": "Thermo",
+               "desc": "Moist Static Energy (Cp·T + Lv·q + g·z) anomaly at 500 hPa.",
+               "kind": "mse", "level": 500, "variables": ["air", "rhum", "hgt"],
+               "show_wind": False, "plot_scale": 1e-3,
+               "vlim": 9.0, "cint": 2.0,
+               "cb_label": "MSE Anomaly  (×10³ J/kg)"},
+
+    # ---- temperature advection ----
+    "tadv850": {"id": "tadv850", "title": "Temperature Advection — 850 hPa",
+                "name": "T-adv 850", "tag": "Dynamics",
+                "desc": "−V·∇T at 850 hPa (warm advection red, cold advection blue) "
+                        "in K/day — the classic frontal/isentropic forcing map.",
+                "kind": "tadv", "level": 850, "variables": ["uwnd", "vwnd", "air"],
+                "show_wind": False, "plot_scale": 86400.0,
+                "vlim": 8.0, "cint": 2.0,
+                "cb_label": "Temperature Advection  (K/day)"},
+
+    # ---- geostrophic / ageostrophic wind ----
+    "geowind300": {"id": "geowind300", "title": "Geostrophic Wind — 300 hPa",
+                   "name": "Geo-wind 300", "tag": "Flow",
+                   "desc": "Geostrophic wind speed from the height field with the "
+                           "geostrophic vector (equator masked, f→0).",
+                   "kind": "geowind", "level": 300, "variables": ["hgt"],
+                   "min_lat": 12.0, "show_wind": True, "wind_scale": 45.0,
+                   "vec_ref": 20.0, "vec_unit": "20 m/s", "plot_scale": 1.0,
+                   "vec_step": 5, "vec_min": 12.0, "one_sided": True,
+                   "vlim": 90.0, "cint": 15.0,
+                   "cb_label": "Geostrophic Wind Speed  (m/s)"},
+    "ageowind300": {"id": "ageowind300", "title": "Ageostrophic Wind — 300 hPa",
+                    "name": "Ageo-wind 300", "tag": "Flow",
+                    "desc": "Ageostrophic wind (V − Vg) magnitude & vector at 300 hPa "
+                            "— the divergent/accelerating part of the flow.",
+                    "kind": "ageowind", "level": 300, "variables": ["uwnd", "vwnd", "hgt"],
+                    "min_lat": 12.0, "show_wind": True, "wind_scale": 20.0,
+                    "vec_ref": 5.0, "vec_unit": "5 m/s", "plot_scale": 1.0,
+                    "vec_step": 5, "vec_min": 2.5, "one_sided": True,
+                    "vlim": 20.0, "cint": 4.0,
+                    "cb_label": "Ageostrophic Wind Speed  (m/s)"},
 }
 
 
@@ -697,6 +803,94 @@ def eady_growth(u_low, u_up, T_low, T_up, p_low, p_high, lat, a=R_EARTH):
     return sigma   # 1/s
 
 
+# ================================================================
+# Extra physics for the expanded catalogue
+# ================================================================
+CP = 1004.0        # J/(kg K) dry air
+LV = 2.5e6         # J/kg latent heat of vapourisation
+GRAV = 9.80665
+RD = 287.05        # J/(kg K) gas constant dry air
+
+
+def _sat_vp(T_k):
+    """Saturation vapour pressure (Pa), Bolton (1980)."""
+    Tc = T_k - 273.15
+    return 611.2 * np.exp(17.67 * Tc / (Tc + 243.5))
+
+
+def _spec_hum(T_k, rh, p_pa):
+    """Specific humidity q (kg/kg) from temperature, RH% and pressure (Pa)."""
+    e = _sat_vp(T_k) * (np.clip(rh, 0.0, 100.0) / 100.0)
+    e = np.minimum(e, 0.95 * p_pa)          # guard vs. supersaturation at low p
+    return 0.622 * e / (p_pa - 0.378 * e)
+
+
+def _q_level(level, dates, kind):
+    """Specific humidity field (kg/kg) at a level, obs or climatology."""
+    T = _mean_field("air", level, dates, kind)
+    rh = _mean_field("rhum", level, dates, kind)
+    return _spec_hum(T, rh, level * 100.0)
+
+
+def _geopot(level, dates, kind="obs"):
+    """Geopotential Phi = g·z (m²/s²) from the hgt (gpm) field."""
+    return 9.80665 * _mean_field("hgt", level, dates, kind)
+
+
+def _grad_x(a, lat, lon):
+    """d/dx (eastward) of a 2-D field on the sphere."""
+    lon_r = np.deg2rad(lon)
+    coslat = np.cos(np.deg2rad(lat))[:, None]
+    return np.gradient(a, lon_r, axis=1) / (R_EARTH * coslat)
+
+
+def _grad_y(a, lat, lon):
+    """d/dy (northward) of a 2-D field on the sphere."""
+    lat_r = np.deg2rad(lat)
+    return np.gradient(a, lat_r, axis=0) / R_EARTH
+
+
+def _geo_wind(level, dates, lat, lon):
+    """Geostrophic wind (m/s) from the geopotential field. f→0 near the equator
+    is guarded (returns 0) so gradients stay finite; tropics are masked at render."""
+    phi = _geopot(level, dates)
+    f = 2 * DEG_PER_S * np.sin(np.deg2rad(lat))[:, None]
+    dphidx = _grad_x(phi, lat, lon)
+    dphidy = _grad_y(phi, lat, lon)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ug = np.where(np.abs(f) > 1e-6, -dphidy / f, 0.0)
+        vg = np.where(np.abs(f) > 1e-6, dphidx / f, 0.0)
+    return ug, vg
+
+
+def _qvector_forcing(level, dates, lat, lon):
+    """QG omega forcing = −2∇·Q (Hoskins Q-vector form). Positive ⇒ ascent.
+    Geostrophic wind from height field, temperature from air; Q-vector is built
+    from the geostrophic deformation of the temperature gradient."""
+    ug, vg = _geo_wind(level, dates, lat, lon)
+    T = _mean_field("air", level, dates, "obs")
+    dTdx = _grad_x(T, lat, lon)
+    dTdy = _grad_y(T, lat, lon)
+    dUgdx = _grad_x(ug, lat, lon); dVgdx = _grad_x(vg, lat, lon)
+    dUgdy = _grad_y(ug, lat, lon); dVgdy = _grad_y(vg, lat, lon)
+    sigma = _static_stability(level, dates)
+    coef = RD / (sigma * level * 100.0) * 1.0
+    Q1 = -coef * (dUgdx * dTdx + dVgdx * dTdy)
+    Q2 = -coef * (dUgdy * dTdx + dVgdy * dTdy)
+    divQ = _grad_x(Q1, lat, lon) + _grad_y(Q2, lat, lon)
+    return -2.0 * divQ
+
+
+def _temp_advection(level, dates, lat, lon):
+    """−V·∇T (K/s), positive = warm advection, from absolute obs fields."""
+    u = _mean_field("uwnd", level, dates, "obs")
+    v = _mean_field("vwnd", level, dates, "obs")
+    T = _mean_field("air", level, dates, "obs")
+    dTdx = _grad_x(T, lat, lon)
+    dTdy = _grad_y(T, lat, lon)
+    return -(u * dTdx + v * dTdy)
+
+
 def compute(pkg, dates):
     kind = pkg["kind"]
 
@@ -717,8 +911,10 @@ def compute(pkg, dates):
         return lat, lon, {"main": main, "u": u_anom, "v": v_anom}
 
     elif kind == "ft":
-        # Frictional torque driver: surface zonal wind stress anomaly.
-        # tau_x = rho * Cd * |V10| * u10  (bulk drag law), observed minus climatology.
+        # Frictional torque driver: surface wind stress anomaly via the bulk drag
+        # law  tau = rho * Cd * |V10| * V10  (N/m²). All three flavours share the
+        # computation; pkg["comp"] selects which scalar to show, and the full
+        # (tau_x, tau_y) vector is always returned for the arrow overlay.
         lat, lon = _latlon("uwnd.sfc")
         u_obs = _mean_field("uwnd.sfc", None, dates, "obs")
         u_clim = _mean_field("uwnd.sfc", None, dates, "clim")
@@ -728,11 +924,24 @@ def compute(pkg, dates):
         rho, cd = 1.225, 1.4e-3
         def stress(u, v):
             spd = np.sqrt(u * u + v * v)
-            return rho * cd * spd * u
-        tau_obs = stress(u_obs, v_obs)
-        tau_clim = stress(u_clim, v_clim)
-        anom = gaussian_filter(tau_obs - tau_clim, sigma=1.5) * pkg["plot_scale"]
-        return lat, lon, {"main": anom}
+            tau_u = rho * cd * spd * u
+            tau_v = rho * cd * spd * v
+            return tau_u, tau_v
+        tx_o, ty_o = stress(u_obs, v_obs)
+        tx_c, ty_c = stress(u_clim, v_clim)
+        tx = gaussian_filter(tx_o - tx_c, sigma=1.5)
+        ty = gaussian_filter(ty_o - ty_c, sigma=1.5)
+
+        comp = pkg.get("comp", "x")
+        if comp == "y":
+            main = ty
+        elif comp == "mag":
+            main = np.sqrt(tx**2 + ty**2)
+        else:
+            main = tx
+        vs = pkg.get("vec_scale", 1.0)
+        return lat, lon, {"main": main * pkg["plot_scale"],
+                          "vec_u": tx * vs, "vec_v": ty * vs}
 
     elif kind == "waf":
         # Takaya–Nakamura wave-activity flux at pkg["level"].
@@ -820,6 +1029,86 @@ def compute(pkg, dates):
         main = sigma * 86400.0 * pkg["plot_scale"]   # 1/day
         return lat, lon, {"main": main}
 
+    elif kind == "ivt":
+        # Integrated Water Vapour Transport (kg m⁻¹ s⁻¹): column integral of q·V.
+        # Q = (1/g) ∫ q·(u,v) dp; magnitude is the standard atmospheric-river metric.
+        # All 4 fields are pulled as multi-level stacks (one set of reads each),
+        # then combined as arrays, so the whole computation is a handful of
+        # dataset requests rather than ~50.
+        # rhum is archived on only 6 levels (1000–300 hPa), so integrate the
+        # moisture up to 300 hPa (the overwhelming fraction of PW sits below).
+        levels = [1000, 850, 700, 500, 400, 300]
+        lat, lon = _latlon("uwnd")
+        u = _mean_multi("uwnd", levels, dates, "obs")
+        v = _mean_multi("vwnd", levels, dates, "obs")
+        T = _mean_multi("air", levels, dates, "obs")
+        RH = _mean_multi("rhum", levels, dates, "obs")
+        p_pa = np.array(levels, dtype=np.float64)[:, None, None] * 100.0
+        q = _spec_hum(T, RH, p_pa)                       # (nlev, nlat, nlon)
+        pt = p_pa[:, 0, 0]
+        Qx = np.trapezoid(q * u, x=pt[::-1], axis=0) / GRAV
+        Qy = np.trapezoid(q * v, x=pt[::-1], axis=0) / GRAV
+        main = np.sqrt(Qx**2 + Qy**2) * pkg["plot_scale"]
+        vs = pkg.get("vec_scale", 1.0)
+        return lat, lon, {"main": main, "vec_u": Qx * vs, "vec_v": Qy * vs}
+
+    elif kind == "qgforcing":
+        # QG omega forcing = −2∇·Q at pkg["level"] (positive ⇒ ascent). Geostrophic
+        # winds break down near the equator, so the deep tropics are masked.
+        level = pkg["level"]
+        lat, lon = _latlon("uwnd")
+        forcing = _qvector_forcing(level, dates, lat, lon)
+        min_lat = pkg.get("min_lat", 12.0)
+        forcing = np.where(np.abs(lat)[:, None] < min_lat, np.nan, forcing)
+        forcing = np.where(np.abs(lat)[:, None] > 80.0, np.nan, forcing)
+        return lat, lon, {"main": forcing * pkg["plot_scale"]}
+
+    elif kind == "mse":
+        # Moist Static Energy anomaly at pkg["level"]:  MSE = Cp·T + Lv·q + gz.
+        level = pkg["level"]
+        lat, lon = _latlon("air")
+        T_o = _mean_field("air", level, dates, "obs")
+        T_c = _mean_field("air", level, dates, "clim")
+        q_o = _q_level(level, dates, "obs")
+        q_c = _q_level(level, dates, "clim")
+        phi_o = _geopot(level, dates, "obs")
+        phi_c = _geopot(level, dates, "clim")
+        mse_o = CP * T_o + LV * q_o + phi_o
+        mse_c = CP * T_c + LV * q_c + phi_c
+        return lat, lon, {"main": (mse_o - mse_c) * pkg["plot_scale"]}
+
+    elif kind == "tadv":
+        # Temperature advection −V·∇T at pkg["level"], in K/s (×24 h scale to K/day).
+        level = pkg["level"]
+        lat, lon = _latlon("uwnd")
+        ta = _temp_advection(level, dates, lat, lon)
+        # the 1/cosφ term in dT/dx amplifies to noise in the high latitudes;
+        # the meaningful frontal/advective signal sits in the mid-latitudes.
+        ta = np.where(np.abs(lat)[:, None] > 68.0, np.nan, ta)
+        return lat, lon, {"main": ta * pkg["plot_scale"]}
+
+    elif kind in ("geowind", "ageowind"):
+        # Geostrophic Vg from the height field, or ageostrophic V − Vg. Magnitude
+        # is shaded; the vector is overlaid. Tropics masked (f→0, geostrophy fails).
+        level = pkg["level"]
+        lat, lon = _latlon("uwnd")
+        ug, vg = _geo_wind(level, dates, lat, lon)
+        if kind == "geowind":
+            U0, V0 = ug, vg
+        else:
+            u = _mean_field("uwnd", level, dates, "obs")
+            v = _mean_field("vwnd", level, dates, "obs")
+            U0, V0 = u - ug, v - vg
+        main = np.sqrt(U0**2 + V0**2)
+        min_lat = pkg.get("min_lat", 12.0)
+        # mask the deep tropics (f→0, geostrophy fails) and the polar rows where
+        # the 1/cosφ derivative explodes — in BOTH the field and the vectors.
+        bad = (np.abs(lat)[:, None] < min_lat) | (np.abs(lat)[:, None] > 78.0)
+        main = np.where(bad, np.nan, main)
+        return lat, lon, {"main": main * pkg["plot_scale"],
+                          "vec_u": np.where(bad, np.nan, U0),
+                          "vec_v": np.where(bad, np.nan, V0)}
+
     else:  # "anom" — single-variable anomaly
         var = pkg["variable"]
         lat, lon = _latlon(var)
@@ -842,6 +1131,19 @@ def _chi_cmap():
                   (0.50, 0.97, 0.97), (0.65, 0.52, 0.52), (1.0, 0.10, 0.10)],
     }
     return LinearSegmentedColormap("chi_cmap", cdict, N=512)
+
+
+def _pos_cmap():
+    """White/pale -> warm -> deep brown, for strictly non-negative fields."""
+    cdict = {
+        "red":   [(0.0, 0.97, 0.97), (0.40, 0.95, 0.95), (0.70, 0.82, 0.82),
+                  (1.0, 0.45, 0.45)],
+        "green": [(0.0, 0.97, 0.97), (0.40, 0.86, 0.86), (0.70, 0.58, 0.58),
+                  (1.0, 0.20, 0.20)],
+        "blue":  [(0.0, 0.97, 0.97), (0.40, 0.78, 0.78), (0.70, 0.34, 0.34),
+                  (1.0, 0.08, 0.08)],
+    }
+    return LinearSegmentedColormap("pos_cmap", cdict, N=512)
 
 
 def _xlabel(v):
@@ -926,14 +1228,20 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
     xticks = _domain_xticks(lon_min, lon_max)
     yticks = _domain_yticks(lat_min, lat_max)
 
-    # filled shading
-    n_fill = 25 if vlim >= 100 else 20
-    levels_fill = np.linspace(-vlim, vlim, n_fill)
-    cf = ax.contourf(LON2D, LAT2D, fplot, levels=levels_fill,
-                     cmap=_chi_cmap(), extend="both", zorder=1, alpha=0.88)
+    # filled shading. A magnitude field (one_sided) is shaded 0→vlim with a
+    # non-negative colormap; a signed anomaly uses the symmetric diverging map.
+    if pkg.get("one_sided"):
+        levels_fill = np.linspace(0.0, vlim, 20)
+        cf = ax.contourf(LON2D, LAT2D, fplot, levels=levels_fill,
+                         cmap=_pos_cmap(), extend="max", zorder=1, alpha=0.88)
+    else:
+        n_fill = 25 if vlim >= 100 else 20
+        levels_fill = np.linspace(-vlim, vlim, n_fill)
+        cf = ax.contourf(LON2D, LAT2D, fplot, levels=levels_fill,
+                         cmap=_chi_cmap(), extend="both", zorder=1, alpha=0.88)
 
     # thin contour lines (solid positive, dashed negative)
-    line_lev = np.arange(-vlim, vlim + 0.01, cint)
+    line_lev = np.arange(0 if pkg.get("one_sided") else -vlim, vlim + 0.01, cint)
     line_lev = line_lev[line_lev != 0]
     ax.contour(LON2D, LAT2D, fplot, levels=line_lev[line_lev > 0],
                colors="#5c3d11", linewidths=0.55, alpha=0.55, zorder=2)
@@ -1007,8 +1315,10 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
 
     # colorbar
     cax = fig.add_axes([0.12, 0.057, 0.760, 0.028])
-    ticks = np.array([round(v, 8) for v in
-                      np.arange(-vlim, vlim + 0.001, cint)])
+    lo = 0.0 if pkg.get("one_sided") else -vlim
+    ticks = np.array([round(v, 8) for v in np.arange(lo, vlim + 0.001, cint)])
+    if pkg.get("one_sided"):
+        ticks = ticks[ticks > 0.0]                 # no negative labels
     ticks = ticks[~np.isclose(ticks, 0.0, atol=cint * 0.01)]   # kill fp noise at 0
     ticks = np.append(0.0, ticks)  # keep an exact 0 label
     ticks = np.unique(ticks)
