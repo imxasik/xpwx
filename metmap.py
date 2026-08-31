@@ -590,14 +590,14 @@ PRODUCTS = {
                "desc": "Moist Static Energy (Cp·T + Lv·q + g·z) anomaly at 850 hPa "
                        "— boundary-layer convective/energetics field.",
                "kind": "mse", "level": 850, "variables": ["air", "rhum", "hgt"],
-               "show_wind": False, "plot_scale": 1e-3,
+               "show_wind": False, "plot_scale": 1e-3, "invert_cbar": True,
                "vlim": 12.0, "cint": 3.0,
                "cb_label": "MSE Anomaly  (×10³ J/kg)"},
     "mse500": {"id": "mse500", "title": "Moist Static Energy Anomaly — 500 hPa",
                "name": "MSE 500", "tag": "Thermo",
                "desc": "Moist Static Energy (Cp·T + Lv·q + g·z) anomaly at 500 hPa.",
                "kind": "mse", "level": 500, "variables": ["air", "rhum", "hgt"],
-               "show_wind": False, "plot_scale": 1e-3,
+               "show_wind": False, "plot_scale": 1e-3, "invert_cbar": True,
                "vlim": 9.0, "cint": 2.0,
                "cb_label": "MSE Anomaly  (×10³ J/kg)"},
 
@@ -1133,15 +1133,24 @@ def _chi_cmap():
     return LinearSegmentedColormap("chi_cmap", cdict, N=512)
 
 
+def _chi_cmap_inv():
+    """Inverse of the diverging map — positive shades cool/blue, negative warm.
+    Used for MSE where the user wants the (usually negative) anomaly to be the
+    warm/brown side, matching the inverted colour convention."""
+    return _chi_cmap().reversed()
+
+
 def _pos_cmap():
-    """White/pale -> warm -> deep brown, for strictly non-negative fields."""
+    """White/pale -> teal -> deep green, for strictly non-negative fields.
+    Used e.g. IVT (atmospheric-river moisture) where green reads as "moist".
+    """
     cdict = {
-        "red":   [(0.0, 0.97, 0.97), (0.40, 0.95, 0.95), (0.70, 0.82, 0.82),
-                  (1.0, 0.45, 0.45)],
-        "green": [(0.0, 0.97, 0.97), (0.40, 0.86, 0.86), (0.70, 0.58, 0.58),
+        "red":   [(0.0, 0.97, 0.97), (0.40, 0.72, 0.72), (0.70, 0.30, 0.30),
+                  (1.0, 0.02, 0.02)],
+        "green": [(0.0, 0.97, 0.97), (0.40, 0.90, 0.90), (0.70, 0.68, 0.68),
+                  (1.0, 0.40, 0.40)],
+        "blue":  [(0.0, 0.97, 0.97), (0.40, 0.82, 0.82), (0.70, 0.45, 0.45),
                   (1.0, 0.20, 0.20)],
-        "blue":  [(0.0, 0.97, 0.97), (0.40, 0.78, 0.78), (0.70, 0.34, 0.34),
-                  (1.0, 0.08, 0.08)],
     }
     return LinearSegmentedColormap("pos_cmap", cdict, N=512)
 
@@ -1203,6 +1212,7 @@ DOMAINS = {
     "east_asia":   {"name": "East Asia",       "box": (100, 150, 20, 55)},
     "europe":      {"name": "Europe",          "box": (340, 50, 30, 70)},
     "asia":        {"name": "Asia",            "box": (40, 160, -10, 70)},
+    "india":       {"name": "India",           "box": (65, 92, 5, 38)},
 }
 
 
@@ -1218,10 +1228,35 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
     LON2D, LAT2D = np.meshgrid(lon, lat)
 
     fig = plt.figure(figsize=(12, 7), facecolor="white")
-    # reserve a clean title band above the axes so the title never overlaps the map
-    ax = fig.add_axes([0.045, 0.145, 0.910, 0.750])
-    ax.set_facecolor("#f4f0e8")
+
     lon_min, lon_max, lat_min, lat_max = _domain_box(domain)
+    # --- dynamic aspect ratio -------------------------------------------------
+    # Size the axes so the box's width:height tracks the domain's real
+    # lon:lat span (with a cos(latitude) correction so it isn't over-wide at
+    # high latitudes). This keeps every domain's map at a consistent,
+    # non-flattened proportion regardless of how narrow/tall the region is.
+    lon_span = lon_max - lon_min
+    if lon_span <= 0:                 # wrapped domain (e.g. Atlantic 300E..60E)
+        lon_span += 360.0
+    lat_span = float(lat_max - lat_min)
+    mean_lat = (lat_min + lat_max) * 0.5
+    aspect = max(0.20, min(3.5, (lon_span * np.cos(np.deg2rad(mean_lat))) / lat_span))
+    fig_w, fig_h = 12.0, 7.0
+    avail_w = (0.96 - 0.04) * fig_w            # horizontal space (inches)
+    avail_h = (0.90 - 0.10) * fig_h            # vertical space (inches)
+    # fit a box with width/height = aspect inside the available area
+    if aspect * avail_h <= avail_w:
+        h_in = avail_h
+        w_in = aspect * h_in
+        bottom = 0.10 + (0.80 - h_in / fig_h) * 0.5   # centre vertically
+        left = 0.04 + (0.92 - w_in / fig_w) * 0.5     # centre horizontally
+    else:
+        w_in = avail_w
+        h_in = w_in / aspect
+        bottom = 0.10 + (0.80 - h_in / fig_h) * 0.5
+        left = 0.04 + (0.92 - w_in / fig_w) * 0.5
+    ax = fig.add_axes([left, bottom, w_in / fig_w, h_in / fig_h])
+    ax.set_facecolor("#f4f0e8")
     ax.set_xlim(lon_min, lon_max)
     ax.set_ylim(lat_min, lat_max)
     # lon ticks can wrap (e.g. Atlantic 300E..60E) -> normalise
@@ -1229,7 +1264,9 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
     yticks = _domain_yticks(lat_min, lat_max)
 
     # filled shading. A magnitude field (one_sided) is shaded 0→vlim with a
-    # non-negative colormap; a signed anomaly uses the symmetric diverging map.
+    # non-negative (green) colormap; a signed anomaly uses the symmetric
+    # diverging map (or its inverse when invert_cbar is set, e.g. MSE).
+    invert = pkg.get("invert_cbar", False)
     if pkg.get("one_sided"):
         levels_fill = np.linspace(0.0, vlim, 20)
         cf = ax.contourf(LON2D, LAT2D, fplot, levels=levels_fill,
@@ -1237,16 +1274,19 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
     else:
         n_fill = 25 if vlim >= 100 else 20
         levels_fill = np.linspace(-vlim, vlim, n_fill)
+        cmap = _chi_cmap_inv() if invert else _chi_cmap()
         cf = ax.contourf(LON2D, LAT2D, fplot, levels=levels_fill,
-                         cmap=_chi_cmap(), extend="both", zorder=1, alpha=0.88)
+                         cmap=cmap, extend="both", zorder=1, alpha=0.88)
 
-    # thin contour lines (solid positive, dashed negative)
+    # thin contour lines (solid positive, dashed negative); swapped when inverted
+    pos_col = "#1b4f6b" if invert else "#5c3d11"
+    neg_col = "#5c3d11" if invert else "#1b4f6b"
     line_lev = np.arange(0 if pkg.get("one_sided") else -vlim, vlim + 0.01, cint)
     line_lev = line_lev[line_lev != 0]
     ax.contour(LON2D, LAT2D, fplot, levels=line_lev[line_lev > 0],
-               colors="#5c3d11", linewidths=0.55, alpha=0.55, zorder=2)
+               colors=pos_col, linewidths=0.55, alpha=0.55, zorder=2)
     ax.contour(LON2D, LAT2D, fplot, levels=line_lev[line_lev < 0],
-               colors="#1b4f6b", linewidths=0.55, linestyles="--",
+               colors=neg_col, linewidths=0.55, linestyles="--",
                alpha=0.55, zorder=2)
 
     # vector overlay — either wind (u,v) or a generic flux (vec_u, vec_v, e.g. WAF)
@@ -1314,7 +1354,10 @@ def render(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
         spine.set_linewidth(0.8)
 
     # colorbar
-    cax = fig.add_axes([0.12, 0.057, 0.760, 0.028])
+    # colour bar spans the same horizontal range as the (dynamically sized) map.
+    cbar_w = min(0.760, (w_in / fig_w))
+    cbar_left = left + (w_in / fig_w) * 0.5 - cbar_w * 0.5
+    cax = fig.add_axes([cbar_left, 0.057, cbar_w, 0.028])
     lo = 0.0 if pkg.get("one_sided") else -vlim
     ticks = np.array([round(v, 8) for v in np.arange(lo, vlim + 0.001, cint)])
     if pkg.get("one_sided"):
