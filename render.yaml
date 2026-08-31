@@ -1,0 +1,13 @@
+# Render.com blueprint — deploys this app automatically on every push.
+# Sign in at https://render.com → "New → Blueprint" and pick this repo, or just
+# create a "Web Service" and point it at this repo (it auto-detects Python).
+services:
+  - type: web
+    name: vp-anomaly-map
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn -b 0.0.0.0:$PORT app:app"
+    envVars:
+      - key: PORT
+        value: 8000
