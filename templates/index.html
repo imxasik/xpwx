@@ -65,24 +65,27 @@
   /* group header row — label left, optional selector right */
   .group-h{
     display:flex;align-items:center;justify-content:space-between;
-    margin:14px 6px 7px;
+    margin:14px 6px 7px;gap:4px;overflow:hidden;
   }
   .group-h-label{
     font-size:10.5px;font-weight:800;letter-spacing:1.4px;
     text-transform:uppercase;color:var(--acc2);
+    flex-shrink:0;
   }
   .group:first-child .group-h{margin-top:0}
 
   /* region/domain mini-select inside the SST group header */
   .sst-domain-sel{
-    font-size:10.5px;font-weight:700;letter-spacing:.3px;
+    font-size:10px;font-weight:700;letter-spacing:.2px;
     border:1px solid var(--line);border-radius:6px;
     background:#fff;color:var(--acc2);
-    padding:3px 6px;cursor:pointer;
-    max-width:108px;
+    padding:2px 2px 2px 4px;cursor:pointer;
+    max-width:80px;width:80px;min-width:0;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    -webkit-appearance:none;appearance:none;
   }
   .sst-domain-sel:focus{outline:2px solid var(--acc2);outline-offset:1px}
-  .sst-sel-group{display:flex;gap:4px;align-items:center}
+  .sst-sel-group{display:flex;gap:3px;align-items:center;flex-shrink:0}
 
   .side-item{border:1px solid var(--line);border-radius:9px;padding:11px 12px;background:#fff;
     cursor:pointer;transition:.12s}
@@ -177,9 +180,9 @@
                       onchange="sstDomainChange(this.value)"
                       title="Select region / domain">
                 <option value="global">🌐 Global</option>
-                <option value="pac">🌊 Pacific</option>
-                <option value="io">🌊 Indian</option>
-                <option value="atl">🌊 Atlantic</option>
+                <option value="pac">🌊 Pac</option>
+                <option value="io">🌊 Ind</option>
+                <option value="atl">🌊 Atl</option>
               </select>
               <select class="sst-domain-sel" id="sst-box"
                       onchange="sstBoxChange(this.value)"
