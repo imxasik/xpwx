@@ -274,7 +274,7 @@ def _render_chi200(lat, lon, data, pkg, coast_segs, dates, out_buf=None, **_kw):
     date_str = (f"{dates[0]:%d %b} – {dates[-1]:%d %b %Y}"
                 if len(dates) > 1 else f"{dates[0]:%d %b %Y}")
     ax.set_title(
-        f"Chi 200 • Wind  ·  {date_str}  ({len(dates)}-day mean)\n"
+        f"Velocity Potential • Wind Anomaly ·  {date_str}  ({len(dates)}-day mean)\n"
         "NCEP/NCAR Reanalysis  ·  Shading: Velocity Potential  |   Arrows: Wind Direction",
         fontsize=15, fontweight="bold", color="#111111", pad=6, loc="center",
     )
