@@ -82,6 +82,7 @@
     max-width:108px;
   }
   .sst-domain-sel:focus{outline:2px solid var(--acc2);outline-offset:1px}
+  .sst-sel-group{display:flex;gap:4px;align-items:center}
 
   .side-item{border:1px solid var(--line);border-radius:9px;padding:11px 12px;background:#fff;
     cursor:pointer;transition:.12s}
@@ -171,14 +172,20 @@
             <span class="group-h-label">{{ g.tag }}</span>
             {% if g.tag == 'SST' %}
             <!-- Region / Domain selector — right side of the SST header -->
-            <select class="sst-domain-sel" id="sst-domain"
-                    onchange="sstDomainChange(this.value)"
-                    title="Select region / domain">
-              <option value="global">🌐 Global</option>
-              <option value="pac">🌊 Pacific</option>
-              <option value="io">🌊 Indian Ocean</option>
-              <option value="atl">🌊 Atlantic</option>
-            </select>
+            <div class="sst-sel-group">
+              <select class="sst-domain-sel" id="sst-domain"
+                      onchange="sstDomainChange(this.value)"
+                      title="Select region / domain">
+                <option value="global">🌐 Global</option>
+                <option value="pac">🌊 Pacific</option>
+                <option value="io">🌊 Indian</option>
+                <option value="atl">🌊 Atlantic</option>
+              </select>
+              <select class="sst-domain-sel" id="sst-box"
+                      onchange="sstBoxChange(this.value)"
+                      title="Select climate-index box">
+              </select>
+            </div>
             {% endif %}
           </div>
 
@@ -254,6 +261,71 @@
   const PROD = {{ products | tojson }};
   const P = id => PROD.find(x => x.id === id);
 
+  // ── SST box options per domain ───────────────────────────────────────────
+  const SST_BOXES = {
+    global: [
+      { value: "none",    label: "— No Box" },
+      { value: "all",     label: "📦 All Boxes" },
+      { value: "nino4",   label: "Niño 4" },
+      { value: "nino3.4", label: "Niño 3.4" },
+      { value: "nino3",   label: "Niño 3" },
+      { value: "nino1+2", label: "Niño 1+2" },
+      { value: "iod_west",label: "WTIO" },
+      { value: "iod_east",label: "SETIO" },
+    ],
+    pac: [
+      { value: "none",    label: "— No Box" },
+      { value: "all",     label: "📦 All Boxes" },
+      { value: "nino4",   label: "Niño 4" },
+      { value: "nino3.4", label: "Niño 3.4" },
+      { value: "nino3",   label: "Niño 3" },
+      { value: "nino1+2", label: "Niño 1+2" },
+    ],
+    io: [
+      { value: "none",     label: "— No Box" },
+      { value: "all",      label: "📦 All Boxes" },
+      { value: "iod_west", label: "WTIO" },
+      { value: "iod_east", label: "SETIO" },
+    ],
+    atl: [
+      { value: "none", label: "— No Box" },
+    ],
+  };
+
+  // Populate the box selector for a given domain
+  function renderSstBoxSel(domain) {
+    const sel = document.getElementById("sst-box");
+    const prev = sel.value;
+    sel.innerHTML = "";
+    (SST_BOXES[domain] || SST_BOXES.global).forEach(opt => {
+      const o = document.createElement("option");
+      o.value = opt.value; o.textContent = opt.label;
+      sel.appendChild(o);
+    });
+    // Restore previous selection if still valid
+    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+  }
+
+  // Handle box selector change — switch product family if needed
+  function sstBoxChange(boxVal) {
+    const domain = document.getElementById("sst-domain").value;
+    // Determine if we should jump to "SST Boxes" or stay on current family
+    const cur = P(current);
+    if (!cur || cur.tag !== "SST") return;
+    // Figure out current family
+    let curFamSuffix = "anom";
+    for (const fam of SST_FAMILIES) {
+      if (sstId(fam.suffix, domain) === current) { curFamSuffix = fam.suffix; break; }
+    }
+    // If user picks a box option while on SST Boxes product, store it; rendering uses pkg.box_region
+    // We encode the chosen box into the product via URL param when fetching
+    window._sstBoxSel = boxVal;
+    // Refresh the current product render if it's an SST product
+    if (cur.tag === "SST" && document.getElementById("img").style.display !== "none") {
+      run();
+    }
+  }
+
   // ── SST product families (in display order) ──────────────────────────────
   const SST_FAMILIES = [
     { suffix: "mean",  label: "SST Mean",    desc: "Absolute sea-surface temperature." },
@@ -284,6 +356,7 @@
   // Handle domain selector change
   function sstDomainChange(domain) {
     renderSstList(domain);
+    renderSstBoxSel(domain);
     // If currently selected product is an SST product, switch to same family in new domain
     const cur = P(current);
     if (cur && cur.tag === "SST") {
@@ -357,8 +430,9 @@
       + (mode==="manual" ? "to "+DATE.value : "auto") + " · " + nd() + "-day";
   }
 
-  // ── initialise SST list ───────────────────────────────────────────────────
+  // ── initialise SST list & box selector ───────────────────────────────────
   renderSstList("global");
+  renderSstBoxSel("global");
 
   const p0 = P(current);
   if(p0){ DL.setAttribute("download", current+".png"); }
