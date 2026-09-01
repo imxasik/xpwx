@@ -256,19 +256,13 @@
 
   // ── SST product families (in display order) ──────────────────────────────
   const SST_FAMILIES = [
-    { suffix: "mean",      label: "SST Mean",      desc: "Absolute sea-surface temperature." },
-    { suffix: "anom",      label: "SST Anomaly",   desc: "SST anomaly vs 1991-2020 climatology." },
-    { suffix: "wind",      label: "SST + Wind",    desc: "Absolute SST with 10-m mean wind vectors." },
-    { suffix: "winda",     label: "SST + WindA",   desc: "Absolute SST with 10-m wind-anomaly vectors." },
-    { suffix: "ssta_wind", label: "SSTa + Wind",   desc: "SST anomaly with 10-m mean wind vectors.", full: true },
-    { suffix: "ssta_winda",label: "SSTa + WindA",  desc: "SST anomaly with 10-m wind-anomaly vectors.", full: true },
-    { suffix: "boxes",     label: "SST Boxes",     desc: "SST anomaly with all climate-index region boxes." },
+    { suffix: "mean",  label: "SST Mean",    desc: "Absolute sea-surface temperature." },
+    { suffix: "anom",  label: "SST Anomaly", desc: "SST anomaly vs 1991-2020 climatology." },
+    { suffix: "boxes", label: "SST Boxes",   desc: "SST anomaly with all climate-index region boxes." },
   ];
 
   // Build product id from family suffix + domain
   function sstId(suffix, domain) {
-    if (suffix === "ssta_wind")  return `ssta_wind_${domain}`;
-    if (suffix === "ssta_winda") return `ssta_winda_${domain}`;
     return `sst_${suffix}_${domain}`;
   }
 
