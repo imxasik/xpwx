@@ -82,6 +82,14 @@
     max-width:108px;
   }
   .sst-domain-sel:focus{outline:2px solid var(--acc2);outline-offset:1px}
+  /* region/domain mini-select inside the TC group header — same UI as SST */
+  .tc-domain-sel{
+    margin-left:auto; min-width:132px; max-width:165px;
+    padding:4px 8px; border:1px solid var(--line); border-radius:7px;
+    background:var(--card); color:var(--ink); font-size:12px; font-weight:600;
+    cursor:pointer;
+  }
+  .tc-domain-sel:focus{outline:2px solid var(--acc2);outline-offset:1px}
 
   .side-item{border:1px solid var(--line);border-radius:9px;padding:11px 12px;background:#fff;
     cursor:pointer;transition:.12s}
@@ -165,7 +173,7 @@
       <h4>PRODUCTS</h4>
       <div class="side-list">
         {% for g in groups %}
-        <div class="group" {% if g.tag == 'SST' %}id="sst-group"{% endif %}>
+        <div class="group" {% if g.tag == 'SST' %}id="sst-group"{% elif g.tag == 'TC' %}id="tc-group"{% endif %}>
 
           <div class="group-h">
             <span class="group-h-label">{{ g.tag }}</span>
@@ -179,12 +187,28 @@
               <option value="io">🌊 Indian Ocean</option>
               <option value="atl">🌊 Atlantic</option>
             </select>
+            {% elif g.tag == 'TC' %}
+            <!-- Region / Domain selector — right side of the TC header; same pattern as SST -->
+            <select class="tc-domain-sel" id="tc-domain"
+                    onchange="tcDomainChange(this.value)"
+                    title="Select region / domain">
+              <option value="global">🌐 Global</option>
+              <option value="io">🌊 Indian Ocean</option>
+              <option value="wp">🌊 W. Pacific</option>
+              <option value="cp">🌊 C. Pacific</option>
+              <option value="ep">🌊 E. Pacific</option>
+              <option value="atl">🌊 Atlantic</option>
+            </select>
             {% endif %}
           </div>
 
           {% if g.tag == 'SST' %}
           <!-- SST product list — rendered by JS based on domain selection -->
           <div id="sst-product-list"></div>
+
+          {% elif g.tag == 'TC' %}
+          <!-- TC product list — rendered by JS based on domain selection -->
+          <div id="tc-product-list"></div>
 
           {% else %}
           {% for p in g.product_list %}
@@ -300,6 +324,52 @@
 
   let _lastDomain = "global";
 
+  // ── TC product families (same index.html-driven pattern as SST) ───────────
+  const TC_FAMILIES = [
+    { suffix: "chi200", label: "Chi 200 • Wind", desc: "200-hPa velocity-potential anomaly with divergent-wind direction." },
+    { suffix: "vwsa",   label: "VWS Anomaly",   desc: "850–200 hPa vertical wind shear anomaly." },
+    { suffix: "vws",    label: "VWS Total",     desc: "850–200 hPa total vertical wind shear." },
+    { suffix: "shear",  label: "Wind Shear",    desc: "850–200 hPa directional wind shear anomaly." },
+    { suffix: "lift",   label: "Instability",    desc: "850–200 hPa atmospheric instability anomaly." },
+    { suffix: "mid",    label: "Wave Trend",    desc: "700–500 hPa CCKW/MJO wave trend." },
+  ];
+
+  function tcId(suffix, domain) {
+    return `${suffix}_${domain}`;
+  }
+
+  function renderTcList(domain) {
+    const container = document.getElementById("tc-product-list");
+    if (!container) return;
+    container.innerHTML = "";
+    TC_FAMILIES.forEach(fam => {
+      const pid = tcId(fam.suffix, domain);
+      if (!P(pid)) return; // only show products actually registered by custom/tc.py
+      const div = document.createElement("div");
+      div.className = "side-item" + (pid === current ? " active" : "");
+      div.dataset.id = pid;
+      div.onclick = () => pick(pid);
+      div.innerHTML = `<div class="nm">${fam.label}</div><div class="ds">${fam.desc}</div>`;
+      container.appendChild(div);
+    });
+  }
+
+  function tcDomainChange(domain) {
+    renderTcList(domain);
+    const cur = P(current);
+    if (cur && cur.tag === "TC") {
+      let newId = null;
+      for (const fam of TC_FAMILIES) {
+        const oldId = tcId(fam.suffix, _lastTcDomain || "global");
+        if (oldId === current) { newId = tcId(fam.suffix, domain); break; }
+      }
+      if (newId && P(newId)) { pick(newId); }
+    }
+    _lastTcDomain = domain;
+  }
+
+  let _lastTcDomain = "global";
+
   // ── mobile menu ───────────────────────────────────────────────────────────
   function toggleMenu(){ document.body.classList.toggle("menu-open"); }
   function closeMenu(){ document.body.classList.remove("menu-open"); }
@@ -357,8 +427,9 @@
       + (mode==="manual" ? "to "+DATE.value : "auto") + " · " + nd() + "-day";
   }
 
-  // ── initialise SST list ───────────────────────────────────────────────────
+  // ── initialise SST / TC lists ─────────────────────────────────────────────
   renderSstList("global");
+  renderTcList("global");
 
   const p0 = P(current);
   if(p0){ DL.setAttribute("download", current+".png"); }
