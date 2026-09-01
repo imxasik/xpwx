@@ -381,7 +381,7 @@ def custom_kind_configured(kind):
     return kind in addons.custom_kinds()
 
 
-GROUP_ORDER = ["Upper", "Mid", "Low", "Dynamics", "Thermo",
+GROUP_ORDER = ["Upper", "Mid", "Low", "TC", "Dynamics", "Thermo",
                "Moisture", "Torque", "Flow", "Advanced", "Surface",
                "Hovmöller", "Custom"]
 
