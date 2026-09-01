@@ -43,8 +43,8 @@ _INDEX_BOXES = {
     "nino3.4":  {"name": "Niño 3.4",    "lon": (190, 240),  "lat": (-5,  5)},
     "nino3":    {"name": "Niño 3",      "lon": (210, 270),  "lat": (-5,  5)},
     "nino1+2":  {"name": "Niño 1+2",    "lon": (270, 280),  "lat": (-10, 0)},
-    "iod_west": {"name": "WTIO (IOD)",  "lon": (50,   70),  "lat": (-10, 10)},
-    "iod_east": {"name": "SETIO (IOD)", "lon": (90,  110),  "lat": (-10, 0)},
+    "iod_west": {"name": "WIO",  "lon": (50,   70),  "lat": (-10, 10)},
+    "iod_east": {"name": "SEIO", "lon": (90,  110),  "lat": (-10, 0)},
 }
 
 # ── region bounds: (lon_min, lon_max, lat_min, lat_max) ─────────────────────
@@ -318,7 +318,6 @@ def _render_sst(lat, lon, data, pkg, coast_segs, dates, out_buf=None, **_kw):
         ax.axvline(x, color="#a6b1c2", lw=0.45, ls="--", zorder=0)
     for y in range(-80, 81, dy):
         ax.axhline(y, color="#a6b1c2", lw=0.45, ls="--", zorder=0)
-    ax.axhline(0, color="#2c3e50", lw=0.95, zorder=0)
 
     # ── ticks ────────────────────────────────────────────────────────────────
     xticks = (list(range(280, 381, dx)) if region.lower() == "atl"
