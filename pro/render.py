@@ -455,21 +455,6 @@ def render_rossby(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
     cax.text(0.5, -1.55, cb_lbl, transform=cax.transAxes, ha="center",
              va="top", fontsize=12, color="#222211", fontstyle="italic")
 
-    # legend
-    from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
-    handles = [
-        Patch(facecolor="#2e8b57", alpha=0.7, label="χ′ source (divergence)"),
-        Patch(facecolor="#8b5a2b", alpha=0.7, label="χ′ suppressed"),
-        Line2D([0], [0], color="#c0392b", lw=2, label="ψ′ ridge (anticyclonic)"),
-        Line2D([0], [0], color="#1e2f9c", lw=2, ls="--", label="ψ′ trough (cyclonic)"),
-        Line2D([0], [0], color="#111111", lw=2, marker=">", label="T–N flux"),
-        Patch(facecolor="#3b0f98", alpha=0.25, label=f"Ks≥{ks_thr:g} waveguide"),
-    ]
-    ax.legend(handles=handles, loc="lower left", fontsize=7.8, framealpha=0.94,
-              edgecolor="#ccccbb", handlelength=1.5, ncol=2,
-              bbox_to_anchor=(0.005, 0.055))
-
     if title is None:
         ttext = (f"{pkg['title']}  ·  {dates[0]:%-d %b} – {dates[-1]:%-d %b %Y}"
                  f"  ({len(dates)}-day mean)")
