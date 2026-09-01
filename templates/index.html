@@ -309,31 +309,23 @@
     if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
   }
 
-  // Handle box selector change — switch product family if needed
+  // Handle box selector change
   function sstBoxChange(boxVal) {
     const domain = document.getElementById("sst-domain").value;
-    // Determine if we should jump to "SST Boxes" or stay on current family
     const cur = P(current);
     if (!cur || cur.tag !== "SST") return;
-    // Figure out current family
-    let curFamSuffix = "anom";
-    for (const fam of SST_FAMILIES) {
-      if (sstId(fam.suffix, domain) === current) { curFamSuffix = fam.suffix; break; }
-    }
-    // If user picks a box option while on SST Boxes product, store it; rendering uses pkg.box_region
-    // We encode the chosen box into the product via URL param when fetching
-    window._sstBoxSel = boxVal;
-    // Refresh the current product render if it's an SST product
-    if (cur.tag === "SST" && document.getElementById("img").style.display !== "none") {
-      run();
-    }
+    // Stay on anom family; box_region is sent as extra param to backend
+    const famSuffix = current.startsWith("sst_mean_") ? "mean" : "anom";
+    const targetId = sstId(famSuffix, domain);
+    if (current !== targetId) { current = targetId; }
+    // Re-render with the new box selection
+    run();
   }
 
   // ── SST product families (in display order) ──────────────────────────────
   const SST_FAMILIES = [
     { suffix: "mean",  label: "SST Mean",    desc: "Absolute sea-surface temperature." },
     { suffix: "anom",  label: "SST Anomaly", desc: "SST anomaly vs 1991-2020 climatology." },
-    { suffix: "boxes", label: "SST Boxes",   desc: "SST anomaly with all climate-index region boxes." },
   ];
 
   // Build product id from family suffix + domain
@@ -395,7 +387,8 @@
     DATE.disabled = m === "auto";
   }
   function key(){
-    return JSON.stringify({p:current, m:mode, d:DATE.value||null, n:+nd()});
+    const box = document.getElementById("sst-box") ? document.getElementById("sst-box").value : "none";
+    return JSON.stringify({p:current, m:mode, d:DATE.value||null, n:+nd(), box});
   }
   function nd(){ return parseInt(document.getElementById("ndays").value,10)||5; }
 
@@ -412,6 +405,8 @@
 
     const body = { product: current, mode, n_days: ndv };
     if (mode === "manual") body.date = DATE.value;
+    const boxEl = document.getElementById("sst-box");
+    if (boxEl) body.box_region = boxEl.value;
 
     try{
       const r = await fetch("/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -429,7 +424,12 @@
     IMG.src = url; IMG.style.display = "block";
     DL.href = url; DL.style.display = "inline-block";
     const p = P(current);
-    META.innerHTML = "<b>" + (p ? p.name : current) + "</b> · "
+    const boxEl = document.getElementById("sst-box");
+    const boxVal = boxEl ? boxEl.value : "none";
+    const boxLabel = boxEl && boxVal !== "none"
+      ? (" · " + (boxEl.options[boxEl.selectedIndex]?.text || boxVal)) : "";
+    META.innerHTML = "<b>" + (p ? p.name : current) + "</b>"
+      + boxLabel + " · "
       + (mode==="manual" ? "to "+DATE.value : "auto") + " · " + nd() + "-day";
   }
 
