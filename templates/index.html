@@ -65,27 +65,23 @@
   /* group header row — label left, optional selector right */
   .group-h{
     display:flex;align-items:center;justify-content:space-between;
-    margin:14px 6px 7px;gap:4px;overflow:hidden;
+    margin:14px 6px 7px;
   }
   .group-h-label{
     font-size:10.5px;font-weight:800;letter-spacing:1.4px;
     text-transform:uppercase;color:var(--acc2);
-    flex-shrink:0;
   }
   .group:first-child .group-h{margin-top:0}
 
   /* region/domain mini-select inside the SST group header */
   .sst-domain-sel{
-    font-size:10px;font-weight:700;letter-spacing:.2px;
+    font-size:10.5px;font-weight:700;letter-spacing:.3px;
     border:1px solid var(--line);border-radius:6px;
     background:#fff;color:var(--acc2);
-    padding:2px 2px 2px 4px;cursor:pointer;
-    max-width:80px;width:80px;min-width:0;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-    -webkit-appearance:none;appearance:none;
+    padding:3px 6px;cursor:pointer;
+    max-width:108px;
   }
   .sst-domain-sel:focus{outline:2px solid var(--acc2);outline-offset:1px}
-  .sst-sel-group{display:flex;gap:3px;align-items:center;flex-shrink:0}
 
   .side-item{border:1px solid var(--line);border-radius:9px;padding:11px 12px;background:#fff;
     cursor:pointer;transition:.12s}
@@ -175,20 +171,14 @@
             <span class="group-h-label">{{ g.tag }}</span>
             {% if g.tag == 'SST' %}
             <!-- Region / Domain selector — right side of the SST header -->
-            <div class="sst-sel-group">
-              <select class="sst-domain-sel" id="sst-domain"
-                      onchange="sstDomainChange(this.value)"
-                      title="Select region / domain">
-                <option value="global">🌐 Global</option>
-                <option value="pac">🌊 Pac</option>
-                <option value="io">🌊 Ind</option>
-                <option value="atl">🌊 Atl</option>
-              </select>
-              <select class="sst-domain-sel" id="sst-box"
-                      onchange="sstBoxChange(this.value)"
-                      title="Select climate-index box">
-              </select>
-            </div>
+            <select class="sst-domain-sel" id="sst-domain"
+                    onchange="sstDomainChange(this.value)"
+                    title="Select region / domain">
+              <option value="global">🌐 Global</option>
+              <option value="pac">🌊 Pacific</option>
+              <option value="io">🌊 Indian Ocean</option>
+              <option value="atl">🌊 Atlantic</option>
+            </select>
             {% endif %}
           </div>
 
@@ -264,68 +254,11 @@
   const PROD = {{ products | tojson }};
   const P = id => PROD.find(x => x.id === id);
 
-  // ── SST box options per domain ───────────────────────────────────────────
-  const SST_BOXES = {
-    global: [
-      { value: "none",    label: "— No Box" },
-      { value: "all",     label: "📦 All Boxes" },
-      { value: "nino4",   label: "Niño 4" },
-      { value: "nino3.4", label: "Niño 3.4" },
-      { value: "nino3",   label: "Niño 3" },
-      { value: "nino1+2", label: "Niño 1+2" },
-      { value: "iod_west",label: "WTIO" },
-      { value: "iod_east",label: "SETIO" },
-    ],
-    pac: [
-      { value: "none",    label: "— No Box" },
-      { value: "all",     label: "📦 All Boxes" },
-      { value: "nino4",   label: "Niño 4" },
-      { value: "nino3.4", label: "Niño 3.4" },
-      { value: "nino3",   label: "Niño 3" },
-      { value: "nino1+2", label: "Niño 1+2" },
-    ],
-    io: [
-      { value: "none",     label: "— No Box" },
-      { value: "all",      label: "📦 All Boxes" },
-      { value: "iod_west", label: "WTIO" },
-      { value: "iod_east", label: "SETIO" },
-    ],
-    atl: [
-      { value: "none", label: "— No Box" },
-    ],
-  };
-
-  // Populate the box selector for a given domain
-  function renderSstBoxSel(domain) {
-    const sel = document.getElementById("sst-box");
-    const prev = sel.value;
-    sel.innerHTML = "";
-    (SST_BOXES[domain] || SST_BOXES.global).forEach(opt => {
-      const o = document.createElement("option");
-      o.value = opt.value; o.textContent = opt.label;
-      sel.appendChild(o);
-    });
-    // Restore previous selection if still valid
-    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
-  }
-
-  // Handle box selector change
-  function sstBoxChange(boxVal) {
-    const domain = document.getElementById("sst-domain").value;
-    const cur = P(current);
-    if (!cur || cur.tag !== "SST") return;
-    // Stay on anom family; box_region is sent as extra param to backend
-    const famSuffix = current.startsWith("sst_mean_") ? "mean" : "anom";
-    const targetId = sstId(famSuffix, domain);
-    if (current !== targetId) { current = targetId; }
-    // Re-render with the new box selection
-    run();
-  }
-
   // ── SST product families (in display order) ──────────────────────────────
   const SST_FAMILIES = [
     { suffix: "mean",  label: "SST Mean",    desc: "Absolute sea-surface temperature." },
     { suffix: "anom",  label: "SST Anomaly", desc: "SST anomaly vs 1991-2020 climatology." },
+    { suffix: "boxes", label: "SST Boxes",   desc: "SST anomaly with all climate-index region boxes." },
   ];
 
   // Build product id from family suffix + domain
@@ -351,7 +284,6 @@
   // Handle domain selector change
   function sstDomainChange(domain) {
     renderSstList(domain);
-    renderSstBoxSel(domain);
     // If currently selected product is an SST product, switch to same family in new domain
     const cur = P(current);
     if (cur && cur.tag === "SST") {
@@ -387,8 +319,7 @@
     DATE.disabled = m === "auto";
   }
   function key(){
-    const box = document.getElementById("sst-box") ? document.getElementById("sst-box").value : "none";
-    return JSON.stringify({p:current, m:mode, d:DATE.value||null, n:+nd(), box});
+    return JSON.stringify({p:current, m:mode, d:DATE.value||null, n:+nd()});
   }
   function nd(){ return parseInt(document.getElementById("ndays").value,10)||5; }
 
@@ -405,8 +336,6 @@
 
     const body = { product: current, mode, n_days: ndv };
     if (mode === "manual") body.date = DATE.value;
-    const boxEl = document.getElementById("sst-box");
-    if (boxEl) body.box_region = boxEl.value;
 
     try{
       const r = await fetch("/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -424,18 +353,12 @@
     IMG.src = url; IMG.style.display = "block";
     DL.href = url; DL.style.display = "inline-block";
     const p = P(current);
-    const boxEl = document.getElementById("sst-box");
-    const boxVal = boxEl ? boxEl.value : "none";
-    const boxLabel = boxEl && boxVal !== "none"
-      ? (" · " + (boxEl.options[boxEl.selectedIndex]?.text || boxVal)) : "";
-    META.innerHTML = "<b>" + (p ? p.name : current) + "</b>"
-      + boxLabel + " · "
+    META.innerHTML = "<b>" + (p ? p.name : current) + "</b> · "
       + (mode==="manual" ? "to "+DATE.value : "auto") + " · " + nd() + "-day";
   }
 
-  // ── initialise SST list & box selector ───────────────────────────────────
+  // ── initialise SST list ───────────────────────────────────────────────────
   renderSstList("global");
-  renderSstBoxSel("global");
 
   const p0 = P(current);
   if(p0){ DL.setAttribute("download", current+".png"); }
