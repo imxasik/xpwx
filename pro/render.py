@@ -102,6 +102,42 @@ def _lat_runs(mask, lat):
             i += 1
     return runs
 
+def _psi_centers(psi, lat, lon, hl_min, window=5, sep=None):
+    """Detect the centres of a wave-train streamfunction field.
+
+    Local maxima of psi (psi>0, anticyclonic) are labelled 'H'; local minima
+    (psi<0, cyclonic) are labelled 'L'. Only centres with |psi| >= hl_min inside
+    |lat|<=80 are kept; close-together detections are suppressed (sep = minimum
+    grid-point spacing), so one marker per circulation cell is returned.
+    Returns [(lon, lat, 'H'), (lon, lat, 'L'), ...].
+    """
+    from scipy.ndimage import maximum_filter, minimum_filter
+    p = np.nan_to_num(psi, nan=0.0)
+    nlon = p.shape[1]
+    lats = np.repeat(lat[:, None], nlon, axis=1)  # (nlat, nlon) for indexing
+    ok2 = np.abs(lats) <= 80.0
+    if sep is None:
+        sep = window // 2 + 1
+    dl = abs(float(np.mean(np.diff(lon))))
+    da = abs(float(np.mean(np.diff(lat))))
+
+    def pick(mask, label):
+        pts = [(float(lon[j]), float(lat[i]), label)
+               for i, j in zip(*np.where(mask)) if ok2[i, j]]
+        # greedy de-duplication: drop any point too close to an accepted one
+        kept = []
+        for x, y, lab in pts:
+            if all(abs(x - kx) > sep * dl or abs(y - ky) > sep * da
+                   for kx, ky, _ in kept):
+                kept.append((x, y, lab))
+        return kept
+
+    mx = maximum_filter(p, size=window)
+    out = pick((p == mx) & (p >= hl_min), "H")
+    mn = minimum_filter(p, size=window)
+    out += pick((p == mn) & (p <= -hl_min), "L")
+    return out
+
 def _draw_axis(ax, lon_min, lon_max, lat_min, lat_max):
     """Shared map-frame cosmetics (gridlines, ticks, spines) for the global frame."""
     xticks = _domain_xticks(lon_min, lon_max)
@@ -405,7 +441,9 @@ def render_rossby(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
     cf = ax.contourf(LON2D, LAT2D, chi, levels=levels_fill,
                      cmap=_source_cmap(), extend="both", zorder=1, alpha=0.9)
 
-    # (2) ψ′ wave-train contours (firebrick solid = anticyclonic, blue dashed = cyclonic)
+    # (2) ψ′ wave-train contours. Consistent convention in BOTH hemispheres:
+    #     firebrick solid = ridge / anticyclonic (H), blue dashed = trough /
+    #     cyclonic (L).
     pstep = pkg["psi_interval"]
     pvlim = pkg["psi_vlim"]
     plev = np.arange(-pvlim, pvlim + 0.01, pstep)
@@ -414,6 +452,17 @@ def render_rossby(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
                linewidths=1.0, alpha=0.95, zorder=3)
     ax.contour(LON2D, LAT2D, psi, levels=plev[plev < 0], colors="#1e2f9c",
                linewidths=1.0, linestyles="--", alpha=0.95, zorder=3)
+
+    # (2b) H / L centre labels at the wave-train circulation cells.
+    # Matches the contour convention everywhere: H = ridge (firebrick),
+    # L = trough (royal-blue), in both hemispheres.
+    hl_min = pkg.get("hl_min", 0.35 * pvlim)
+    for cx, cy, lab in _psi_centers(psi, lat, lon, hl_min):
+        col = "#c0392b" if lab == "H" else "#1e2f9c"
+        ax.text(cx, cy, lab, color=col, fontsize=11, fontweight="bold",
+                ha="center", va="center", zorder=8,
+                bbox=dict(boxstyle="circle,pad=0.06", fc="white",
+                          ec="none", alpha=0.85, lw=0))
 
     # (3) Takaya–Nakamura wave-activity flux (black arrows)
     step = pkg.get("vec_step", 5)
@@ -428,14 +477,6 @@ def render_rossby(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
               scale=vscale, scale_units="inches", width=0.0020,
               headwidth=4.5, headlength=5.5, headaxislength=4.8,
               minshaft=1.2, pivot="middle", zorder=6, alpha=0.95)
-    # reference arrow in a clean spot (southern Indian Ocean, ~20°E · 22°S)
-    rx, ry = 20.0, -24.0
-    ax.quiver(rx, ry, pkg.get("vec_ref", 50.0), 0, color="#111111",
-              scale=vscale, scale_units="inches", width=0.0020,
-              headwidth=4.5, headlength=5.5, headaxislength=4.8,
-              pivot="tail", zorder=9)
-    ax.text(rx + 8.0, ry, pkg.get("vec_unit", "5×10⁵ m²/s²"),
-            fontsize=8, color="#111111", ha="left", va="center", zorder=9)
 
     _draw_coasts(ax, coast_segs)
     _draw_axis(ax, lon_min, lon_max, lat_min, lat_max)
