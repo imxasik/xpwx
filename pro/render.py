@@ -103,39 +103,51 @@ def _lat_runs(mask, lat):
     return runs
 
 def _psi_centers(psi, lon2d, lat2d, levels):
-    """Detect enclosed circulation centres from CLOSED contour loops.
+    """Detect rounded, enclosed circulation centres.
 
     Uses matplotlib's own contour polylines of the streamfunction field (at the
     same levels the map draws, ``levels``) and keeps only loops whose path is
-    closed (first point ~ last point) and does not run off the map edge. Open
-    ridges/troughs are ignored, so an H/L marker is placed only where a cell is
-    genuinely enclosed by a fully closed, rounded contour. This avoids an extra
-    ``scikit-image`` dependency.
+    closed (first point ~ last point), does not run off the map edge, AND is
+    genuinely ROUND (isoperimetric circularity >= ``min_circ``). This rejects
+    elongated crescent-like troughs that are technically closed but do not wrap
+    a compact circulation cell (e.g. the coastal trough near Alaska), so H/L
+    appears only at cells enclosed by fully rounded contours. It also avoids an
+    extra ``scikit-image`` dependency.
 
     Returns [(lon, lat, 'H'), (lon, lat, 'L'), ...], one marker per distinct
-    cell (deduped at 5 grid cells).
+    cell (deduped at 5 grid cells, innermost loop preferred).
     """
     import matplotlib.pyplot as plt
+    min_circ = 0.55
     # throw-away figure only to obtain the contour polylines (cheap, no draw)
     fig, ax = plt.subplots()
     cs = ax.contour(lon2d, lat2d, np.nan_to_num(psi, nan=0.0), levels=levels)
     plt.close(fig)
-    # cs.allsegs[i] = list of polylines (each (N,2) as (lon, lat)) for levels[i]
     lon_raw = lon2d[0, :]
     lat_raw = lat2d[:, 0]
     nlon = lon_raw.size
     lon_max = float(lon_raw.max())
-    markers = []
-    seen = []  # accepted cell centres, for de-duplication
     dl = abs(float(np.mean(np.diff(lon_raw))))
     da = abs(float(np.mean(np.diff(lat_raw))))
 
+    def circularity(x, y):
+        # map aspect: scale longitude by cos(lat) so a circle stays a circle
+        scale = np.cos(np.deg2rad(float(np.mean(y))))
+        xs = x * scale
+        ys = y
+        area = 0.5 * abs(np.dot(xs, np.roll(ys, -1)) - np.dot(np.roll(xs, -1), ys))
+        xr = np.append(xs, xs[0]); yr = np.append(ys, ys[0])
+        per = float(np.sum(np.sqrt(np.diff(xr) ** 2 + np.diff(yr) ** 2)))
+        return 4 * np.pi * area / (per * per) if per > 0 else 0.0
+
+    # collect every eligible closed loop with its (innermost-first) rank info
+    cands = []
     for lev, segs in zip(levels, cs.allsegs):
         sign = 1 if lev > 0 else -1
         if abs(lev) < 1e-6:
             continue
         for seg in segs:
-            if seg.shape[0] < 3:
+            if seg.shape[0] < 8:
                 continue
             xs, ys = seg[:, 0], seg[:, 1]
             # closed path? first point ~ last point
@@ -147,15 +159,37 @@ def _psi_centers(psi, lon2d, lat2d, levels):
                 continue
             if xs.min() <= lon_raw.min() or xs.max() >= lon_max:
                 continue
-            # centre = mean of the polyline
-            lon_c = float(np.mean(xs))
-            lat_c = float(np.mean(ys))
-            # de-duplicate & skip if it overlaps an accepted cell (5 grid cells)
-            if any(abs(lon_c - kx) < 5 * dl and abs(lat_c - ky) < 5 * da
-                   for kx, ky, _ in seen):
-                continue
-            seen.append((lon_c, lat_c, "H" if sign > 0 else "L"))
-            markers.append((lon_c, lat_c, "H" if sign > 0 else "L"))
+            # area of the loop (rough proxy for size, innermost = smallest)
+            scale = np.cos(np.deg2rad(float(np.mean(ys))))
+            ax_ = xs * scale
+            area = 0.5 * abs(np.dot(ax_, np.roll(ys, -1)) - np.dot(np.roll(ax_, -1), ys))
+            circ = circularity(xs, ys)
+            cands.append((area, circ, float(np.mean(xs)), float(np.mean(ys)),
+                          "H" if sign > 0 else "L"))
+
+    # prefer the innermost (smallest) loop of each cell; a cell is only accepted
+    # if that innermost loop is round enough, so crescents are never labelled.
+    cands.sort(key=lambda c: c[0])
+    markers = []
+    seen = []      # accepted centres, for de-duplication
+    blocked = []   # centres rejected for being non-round (don't let outer loops in)
+    for area, circ, cx, cy, lab in cands:
+        # reject elongated crescents
+        if circ < min_circ:
+            # remember the location so an outer loop of the same cell can't win
+            if all(abs(cx - kx) >= 5 * dl or abs(cy - ky) >= 5 * da
+                   for kx, ky in blocked):
+                blocked.append((cx, cy))
+            continue
+        # already accepted or rejected near here?
+        if any(abs(cx - kx) < 5 * dl and abs(cy - ky) < 5 * da
+               for kx, ky, _ in seen):
+            continue
+        if any(abs(cx - kx) < 5 * dl and abs(cy - ky) < 5 * da
+               for kx, ky in blocked):
+            continue
+        seen.append((cx, cy, lab))
+        markers.append((cx, cy, lab))
     return markers
 
 def _draw_axis(ax, lon_min, lon_max, lat_min, lat_max):
