@@ -381,9 +381,9 @@ def custom_kind_configured(kind):
     return kind in addons.custom_kinds()
 
 
-GROUP_ORDER = ["Upper", "Mid", "Low", "TC", "Dynamics", "Thermo",
+GROUP_ORDER = ["Upper", "Mid", "Low", "Dynamics", "Thermo",
                "Moisture", "Torque", "Flow", "Advanced", "Surface",
-               "Hovmöller", "Custom"]
+               "Hovmöller", "Custom", "TC"]
 
 def list_products():
     return [{"id": p["id"], "title": p["title"], "name": p["name"],
