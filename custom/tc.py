@@ -943,42 +943,42 @@ PRODUCTS = {}
 
 for _rid, _rname in _TC_REGIONS:
     PRODUCTS[f"chi200_{_rid}"] = {
-        "id": f"chi200_{_rid}", "tag": "TC Related",
-        "title": f"Chi200 Anomaly · {_rname}",
-        "name":  f"Chi200 · {_rname}",
+        "id": f"chi200_{_rid}", "tag": "TC",
+        "title": f"Chi 200 • Wind · {_rname}",
+        "name":  f"Chi 200 • Wind · {_rname}",
         "desc":  f"200 hPa velocity-potential anomaly ({_rname}).",
         "kind": "tc_chi", "level": 200, "region": _rid,
     }
     PRODUCTS[f"vwsa_{_rid}"] = {
-        "id": f"vwsa_{_rid}", "tag": "TC Related",
+        "id": f"vwsa_{_rid}", "tag": "TC",
         "title": f"VWS Anomaly · {_rname}",
         "name":  f"VWS Anom · {_rname}",
         "desc":  f"850–200 hPa vertical wind shear anomaly ({_rname}).",
         "kind": "tc_vwsa", "level": None, "region": _rid,
     }
     PRODUCTS[f"vws_{_rid}"] = {
-        "id": f"vws_{_rid}", "tag": "TC Related",
+        "id": f"vws_{_rid}", "tag": "TC",
         "title": f"VWS Total · {_rname}",
         "name":  f"VWS Total · {_rname}",
         "desc":  f"850–200 hPa total vertical wind shear ({_rname}).",
         "kind": "tc_vws", "level": None, "region": _rid,
     }
     PRODUCTS[f"shear_{_rid}"] = {
-        "id": f"shear_{_rid}", "tag": "TC Related",
+        "id": f"shear_{_rid}", "tag": "TC",
         "title": f"Wind Shear · {_rname}",
         "name":  f"Shear · {_rname}",
         "desc":  f"850–200 hPa directional wind shear anomaly ({_rname}).",
         "kind": "tc_shear", "level": None, "region": _rid,
     }
     PRODUCTS[f"lift_{_rid}"] = {
-        "id": f"lift_{_rid}", "tag": "TC Related",
+        "id": f"lift_{_rid}", "tag": "TC",
         "title": f"Instability Anomaly · {_rname}",
         "name":  f"Instability · {_rname}",
         "desc":  f"850–200 hPa atmospheric instability anomaly ({_rname}).",
         "kind": "tc_lift", "level": None, "region": _rid,
     }
     PRODUCTS[f"mid_{_rid}"] = {
-        "id": f"mid_{_rid}", "tag": "TC Related",
+        "id": f"mid_{_rid}", "tag": "TC",
         "title": f"Wave Trend · {_rname}",
         "name":  f"Wave Trend · {_rname}",
         "desc":  f"700–500 hPa CCKW/MJO wave trend ({_rname}).",
@@ -988,10 +988,10 @@ for _rid, _rname in _TC_REGIONS:
 
 # ── Kind registration ─────────────────────────────────────────────────────────
 KINDS = {
-    "tc_chi":   {"compute": _compute_chi,   "render": _render_chi,   "tag": "TC Related"},
-    "tc_vwsa":  {"compute": _compute_vwsa,  "render": _render_shear, "tag": "TC Related"},
-    "tc_vws":   {"compute": _compute_vws,   "render": _render_shear, "tag": "TC Related"},
-    "tc_shear": {"compute": _compute_shear, "render": _render_shear, "tag": "TC Related"},
-    "tc_lift":  {"compute": _compute_lift,  "render": _render_lift,  "tag": "TC Related"},
-    "tc_mid":   {"compute": _compute_mid,   "render": _render_mid,   "tag": "TC Related"},
+    "tc_chi":   {"compute": _compute_chi,   "render": _render_chi,   "tag": "TC"},
+    "tc_vwsa":  {"compute": _compute_vwsa,  "render": _render_shear, "tag": "TC"},
+    "tc_vws":   {"compute": _compute_vws,   "render": _render_shear, "tag": "TC"},
+    "tc_shear": {"compute": _compute_shear, "render": _render_shear, "tag": "TC"},
+    "tc_lift":  {"compute": _compute_lift,  "render": _render_lift,  "tag": "TC"},
+    "tc_mid":   {"compute": _compute_mid,   "render": _render_mid,   "tag": "TC"},
 }
