@@ -102,66 +102,60 @@ def _lat_runs(mask, lat):
             i += 1
     return runs
 
-def _psi_centers(psi, lat, lon, levels):
+def _psi_centers(psi, lon2d, lat2d, levels):
     """Detect enclosed circulation centres from CLOSED contour loops.
 
-    Uses the actual contour polylines of the streamfunction field (at the same
-    levels the map draws, ``levels``) and keeps only loops that form closed,
-    rounded paths not touching the map edge. Open ridges/troughs are ignored,
-    so an H/L marker is placed only where a cell is genuinely enclosed by a
-    fully closed contour. Longitudes are wrapped so a loop spanning the
-    dateline stays whole.
+    Uses matplotlib's own contour polylines of the streamfunction field (at the
+    same levels the map draws, ``levels``) and keeps only loops whose path is
+    closed (first point ~ last point) and does not run off the map edge. Open
+    ridges/troughs are ignored, so an H/L marker is placed only where a cell is
+    genuinely enclosed by a fully closed, rounded contour. This avoids an extra
+    ``scikit-image`` dependency.
 
     Returns [(lon, lat, 'H'), (lon, lat, 'L'), ...], one marker per distinct
     cell (deduped at 5 grid cells).
     """
-    from skimage import measure
-    p = np.nan_to_num(psi, nan=0.0)
-    nlon = p.shape[1]
-    # wrap longitude so a loop crossing 0/360 stays one closed path
-    pw = np.concatenate([p[:, -1:], p, p[:, 0:1]], axis=1)
+    import matplotlib.pyplot as plt
+    # throw-away figure only to obtain the contour polylines (cheap, no draw)
+    fig, ax = plt.subplots()
+    cs = ax.contour(lon2d, lat2d, np.nan_to_num(psi, nan=0.0), levels=levels)
+    plt.close(fig)
+    # cs.allsegs[i] = list of polylines (each (N,2) as (lon, lat)) for levels[i]
+    lon_raw = lon2d[0, :]
+    lat_raw = lat2d[:, 0]
+    nlon = lon_raw.size
+    lon_max = float(lon_raw.max())
     markers = []
     seen = []  # accepted cell centres, for de-duplication
-    dl = abs(float(np.mean(np.diff(lon))))
-    da = abs(float(np.mean(np.diff(lat))))
+    dl = abs(float(np.mean(np.diff(lon_raw))))
+    da = abs(float(np.mean(np.diff(lat_raw))))
 
-    for lev in levels:
+    for lev, segs in zip(levels, cs.allsegs):
         sign = 1 if lev > 0 else -1
         if abs(lev) < 1e-6:
             continue
-        try:
-            segs = measure.find_contours(pw, lev)
-        except Exception:  # noqa: BLE001
-            continue
         for seg in segs:
-            # seg is (N,2) as (row, col) in the wrapped array
-            rows, cols = seg[:, 0], seg[:, 1]
-            # is it a fully rounded / closed loop? first point ~ last point
-            if rows[0] == rows[-1] and cols[0] == cols[-1]:
-                pass
-            elif abs(rows[0] - rows[-1]) <= 1 and abs(cols[0] - cols[-1]) <= 1:
-                pass
-            else:
-                continue  # open path that runs off the domain
-            # does the loop touch the real map edge (top/bottom/padded sides)?
-            if rows.min() <= 0 or rows.max() >= pw.shape[0] - 1:
+            if seg.shape[0] < 3:
                 continue
-            if cols.min() <= 0 or cols.max() >= pw.shape[1] - 1:
+            xs, ys = seg[:, 0], seg[:, 1]
+            # closed path? first point ~ last point
+            if not (abs(xs[0] - xs[-1]) <= 1.5 * dl and
+                    abs(ys[0] - ys[-1]) <= 1.5 * da):
                 continue
-            # unwrap column indices back to real integer longitudes & rows
-            gr = rows.astype(int)
-            gc = ((cols.astype(int) - 1) % nlon)
-            # loop centre = centroid of the polyline (row, real-lon)
-            row_c = float(np.mean(gr))
-            col_c = float(np.median(gc))          # median avoids wrap issues
-            lon_center = float(lon[int(round(col_c)) % nlon])
-            lat_center = float(lat[min(max(int(round(row_c)), 0), len(lat) - 1)])
+            # does the loop run off the map edge?
+            if ys.min() <= lat_raw.min() or ys.max() >= lat_raw.max():
+                continue
+            if xs.min() <= lon_raw.min() or xs.max() >= lon_max:
+                continue
+            # centre = mean of the polyline
+            lon_c = float(np.mean(xs))
+            lat_c = float(np.mean(ys))
             # de-duplicate & skip if it overlaps an accepted cell (5 grid cells)
-            if any(abs(lon_center - kx) < 5 * dl and abs(lat_center - ky) < 5 * da
+            if any(abs(lon_c - kx) < 5 * dl and abs(lat_c - ky) < 5 * da
                    for kx, ky, _ in seen):
                 continue
-            seen.append((lon_center, lat_center, "H" if sign > 0 else "L"))
-            markers.append((lon_center, lat_center, "H" if sign > 0 else "L"))
+            seen.append((lon_c, lat_c, "H" if sign > 0 else "L"))
+            markers.append((lon_c, lat_c, "H" if sign > 0 else "L"))
     return markers
 
 def _draw_axis(ax, lon_min, lon_max, lat_min, lat_max):
@@ -484,7 +478,7 @@ def render_rossby(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
     # Matches the contour convention: H = ridge (firebrick), L = trough
     # (royal-blue). In the SOUTHERN hemisphere the H and L letters are swapped
     # (H <-> L) — the marker colour still follows the contour type.
-    for cx, cy, lab in _psi_centers(psi, lat, lon, plev):
+    for cx, cy, lab in _psi_centers(psi, LON2D, LAT2D, plev):
         col = "#c0392b" if lab == "H" else "#1e2f9c"
         disp = lab
         if cy < 0.0:                            # Southern hemisphere: swap H <-> L
