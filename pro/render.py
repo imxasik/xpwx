@@ -102,40 +102,59 @@ def _lat_runs(mask, lat):
             i += 1
     return runs
 
-def _psi_centers(psi, lat, lon, hl_min, window=5, sep=None):
+def _psi_centers(psi, lat, lon, hl_min, window=5):
     """Detect the centres of a wave-train streamfunction field.
 
-    Local maxima of psi (psi>0, anticyclonic) are labelled 'H'; local minima
-    (psi<0, cyclonic) are labelled 'L'. Only centres with |psi| >= hl_min inside
-    |lat|<=80 are kept; close-together detections are suppressed (sep = minimum
-    grid-point spacing), so one marker per circulation cell is returned.
+    A marker is placed only at an extremum that sits inside a genuinely
+    CLOSED contour — i.e. the region psi >= hl_min (for 'H') or psi <= -hl_min
+    (for 'L') forms a connected cell that does NOT touch the map edges. This
+    keeps H/L on round, fully-enclosed circulation cells and drops open ridges
+    / troughs that merely reach a local extremum on a contour that runs off the
+    map. Longitude wraps across the 0°/360° seam.
+
+    One marker per closed cell, at the strongest extremum inside it.
     Returns [(lon, lat, 'H'), (lon, lat, 'L'), ...].
     """
-    from scipy.ndimage import maximum_filter, minimum_filter
+    from scipy.ndimage import label
     p = np.nan_to_num(psi, nan=0.0)
-    nlon = p.shape[1]
-    lats = np.repeat(lat[:, None], nlon, axis=1)  # (nlat, nlon) for indexing
-    ok2 = np.abs(lats) <= 80.0
-    if sep is None:
-        sep = window // 2 + 1
-    dl = abs(float(np.mean(np.diff(lon))))
-    da = abs(float(np.mean(np.diff(lat))))
+    lat2 = lat[:, None]
+    # valid rows only (fields are masked beyond ±80 anyway)
+    valid = np.abs(lat2) <= 80.0
 
-    def pick(mask, label):
-        pts = [(float(lon[j]), float(lat[i]), label)
-               for i, j in zip(*np.where(mask)) if ok2[i, j]]
-        # greedy de-duplication: drop any point too close to an accepted one
-        kept = []
-        for x, y, lab in pts:
-            if all(abs(x - kx) > sep * dl or abs(y - ky) > sep * da
-                   for kx, ky, _ in kept):
-                kept.append((x, y, lab))
-        return kept
+    def closed_cells(mask, sign):
+        """Return [(lon, lat, 'H'/'L')] for closed regions of `mask`."""
+        # wrap longitudes so a cell spanning the dateline stays one component
+        wrapped = np.concatenate([mask[:, -1:], mask, mask[:, 0:1]], axis=1)
+        lab, n = label(wrapped)
+        out = []
+        # labelled wrapper index -> original lon index
+        # cols 1..nlon map to 0..nlon-1; col 0 -> nlon-1; col nlon+1 -> 0
+        for lab_id in range(1, n + 1):
+            ys, xs = np.where(lab == lab_id)
+            if ys.size == 0:
+                continue
+            # touching top or bottom row (real pole edge) -> not a closed cell
+            if ys.min() <= 0 or ys.max() >= wrapped.shape[0] - 1:
+                continue
+            # touching the wrapped seam means it runs off the map: col 0 or last
+            if xs.min() <= 0 or xs.max() >= wrapped.shape[1] - 1:
+                continue
+            # map wrapped columns back to real ones (keep the central set)
+            xs_real = (xs - 1) % p.shape[1]
+            ys_real = ys
+            vals = p[ys_real, xs_real]
+            if sign > 0:
+                k = int(np.argmax(vals))
+            else:
+                k = int(np.argmin(vals))
+            i, j = int(ys_real[k]), int(xs_real[k])
+            if not valid[i, 0]:
+                continue
+            out.append((float(lon[j]), float(lat[i]), "H" if sign > 0 else "L"))
+        return out
 
-    mx = maximum_filter(p, size=window)
-    out = pick((p == mx) & (p >= hl_min), "H")
-    mn = minimum_filter(p, size=window)
-    out += pick((p == mn) & (p <= -hl_min), "L")
+    out = closed_cells(p >= hl_min, +1)    # anticyclonic highs
+    out += closed_cells(p <= -hl_min, -1)  # cyclonic lows
     return out
 
 def _draw_axis(ax, lon_min, lon_max, lat_min, lat_max):
@@ -441,25 +460,40 @@ def render_rossby(lat, lon, data, pkg, coast_segs, dates, out_buf=None,
     cf = ax.contourf(LON2D, LAT2D, chi, levels=levels_fill,
                      cmap=_source_cmap(), extend="both", zorder=1, alpha=0.9)
 
-    # (2) ψ′ wave-train contours. Consistent convention in BOTH hemispheres:
+    # (2) ψ′ wave-train contours. In the Northern Hemisphere:
     #     firebrick solid = ridge / anticyclonic (H), blue dashed = trough /
-    #     cyclonic (L).
+    #     cyclonic (L). South of the equator the convention is INVERTED:
+    #     blue dashed = ridge (H), firebrick solid = trough (L).
     pstep = pkg["psi_interval"]
     pvlim = pkg["psi_vlim"]
     plev = np.arange(-pvlim, pvlim + 0.01, pstep)
     plev = plev[plev != 0]
-    ax.contour(LON2D, LAT2D, psi, levels=plev[plev > 0], colors="#c0392b",
+    # split into NH (lat>=0, convention) and SH (lat<0, inverted)
+    psi_n = np.where(lat[:, None] >= 0.0, psi, np.nan)
+    psi_s = np.where(lat[:, None] < 0.0, psi, np.nan)
+    ax.contour(LON2D, LAT2D, psi_n, levels=plev[plev > 0], colors="#c0392b",
                linewidths=1.0, alpha=0.95, zorder=3)
-    ax.contour(LON2D, LAT2D, psi, levels=plev[plev < 0], colors="#1e2f9c",
+    ax.contour(LON2D, LAT2D, psi_n, levels=plev[plev < 0], colors="#1e2f9c",
                linewidths=1.0, linestyles="--", alpha=0.95, zorder=3)
+    ax.contour(LON2D, LAT2D, psi_s, levels=plev[plev > 0], colors="#1e2f9c",
+               linewidths=1.0, linestyles="--", alpha=0.95, zorder=3)
+    ax.contour(LON2D, LAT2D, psi_s, levels=plev[plev < 0], colors="#c0392b",
+               linewidths=1.0, alpha=0.95, zorder=3)
 
-    # (2b) H / L centre labels at the wave-train circulation cells.
-    # Matches the contour convention everywhere: H = ridge (firebrick),
-    # L = trough (royal-blue), in both hemispheres.
+    # (2b) H / L centre labels at the closed wave-train circulation cells.
+    # Northern Hemisphere: H = red ridge, L = blue trough. Southern Hemisphere
+    # keeps the inverted contours AND swaps the labels (L <-> H), only the
+    # letters are flipped there — contour colours still match the lines.
     hl_min = pkg.get("hl_min", 0.35 * pvlim)
     for cx, cy, lab in _psi_centers(psi, lat, lon, hl_min):
-        col = "#c0392b" if lab == "H" else "#1e2f9c"
-        ax.text(cx, cy, lab, color=col, fontsize=11, fontweight="bold",
+        is_h = lab == "H"
+        if cy >= 0.0:                     # Northern convention
+            col = "#c0392b" if is_h else "#1e2f9c"
+            disp = lab
+        else:                             # Southern: swap L <-> H
+            col = "#1e2f9c" if is_h else "#c0392b"
+            disp = "L" if is_h else "H"
+        ax.text(cx, cy, disp, color=col, fontsize=11, fontweight="bold",
                 ha="center", va="center", zorder=8,
                 bbox=dict(boxstyle="circle,pad=0.06", fc="white",
                           ec="none", alpha=0.85, lw=0))
