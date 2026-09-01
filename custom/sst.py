@@ -3,10 +3,6 @@
 Product families (each available per-region via the sidebar region selector):
   SST Mean       — absolute SST field
   SST Anomaly    — SST anomaly (obs – 1991-2020 climatology)
-  SST + Wind     — absolute SST + 10-m wind vectors
-  SST + WindA    — absolute SST + 10-m wind-anomaly vectors
-  SSTa + Wind    — SST anomaly + 10-m mean wind vectors
-  SSTa + WindA   — SST anomaly + 10-m wind-anomaly vectors
   SST Boxes      — SST anomaly with all climate-index boxes drawn
 
 Regions: Global · Pacific · Indian Ocean · Atlantic
@@ -39,7 +35,6 @@ PSL   = config.PSL
 
 # ── module-level caches ──────────────────────────────────────────────────────
 _OISST_CACHE  = {}   # url  -> pydap dataset
-_NCEP_CACHE   = {}   # url  -> pydap dataset
 _SFIELD_CACHE = {}   # key  -> cached field
 
 # ── climate-index box definitions ────────────────────────────────────────────
@@ -95,12 +90,6 @@ def _open_oisst(url):
     if url not in _OISST_CACHE:
         _OISST_CACHE[url] = _with_retry(open_url, url)
     return _OISST_CACHE[url]
-
-
-def _open_ncep(url):
-    if url not in _NCEP_CACHE:
-        _NCEP_CACHE[url] = _with_retry(open_url, url)
-    return _NCEP_CACHE[url]
 
 
 def _latlon_oisst(ds):
@@ -209,134 +198,6 @@ def _sst_clim_mean(dates, region, stride=1):
     return result
 
 
-# ── NCEP 10-m wind helpers ───────────────────────────────────────────────────
-
-def _ncep_wind_obs(dates, region):
-    """Return (lat, lon, u_mean, v_mean) from NCEP daily 10-m wind."""
-    from pro.data import _psl_fetch  # reuse core PSL fetch util if available
-    # Build lat/lon grids from NCEP surface wind (2.5°)
-    uwnd_slices, vwnd_slices = [], []
-    lat_r = lon_r = None
-    bounds = _REGION_BOUNDS.get(region.lower(), _REGION_BOUNDS["global"])
-    lon_min, lon_max, lat_min, lat_max = bounds
-
-    by_year = {}
-    for d in dates:
-        by_year.setdefault(d.year, []).append(d)
-
-    for year, ydates in sorted(by_year.items()):
-        u_ds = _open_ncep(f"{PSL}/Datasets/ncep.reanalysis.dailyavgs/surface_gauss/uwnd.10m.gauss.{year}.nc")
-        v_ds = _open_ncep(f"{PSL}/Datasets/ncep.reanalysis.dailyavgs/surface_gauss/vwnd.10m.gauss.{year}.nc")
-        if lat_r is None:
-            lat_all = _with_retry(lambda: np.array(u_ds["lat"][:]))
-            lon_all = _with_retry(lambda: np.array(u_ds["lon"][:]))
-            if region.lower() == "atl":
-                li = np.where((lat_all >= lat_min) & (lat_all <= lat_max))[0]
-                loi1 = np.where(lon_all >= 280.0)[0]
-                loi2 = np.where(lon_all <= 20.0)[0]
-                lat_r = lat_all[li]
-                lon_r = np.concatenate([lon_all[loi1], lon_all[loi2] + 360.0])
-                _latsel = li; _lonsel = (loi1, loi2)
-            else:
-                li  = np.where((lat_all >= lat_min) & (lat_all <= lat_max))[0]
-                loi = np.where((lon_all >= lon_min) & (lon_all <= lon_max))[0]
-                lat_r = lat_all[li]; lon_r = lon_all[loi]
-                _latsel = li; _lonsel = loi
-
-        for d in ydates:
-            raw_t = _with_retry(lambda: np.array(u_ds["time"][:]))
-            # find index
-            units = u_ds["time"].attributes.get("units", "hours since 1800-01-01")
-            scale = 1.0/24.0 if "hours" in units else 1.0
-            mm = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", units)
-            ep = datetime.date(int(mm.group(1)), int(mm.group(2)), int(mm.group(3))) if mm else datetime.date(1800,1,1)
-            ti = None
-            for ii, tv in enumerate(raw_t):
-                try:
-                    dd = ep + datetime.timedelta(days=float(tv)*scale)
-                    if (dd.year, dd.month, dd.day) == (d.year, d.month, d.day):
-                        ti = ii; break
-                except Exception:
-                    pass
-            if ti is None:
-                continue
-
-            lat_sl = slice(_latsel[0], _latsel[-1]+1)
-            if isinstance(_lonsel, tuple):
-                lo1, lo2 = _lonsel
-                u1 = np.array(u_ds["uwnd"][ti, lat_sl, slice(lo1[0], lo1[-1]+1)].data).squeeze()
-                u2 = np.array(u_ds["uwnd"][ti, lat_sl, slice(lo2[0], lo2[-1]+1)].data).squeeze()
-                v1 = np.array(v_ds["vwnd"][ti, lat_sl, slice(lo1[0], lo1[-1]+1)].data).squeeze()
-                v2 = np.array(v_ds["vwnd"][ti, lat_sl, slice(lo2[0], lo2[-1]+1)].data).squeeze()
-                uu = np.hstack([u1, u2]); vv = np.hstack([v1, v2])
-            else:
-                lon_sl = slice(_lonsel[0], _lonsel[-1]+1)
-                uu = np.array(u_ds["uwnd"][ti, lat_sl, lon_sl].data).squeeze()
-                vv = np.array(v_ds["vwnd"][ti, lat_sl, lon_sl].data).squeeze()
-
-            def _scale_field(raw, ds_var, var_name):
-                raw = raw.astype(np.float64)
-                attr = ds_var[var_name].attributes
-                sf = float(attr.get("scale_factor", 1.0))
-                ao = float(attr.get("add_offset", 0.0))
-                f  = raw * sf + ao
-                mv = attr.get("missing_value", attr.get("_FillValue", None))
-                if mv is not None:
-                    try: f[np.abs(raw - float(mv)) < 0.5] = np.nan
-                    except Exception: pass
-                return f
-
-            uwnd_slices.append(_scale_field(uu, u_ds, "uwnd"))
-            vwnd_slices.append(_scale_field(vv, v_ds, "vwnd"))
-
-    if not uwnd_slices:
-        return lat_r, lon_r, None, None
-    return lat_r, lon_r, np.nanmean(uwnd_slices, axis=0), np.nanmean(vwnd_slices, axis=0)
-
-
-def _ncep_wind_clim(dates, region):
-    """Return (u_clim, v_clim) 10-m wind climatology mean for given DOYs."""
-    key = ("wind_clim", region, tuple(d.isoformat() for d in dates))
-    if key in _SFIELD_CACHE:
-        return _SFIELD_CACHE[key]
-    bounds = _REGION_BOUNDS.get(region.lower(), _REGION_BOUNDS["global"])
-    lon_min, lon_max, lat_min, lat_max = bounds
-    u_ds = _open_ncep(f"{PSL}/Datasets/ncep.reanalysis/surface_gauss/uwnd.10m.gauss.mon.ltm.nc")
-    v_ds = _open_ncep(f"{PSL}/Datasets/ncep.reanalysis/surface_gauss/vwnd.10m.gauss.mon.ltm.nc")
-    lat_all = _with_retry(lambda: np.array(u_ds["lat"][:]))
-    lon_all = _with_retry(lambda: np.array(u_ds["lon"][:]))
-    if region.lower() == "atl":
-        li   = np.where((lat_all >= lat_min) & (lat_all <= lat_max))[0]
-        loi1 = np.where(lon_all >= 280.0)[0]
-        loi2 = np.where(lon_all <= 20.0)[0]
-        _latsel = li; _lonsel = (loi1, loi2)
-    else:
-        li  = np.where((lat_all >= lat_min) & (lat_all <= lat_max))[0]
-        loi = np.where((lon_all >= lon_min) & (lon_all <= lon_max))[0]
-        _latsel = li; _lonsel = loi
-
-    u_slices, v_slices = [], []
-    for d in dates:
-        mi = d.month - 1   # 0-based month index for LTM
-        lat_sl = slice(_latsel[0], _latsel[-1]+1)
-        if isinstance(_lonsel, tuple):
-            lo1, lo2 = _lonsel
-            u1 = np.array(u_ds["uwnd"][mi, lat_sl, slice(lo1[0],lo1[-1]+1)].data).squeeze()
-            u2 = np.array(u_ds["uwnd"][mi, lat_sl, slice(lo2[0],lo2[-1]+1)].data).squeeze()
-            v1 = np.array(v_ds["vwnd"][mi, lat_sl, slice(lo1[0],lo1[-1]+1)].data).squeeze()
-            v2 = np.array(v_ds["vwnd"][mi, lat_sl, slice(lo2[0],lo2[-1]+1)].data).squeeze()
-            u_slices.append(np.hstack([u1, u2]))
-            v_slices.append(np.hstack([v1, v2]))
-        else:
-            lon_sl = slice(_lonsel[0], _lonsel[-1]+1)
-            u_slices.append(np.array(u_ds["uwnd"][mi, lat_sl, lon_sl].data).squeeze())
-            v_slices.append(np.array(v_ds["vwnd"][mi, lat_sl, lon_sl].data).squeeze())
-
-    result = np.nanmean(u_slices, axis=0), np.nanmean(v_slices, axis=0)
-    _SFIELD_CACHE[key] = result
-    return result
-
-
 # ===========================================================================
 # Compute
 # ===========================================================================
@@ -344,7 +205,6 @@ def _ncep_wind_clim(dates, region):
 def _compute_sst(pkg, dates):
     region   = pkg.get("region",   "global")
     sst_mode = pkg.get("sst_mode", "anomaly")   # "anomaly" | "mean"
-    wind_mode= pkg.get("wind_mode", None)        # None | "mean" | "anom"
     stride   = pkg.get("stride",   1)
 
     lat, lon, obs = _sst_obs_mean(dates, region, stride)
@@ -355,32 +215,7 @@ def _compute_sst(pkg, dates):
     else:
         sst_f = obs
 
-    out = {"main": sst_f}
-
-    if wind_mode is not None:
-        lat_w, lon_w, u_obs, v_obs = _ncep_wind_obs(dates, region)
-        if u_obs is not None:
-            if wind_mode == "anom":
-                u_clim, v_clim = _ncep_wind_clim(dates, region)
-                # Interpolate clim to obs grid if needed (they may differ in resolution)
-                from scipy.interpolate import RegularGridInterpolator as RGI
-                try:
-                    u_c = RGI((lat_w[::-1], lon_w), u_clim[::-1], method="linear",
-                               bounds_error=False, fill_value=np.nan)((lat_w[:, None], lon_w[None, :]))
-                    v_c = RGI((lat_w[::-1], lon_w), v_clim[::-1], method="linear",
-                               bounds_error=False, fill_value=np.nan)((lat_w[:, None], lon_w[None, :]))
-                    u_out = u_obs - u_c
-                    v_out = v_obs - v_c
-                except Exception:
-                    u_out, v_out = u_obs, v_obs
-            else:
-                u_out, v_out = u_obs, v_obs
-            out["wind_lat"] = lat_w
-            out["wind_lon"] = lon_w
-            out["u_wind"]   = u_out
-            out["v_wind"]   = v_out
-
-    return lat, lon, out
+    return lat, lon, {"main": sst_f}
 
 
 # ===========================================================================
@@ -388,11 +223,10 @@ def _compute_sst(pkg, dates):
 # ===========================================================================
 
 def _render_sst(lat, lon, data, pkg, coast_segs, dates, out_buf=None, **_kw):
-    region   = pkg.get("region",   "global")
-    sst_mode = pkg.get("sst_mode", "anomaly")
-    wind_mode= pkg.get("wind_mode", None)
-    show_boxes = pkg.get("show_boxes", False)   # SST Boxes product
-    show_box   = pkg.get("show_box",  False)    # single box (legacy)
+    region     = pkg.get("region",     "global")
+    sst_mode   = pkg.get("sst_mode",   "anomaly")
+    show_boxes = pkg.get("show_boxes", False)
+    show_box   = pkg.get("show_box",   False)
     box_reg    = pkg.get("box_region", "nino3.4")
 
     sst_field = data["main"]
@@ -434,28 +268,8 @@ def _render_sst(lat, lon, data, pkg, coast_segs, dates, out_buf=None, **_kw):
         levels      = np.linspace(vmin, vmax, 41)
         cmap        = "turbo"
 
-    # wind label suffix for title
-    wind_suffix = ""
-    if wind_mode == "mean":
-        wind_suffix = " + 10-m Wind"
-    elif wind_mode == "anom":
-        wind_suffix = " + Wind Anomaly"
-
     cf = ax.contourf(LON2D, LAT2D, sst_field, levels=levels,
                      cmap=cmap, extend="both", zorder=1)
-
-    # ── wind quivers ─────────────────────────────────────────────────────────
-    if wind_mode and "u_wind" in data:
-        wlat = data["wind_lat"]
-        wlon = data["wind_lon"]
-        uu   = data["u_wind"]
-        vv   = data["v_wind"]
-        WLON2D, WLAT2D = np.meshgrid(wlon, wlat)
-        step = max(1, len(wlat) // 18)
-        ax.quiver(WLON2D[::step, ::step], WLAT2D[::step, ::step],
-                  uu[::step, ::step], vv[::step, ::step],
-                  scale=250, width=0.0018, color="#222222",
-                  alpha=0.75, zorder=6)
 
     # ── boxes ────────────────────────────────────────────────────────────────
     drawn_boxes = []
@@ -536,7 +350,7 @@ def _render_sst(lat, lon, data, pkg, coast_segs, dates, out_buf=None, **_kw):
     date_str = (f"{dates[0]:%-d %b} – {dates[-1]:%-d %b %Y}"
                 if len(dates) > 1 else f"{dates[0]:%-d %b %Y}")
     ax.set_title(
-        f"{shade_title}{wind_suffix}  [{rd2}]\n"
+        f"{shade_title}  [{rd2}]\n"
         f"{date_str}  ({len(dates)}-day mean)",
         fontsize=14, fontweight="bold", color="#111111", pad=12, loc="center")
 
@@ -560,7 +374,7 @@ def _render_sst(lat, lon, data, pkg, coast_segs, dates, out_buf=None, **_kw):
 # Product registry
 # ===========================================================================
 
-def _sst_product(pid, name, desc, region, sst_mode, wind_mode=None,
+def _sst_product(pid, name, desc, region, sst_mode,
                  show_box=False, show_boxes=False, box_region="nino3.4",
                  vlim=5.0, cint=1.0):
     """Helper to build a product dict without repetition."""
@@ -575,7 +389,7 @@ def _sst_product(pid, name, desc, region, sst_mode, wind_mode=None,
     return {
         "id": pid, "title": name, "name": name, "tag": "SST",
         "desc": desc, "kind": "sst", "level": None,
-        "region": region, "sst_mode": sst_mode, "wind_mode": wind_mode,
+        "region": region, "sst_mode": sst_mode,
         "show_box": show_box, "show_boxes": show_boxes, "box_region": box_region,
         "vlim": vlim_v, "cint": cint_v, "cb_label": cb,
     }
@@ -606,31 +420,7 @@ for _rid, _rname in _REGIONS:
         f"{_rname} SST anomaly (OISST – 1991-2020 climatology).",
         _rid, "anomaly")
 
-    # 3. SST + Wind  (absolute SST, mean wind vectors)
-    PRODUCTS[f"sst_wind_{_rid}"] = _sst_product(
-        f"sst_wind_{_rid}", f"SST + Wind · {_rname}",
-        f"{_rname} absolute SST with 10-m mean wind vectors.",
-        _rid, "mean", wind_mode="mean")
-
-    # 4. SST + WindA  (absolute SST, wind-anomaly vectors)
-    PRODUCTS[f"sst_winda_{_rid}"] = _sst_product(
-        f"sst_winda_{_rid}", f"SST + WindA · {_rname}",
-        f"{_rname} absolute SST with 10-m wind-anomaly vectors.",
-        _rid, "mean", wind_mode="anom")
-
-    # 5. SSTa + Wind  (SST anomaly, mean wind vectors)
-    PRODUCTS[f"ssta_wind_{_rid}"] = _sst_product(
-        f"ssta_wind_{_rid}", f"SSTa + Wind · {_rname}",
-        f"{_rname} SST anomaly with 10-m mean wind vectors.",
-        _rid, "anomaly", wind_mode="mean")
-
-    # 6. SSTa + WindA  (SST anomaly, wind-anomaly vectors)
-    PRODUCTS[f"ssta_winda_{_rid}"] = _sst_product(
-        f"ssta_winda_{_rid}", f"SSTa + WindA · {_rname}",
-        f"{_rname} SST anomaly with 10-m wind-anomaly vectors.",
-        _rid, "anomaly", wind_mode="anom")
-
-    # 7. SST Boxes  (SST anomaly, all index boxes)
+    # 3. SST Boxes  (SST anomaly, all index boxes)
     PRODUCTS[f"sst_boxes_{_rid}"] = _sst_product(
         f"sst_boxes_{_rid}", f"SST Boxes · {_rname}",
         f"{_rname} SST anomaly with all climate-index region boxes.",
