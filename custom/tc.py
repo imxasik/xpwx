@@ -2,9 +2,8 @@
 
 Products (each available per-region via the sidebar domain selector):
   Chi200 Anomaly        — 200 hPa Velocity Potential Anomaly
-  VWS Anomaly           — 850–200 hPa Vertical Wind Shear Anomaly
-  VWS Total             — 850–200 hPa Total Vertical Wind Shear
-  Wind Shear (Diff)     — 850–200 hPa Directional Shear (shear.py)
+  Wind shear            — 850–200 hPa Total Vertical Wind Shear
+  Wind Shear Anom       — 850–200 hPa Directional/Anomalous Shear
   Instability Anomaly   — 850–200 hPa Atmospheric Instability Anomaly
   Mid-level Wave Trend  — 700–500 hPa CCKW/MJO Wave Trend
 
@@ -526,36 +525,6 @@ def _render_chi(lat, lon, data, pkg, coast_segs, dates):
 
 
 # ===========================================================================
-# ── 2. VWS Anomaly ──────────────────────────────────────────────────────────
-# ===========================================================================
-
-def _compute_vwsa(pkg, dates):
-    region = pkg.get("region", "io")
-    lon_min, lon_max, lat_min, lat_max = _get_bounds(region)
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        f1 = pool.submit(_fetch_uv_obs, 850, dates, lon_min, lon_max, lat_min, lat_max)
-        f2 = pool.submit(_fetch_uv_ltm, 850, dates, lon_min, lon_max, lat_min, lat_max)
-        f3 = pool.submit(_fetch_uv_obs, 200, dates, lon_min, lon_max, lat_min, lat_max)
-        f4 = pool.submit(_fetch_uv_ltm, 200, dates, lon_min, lon_max, lat_min, lat_max)
-        lat, lon, u_obs_850, v_obs_850 = f1.result()
-        _,   _,   u_ltm_850, v_ltm_850 = f2.result()
-        _,   _,   u_obs_200, v_obs_200 = f3.result()
-        _,   _,   u_ltm_200, v_ltm_200 = f4.result()
-
-    u_a850 = gaussian_filter(u_obs_850 - u_ltm_850, sigma=1.5)
-    v_a850 = gaussian_filter(v_obs_850 - v_ltm_850, sigma=1.5)
-    u_a200 = gaussian_filter(u_obs_200 - u_ltm_200, sigma=1.5)
-    v_a200 = gaussian_filter(v_obs_200 - v_ltm_200, sigma=1.5)
-    u_shear = u_a200 - u_a850
-    v_shear = v_a200 - v_a850
-    shear_speed = gaussian_filter(np.sqrt(u_shear**2 + v_shear**2), sigma=2.0)
-
-    return lat, lon, {"main": shear_speed, "u": u_shear, "v": v_shear,
-                      "_region": region}
-
-
-# ===========================================================================
 # ── 3. VWS Total ─────────────────────────────────────────────────────────────
 # ===========================================================================
 
@@ -586,8 +555,28 @@ def _compute_vws(pkg, dates):
 # ===========================================================================
 
 def _compute_shear(pkg, dates):
-    # identical to _compute_vwsa logic; kept as separate kind for labelling
-    return _compute_vwsa(pkg, dates)
+    """Compute 850–200 hPa directional wind-shear anomaly."""
+    region = pkg.get("region", "io")
+    lon_min, lon_max, lat_min, lat_max = _get_bounds(region)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f1 = pool.submit(_fetch_uv_obs, 850, dates, lon_min, lon_max, lat_min, lat_max)
+        f2 = pool.submit(_fetch_uv_ltm, 850, dates, lon_min, lon_max, lat_min, lat_max)
+        f3 = pool.submit(_fetch_uv_obs, 200, dates, lon_min, lon_max, lat_min, lat_max)
+        f4 = pool.submit(_fetch_uv_ltm, 200, dates, lon_min, lon_max, lat_min, lat_max)
+        lat, lon, u_obs_850, v_obs_850 = f1.result()
+        _, _, u_ltm_850, v_ltm_850 = f2.result()
+        _, _, u_obs_200, v_obs_200 = f3.result()
+        _, _, u_ltm_200, v_ltm_200 = f4.result()
+
+    u_a850 = gaussian_filter(u_obs_850 - u_ltm_850, sigma=1.5)
+    v_a850 = gaussian_filter(v_obs_850 - v_ltm_850, sigma=1.5)
+    u_a200 = gaussian_filter(u_obs_200 - u_ltm_200, sigma=1.5)
+    v_a200 = gaussian_filter(v_obs_200 - v_ltm_200, sigma=1.5)
+    u_shear = u_a200 - u_a850
+    v_shear = v_a200 - v_a850
+    shear_speed = gaussian_filter(np.sqrt(u_shear**2 + v_shear**2), sigma=2.0)
+    return lat, lon, {"main": shear_speed, "u": u_shear, "v": v_shear, "_region": region}
 
 
 # ── Shared render for all three shear products ───────────────────────────────
@@ -944,29 +933,22 @@ PRODUCTS = {}
 for _rid, _rname in _TC_REGIONS:
     PRODUCTS[f"chi200_{_rid}"] = {
         "id": f"chi200_{_rid}", "tag": "TC",
-        "title": f"Chi 200 • Wind · {_rname}",
-        "name":  f"Chi 200 • Wind · {_rname}",
+        "title": f"Chi200 Anomaly · {_rname}",
+        "name":  f"Chi200 · {_rname}",
         "desc":  f"200 hPa velocity-potential anomaly ({_rname}).",
         "kind": "tc_chi", "level": 200, "region": _rid,
     }
-    PRODUCTS[f"vwsa_{_rid}"] = {
-        "id": f"vwsa_{_rid}", "tag": "TC",
-        "title": f"VWS Anomaly · {_rname}",
-        "name":  f"VWS Anom · {_rname}",
-        "desc":  f"850–200 hPa vertical wind shear anomaly ({_rname}).",
-        "kind": "tc_vwsa", "level": None, "region": _rid,
-    }
     PRODUCTS[f"vws_{_rid}"] = {
         "id": f"vws_{_rid}", "tag": "TC",
-        "title": f"VWS Total · {_rname}",
-        "name":  f"VWS Total · {_rname}",
+        "title": f"Wind shear · {_rname}",
+        "name":  f"Wind shear · {_rname}",
         "desc":  f"850–200 hPa total vertical wind shear ({_rname}).",
         "kind": "tc_vws", "level": None, "region": _rid,
     }
     PRODUCTS[f"shear_{_rid}"] = {
         "id": f"shear_{_rid}", "tag": "TC",
-        "title": f"Wind Shear · {_rname}",
-        "name":  f"Shear · {_rname}",
+        "title": f"Wind Shear Anom · {_rname}",
+        "name":  f"Wind Shear Anom · {_rname}",
         "desc":  f"850–200 hPa directional wind shear anomaly ({_rname}).",
         "kind": "tc_shear", "level": None, "region": _rid,
     }
@@ -981,7 +963,7 @@ for _rid, _rname in _TC_REGIONS:
         "id": f"mid_{_rid}", "tag": "TC",
         "title": f"Wave Trend · {_rname}",
         "name":  f"Wave Trend · {_rname}",
-        "desc":  f"700–500 hPa CCKW/MJO wave trend ({_rname}).",
+        "desc":  f"Actual CCKW/MJO wave trend ({_rname}).",
         "kind": "tc_mid", "level": None, "region": _rid,
     }
 
@@ -989,8 +971,7 @@ for _rid, _rname in _TC_REGIONS:
 # ── Kind registration ─────────────────────────────────────────────────────────
 KINDS = {
     "tc_chi":   {"compute": _compute_chi,   "render": _render_chi,   "tag": "TC"},
-    "tc_vwsa":  {"compute": _compute_vwsa,  "render": _render_shear, "tag": "TC"},
-    "tc_vws":   {"compute": _compute_vws,   "render": _render_shear, "tag": "TC"},
+        "tc_vws":   {"compute": _compute_vws,   "render": _render_shear, "tag": "TC"},
     "tc_shear": {"compute": _compute_shear, "render": _render_shear, "tag": "TC"},
     "tc_lift":  {"compute": _compute_lift,  "render": _render_lift,  "tag": "TC"},
     "tc_mid":   {"compute": _compute_mid,   "render": _render_mid,   "tag": "TC"},
