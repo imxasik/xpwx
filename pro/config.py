@@ -12,7 +12,7 @@ SHP_URL = "https://naciscdn.org/naturalearth/110m/physical/ne_110m_coastline.zip
 
 PSL = "https://psl.noaa.gov/thredds/dodsC/Datasets/ncep"
 
-DEFAULT_N_DAYS = 5
+DEFAULT_N_DAYS = 3
 
 DEFAULT_PRODUCT = "vtp200"
 
