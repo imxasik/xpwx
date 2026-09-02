@@ -498,6 +498,7 @@
   // ── initialise SST / TC lists ─────────────────────────────────────────────
   renderSstList("global");
   renderTcList("global");
+  renderGfsList(_gfsHour);
 
   const p0 = P(current);
   if(p0){ DL.setAttribute("download", current+".png"); }
