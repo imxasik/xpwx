@@ -90,6 +90,7 @@
     cursor:pointer;
   }
   .tc-domain-sel:focus{outline:2px solid var(--acc2);outline-offset:1px}
+
   /* forecast time selector inside the GFS FC group header */
   .gfs-time-label{font-size:10.5px;font-weight:800;letter-spacing:1px;color:var(--mut);margin-left:auto;margin-right:5px}
   .gfs-time-sel{
@@ -221,17 +222,17 @@
             {% endif %}
           </div>
 
-          {% if g.tag == 'SST' %}
+          {% if g.tag == 'GFS FC' %}
+          <!-- GFS product list — rendered by JS based on forecast time frame -->
+          <div id="gfs-product-list"></div>
+
+          {% elif g.tag == 'SST' %}
           <!-- SST product list — rendered by JS based on domain selection -->
           <div id="sst-product-list"></div>
 
           {% elif g.tag == 'TC' %}
           <!-- TC product list — rendered by JS based on domain selection -->
           <div id="tc-product-list"></div>
-
-          {% elif g.tag == 'GFS FC' %}
-          <!-- GFS forecast product list — rendered by JS based on time frame -->
-          <div id="gfs-product-list"></div>
 
           {% else %}
           {% for p in g.product_list %}
@@ -403,20 +404,9 @@
     { prefix: "gfs_wind_500",  label: "Wind 500",  desc: "500 hPa wind speed + vectors." },
     { prefix: "gfs_wind_200",  label: "Wind 200",  desc: "200 hPa wind speed + vectors." },
     { prefix: "gfs_mslp", label: "Sea Level Pressure", desc: "Mean sea level pressure forecast." },
-    { prefix: "gfs_u_1000", label: "U-Wind 1000", desc: "1000 hPa zonal wind." },
-    { prefix: "gfs_u_925",  label: "U-Wind 925",  desc: "925 hPa zonal wind." },
     { prefix: "gfs_u_850",  label: "U-Wind 850",  desc: "850 hPa zonal wind." },
-    { prefix: "gfs_u_700",  label: "U-Wind 700",  desc: "700 hPa zonal wind." },
-    { prefix: "gfs_u_500",  label: "U-Wind 500",  desc: "500 hPa zonal wind." },
-    { prefix: "gfs_u_200",  label: "U-Wind 200",  desc: "200 hPa zonal wind." },
-    { prefix: "gfs_v_1000", label: "V-Wind 1000", desc: "1000 hPa meridional wind." },
-    { prefix: "gfs_v_925",  label: "V-Wind 925",  desc: "925 hPa meridional wind." },
     { prefix: "gfs_v_850",  label: "V-Wind 850",  desc: "850 hPa meridional wind." },
-    { prefix: "gfs_v_700",  label: "V-Wind 700",  desc: "700 hPa meridional wind." },
-    { prefix: "gfs_v_500",  label: "V-Wind 500",  desc: "500 hPa meridional wind." },
-    { prefix: "gfs_v_200",  label: "V-Wind 200",  desc: "200 hPa meridional wind." },
   ];
-
   let _gfsHour = 6;
 
   function gfsId(prefix, hour){ return `${prefix}_${hour}`; }
@@ -508,7 +498,6 @@
   // ── initialise SST / TC lists ─────────────────────────────────────────────
   renderSstList("global");
   renderTcList("global");
-  renderGfsList(_gfsHour);
 
   const p0 = P(current);
   if(p0){ DL.setAttribute("download", current+".png"); }
