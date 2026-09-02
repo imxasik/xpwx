@@ -8,7 +8,7 @@ Products:
   Temperature (2 m)
   Wind at 1000/925/850/700/500/200 hPa
   Sea Level Pressure
-  U-Wind / V-Wind at 1000/925/850/700/500/200 hPa
+  U-Wind / V-Wind at 850 hPa only
 
 The fetch/render path is self-contained so the original GFS forecast project
 can be integrated into XPWX's custom/ folder without adding the other GFS
@@ -35,9 +35,9 @@ from scipy.ndimage import gaussian_filter
 NOMADS_FILTER_BASE = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25_1hr.pl"
 NOMADS_FILTER_BASE_3H = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
 
-# Keep the same default domain as the supplied GFS forecast project.
-LON_MIN, LON_MAX = 65.0, 100.0
-LAT_MIN, LAT_MAX = 5.0, 40.0
+# Default map domain: Bangladesh (same bounds as the supplied GFS project config).
+LON_MIN, LON_MAX = 85.0, 95.0
+LAT_MIN, LAT_MAX = 20.0, 28.0
 
 FORECAST_HOURS = tuple(range(6, 121, 6))
 WIND_LEVELS = (1000, 925, 850, 700, 500, 200)
@@ -470,7 +470,7 @@ _add("gfs_temp", "Temperature", "temp")
 for _lev in WIND_LEVELS:
     _add(f"gfs_wind_{_lev}", f"Wind {_lev}", "wind", _lev)
 _add("gfs_mslp", "Sea Level Pressure", "mslp")
-for _lev in WIND_LEVELS:
+for _lev in (850,):
     _add(f"gfs_u_{_lev}", f"U-Wind {_lev}", "u", _lev)
     _add(f"gfs_v_{_lev}", f"V-Wind {_lev}", "v", _lev)
 
