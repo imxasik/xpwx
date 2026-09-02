@@ -222,11 +222,70 @@
 
         </div>
         {% endfor %}
+
+        <!-- GFS Forecast — added without removing any existing reanalysis products -->
+        <div class="group" id="gfs-group">
+          <div class="group-h">
+            <span class="group-h-label">GFS FORECAST</span>
+          </div>
+          <div class="side-item" data-gfs-var="wind" onclick="pickGfs('wind')">
+            <div class="nm">Wind Speed + Streamlines</div>
+            <div class="ds">GFS U/V wind forecast with streamlines.</div>
+          </div>
+          <div class="side-item" data-gfs-var="temp" onclick="pickGfs('temp')">
+            <div class="nm">2m Temperature</div>
+            <div class="ds">Forecast surface temperature.</div>
+          </div>
+          <div class="side-item" data-gfs-var="mslp" onclick="pickGfs('mslp')">
+            <div class="nm">Mean Sea Level Pressure</div>
+            <div class="ds">Forecast MSLP field.</div>
+          </div>
+          <div class="side-item" data-gfs-var="rh" onclick="pickGfs('rh')">
+            <div class="nm">Relative Humidity</div>
+            <div class="ds">Pressure-level relative humidity.</div>
+          </div>
+          <div class="side-item" data-gfs-var="precip" onclick="pickGfs('precip')">
+            <div class="nm">Accumulated Precipitation</div>
+            <div class="ds">GFS precipitation accumulation.</div>
+          </div>
+          <div class="side-item" data-gfs-var="cape" onclick="pickGfs('cape')">
+            <div class="nm">CAPE</div>
+            <div class="ds">Surface convective available potential energy.</div>
+          </div>
+          <div class="side-item" data-gfs-var="vvel" onclick="pickGfs('vvel')">
+            <div class="nm">Vertical Velocity</div>
+            <div class="ds">Pressure-level omega / vertical motion.</div>
+          </div>
+          <div class="side-item" data-gfs-var="pwat" onclick="pickGfs('pwat')">
+            <div class="nm">Precipitable Water</div>
+            <div class="ds">Integrated atmospheric moisture.</div>
+          </div>
+          <div class="side-item" data-gfs-var="u" onclick="pickGfs('u')">
+            <div class="nm">U-Wind</div>
+            <div class="ds">Zonal wind component.</div>
+          </div>
+          <div class="side-item" data-gfs-var="v" onclick="pickGfs('v')">
+            <div class="nm">V-Wind</div>
+            <div class="ds">Meridional wind component.</div>
+          </div>
+          <div class="side-item" data-gfs-var="vp" onclick="pickGfs('vp')">
+            <div class="nm">Velocity Potential</div>
+            <div class="ds">Derived divergent-flow diagnostic.</div>
+          </div>
+          <div class="side-item" data-gfs-var="streamfunc" onclick="pickGfs('streamfunc')">
+            <div class="nm">Stream Function</div>
+            <div class="ds">Derived rotational-flow diagnostic.</div>
+          </div>
+          <div class="side-item" data-gfs-var="sf_pwat" onclick="pickGfs('sf_pwat')">
+            <div class="nm">Stream Function + PWAT</div>
+            <div class="ds">Combined circulation and moisture overlay.</div>
+          </div>
+        </div>
       </div>
     </aside>
 
     <main>
-      <section class="controls">
+      <section class="controls" id="rean-controls">
         <div class="field">
           <label>CHOOSE MODE</label>
           <div class="seg">
@@ -245,6 +304,40 @@
           </div>
         </div>
         <button class="btn" id="go" onclick="run()">&#9654; Map</button>
+      </section>
+
+      <section class="controls" id="gfs-controls" style="display:none">
+        <div class="field">
+          <label>GFS FORECAST</label>
+          <div class="seg">
+            <button id="gfs-mode-label" class="active" type="button">Forecast Map</button>
+          </div>
+        </div>
+        <div class="rowf">
+          <div class="field">
+            <label>REGION</label>
+            <select id="gfs-region"></select>
+          </div>
+          <div class="field">
+            <label>PRESSURE LEVEL</label>
+            <select id="gfs-level"></select>
+          </div>
+        </div>
+        <div class="rowf">
+          <div class="field">
+            <label>FORECAST STEP (HOURS)</label>
+            <input type="number" id="gfs-step" value="{{ gfs_config.default_step }}" min="0" max="384" step="1" />
+          </div>
+          <div class="field">
+            <label>FORECAST PERIOD</label>
+            <select id="gfs-period"></select>
+          </div>
+        </div>
+        <div class="field" style="flex-direction:row;gap:8px">
+          <input type="checkbox" id="gfs-anomaly" style="width:auto;min-width:0" />
+          <label for="gfs-anomaly">Anomaly vs PSL 1991–2020 climatology</label>
+        </div>
+        <button class="btn" id="gfs-go" onclick="runGfs()">&#9654; GFS Map</button>
       </section>
 
       <section class="stage">
@@ -269,7 +362,9 @@
 
 <script>
   let mode = "auto", current = "{{ default_product }}";
-  const cache = {}, DATE = document.getElementById("date"),
+  let appMode = "rean";
+  let gfsVar = "wind";
+  const cache = {}, gfsCache = {}, DATE = document.getElementById("date"),
         S = document.getElementById("status"),
         PH = document.getElementById("ph"), PT = document.getElementById("phText"),
         IMG = document.getElementById("img"), DL = document.getElementById("dl"),
@@ -375,6 +470,9 @@
   function closeMenu(){ document.body.classList.remove("menu-open"); }
 
   function pick(id){
+    appMode = "rean";
+    if (typeof REAN_CONTROLS !== "undefined") REAN_CONTROLS.style.display = "flex";
+    if (typeof GFS_CONTROLS !== "undefined") GFS_CONTROLS.style.display = "none";
     current = id;
     document.querySelectorAll(".side-item").forEach(el =>
       el.classList.toggle("active", el.dataset.id === id));
@@ -427,9 +525,126 @@
       + (mode==="manual" ? "to "+DATE.value : "auto") + " · " + nd() + "-day";
   }
 
+
+  // ── GFS Forecast web integration ─────────────────────────────────────────
+  const GFS = {{ gfs_config | tojson }};
+  const GFS_REGION = document.getElementById("gfs-region");
+  const GFS_LEVEL = document.getElementById("gfs-level");
+  const GFS_PERIOD = document.getElementById("gfs-period");
+  const GFS_STEP = document.getElementById("gfs-step");
+  const GFS_ANOM = document.getElementById("gfs-anomaly");
+  const REAN_CONTROLS = document.getElementById("rean-controls");
+  const GFS_CONTROLS = document.getElementById("gfs-controls");
+
+  function initGfsControls(){
+    GFS_REGION.innerHTML = GFS.regions.map(r =>
+      `<option value="${r.id}">${r.name}</option>`).join("");
+    GFS_LEVEL.innerHTML = GFS.levels.map(l =>
+      `<option value="${l.mb}">${l.mb} mb</option>`).join("");
+    GFS_PERIOD.innerHTML = GFS.periods.map(p =>
+      `<option value="${p.days}">${p.label}</option>`).join("");
+    GFS_REGION.value = GFS.default_region;
+    GFS_LEVEL.value = "850";
+    GFS_PERIOD.value = "0";
+    updateGfsControls();
+  }
+
+  function gfsProductMeta(){
+    return GFS.variables.find(v => v.key === gfsVar) || null;
+  }
+
+  function updateGfsControls(){
+    const meta = gfsProductMeta();
+    const levelRequired = !!(meta && meta.level_required);
+    GFS_LEVEL.disabled = !levelRequired;
+    GFS_ANOM.disabled = !(meta && meta.anomaly_supported);
+    if (GFS_ANOM.disabled) GFS_ANOM.checked = false;
+  }
+
+  function pickGfs(variable){
+    appMode = "gfs";
+    gfsVar = variable;
+    document.querySelectorAll(".side-item").forEach(el =>
+      el.classList.toggle("active", el.dataset.gfsVar === variable));
+    REAN_CONTROLS.style.display = "none";
+    GFS_CONTROLS.style.display = "flex";
+    updateGfsControls();
+    closeMenu();
+    runGfs();
+  }
+
+  GFS_REGION.addEventListener("change", () => { if(appMode==="gfs") runGfs(); });
+  GFS_LEVEL.addEventListener("change", () => { if(appMode==="gfs") runGfs(); });
+  GFS_PERIOD.addEventListener("change", () => { if(appMode==="gfs") runGfs(); });
+  GFS_STEP.addEventListener("change", () => { if(appMode==="gfs") runGfs(); });
+  GFS_ANOM.addEventListener("change", () => { if(appMode==="gfs") runGfs(); });
+
+  async function runGfs(){
+    if(appMode !== "gfs") return;
+    const days = parseInt(GFS_PERIOD.value,10) || 0;
+    const level = parseInt(GFS_LEVEL.value,10) || 0;
+    const step = Math.max(0, Math.min(384, parseInt(GFS_STEP.value,10) || 0));
+    const anomaly = !!GFS_ANOM.checked && !GFS_ANOM.disabled;
+    const region = GFS_REGION.value || GFS.default_region;
+    const key = JSON.stringify({v:gfsVar,l:level,s:step,d:days,a:anomaly,r:region});
+
+    if(gfsCache[key]){
+      showGfs(gfsCache[key], "Client cache");
+      S.textContent = "Cache · instant."; S.className = "ok";
+      return;
+    }
+
+    document.getElementById("gfs-go").disabled = true;
+    PH.style.display = "flex"; PT.textContent = "Fetching GFS forecast…";
+    IMG.style.display = "none"; DL.style.display = "none";
+    META.innerHTML = "<b>GFS Forecast</b> · Rendering…";
+
+    try{
+      const r = await fetch("/gfs/generate", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          variable:gfsVar, level, step, avg_days:days,
+          anomaly, region
+        })
+      });
+      if(!r.ok){
+        let m="GFS server error "+r.status;
+        try{const j=await r.json(); m=j.error||m;}catch(e){}
+        throw new Error(m);
+      }
+      const url = URL.createObjectURL(await r.blob());
+      gfsCache[key] = url;
+      showGfs(url, r.headers.get("X-GFS-Run") || "Latest GFS run");
+      S.textContent = "GFS Ready."; S.className = "ok";
+    }catch(e){
+      S.textContent = "GFS Error: " + (e.message||e); S.className = "err";
+    }finally{
+      PH.style.display = "none";
+      document.getElementById("gfs-go").disabled = false;
+    }
+  }
+
+  function showGfs(url, runLabel){
+    IMG.src = url; IMG.style.display = "block";
+    DL.href = url; DL.style.display = "inline-block";
+    DL.setAttribute("download", "gfs-"+gfsVar+".png");
+    const meta = gfsProductMeta();
+    const region = GFS.regions.find(r => r.id === GFS_REGION.value);
+    const days = parseInt(GFS_PERIOD.value,10)||0;
+    const level = parseInt(GFS_LEVEL.value,10)||0;
+    const period = days ? `${days}-day` : `+${GFS_STEP.value}h`;
+    META.innerHTML = "<b>" + (meta ? meta.name : gfsVar) + "</b> · "
+      + (region ? region.name : "") + " · "
+      + (level ? level+" mb · " : "")
+      + period + " · " + runLabel;
+  }
+
   // ── initialise SST / TC lists ─────────────────────────────────────────────
+
   renderSstList("global");
   renderTcList("global");
+  initGfsControls();
 
   const p0 = P(current);
   if(p0){ DL.setAttribute("download", current+".png"); }
