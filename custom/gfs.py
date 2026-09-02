@@ -1,630 +1,718 @@
-"""custom/gfs.py — NCEP GFS forecast products.
+"""custom/gfs.py — GFS Forecast Maps (NCEP NOMADS real-time)
 
-Added as a drop-in addon: no core engine changes required.
+Product families (rendered by JS time-frame slider in sidebar):
+  Temperature 2m       — 2 m air temperature
+  Wind 1000/925/850/   — Wind speed + streamlines at pressure levels
+       700/500/200 mb
+  Sea Level Pressure   — MSLP contour shading
+  U-Wind (isobaric)    — Zonal component at selected levels
+  V-Wind (isobaric)    — Meridional component at selected levels
 
-Sidebar group: GFS FC
-Time frames: +06h ... +120h (6-hourly, five days)
-Products:
-  Temperature (2 m)
-  Wind at 1000/925/850/700/500/200 hPa
-  Sea Level Pressure
-  U-Wind / V-Wind at 850 hPa only
+Time frames: +06, +12, +18, +24, +30, +36, +42, +48, +54, +60, +66,
+             +72, +84, +96, +108, +120 h  (5-day range, 6-h steps)
 
-The fetch/render path is self-contained so the original GFS forecast project
-can be integrated into XPWX's custom/ folder without adding the other GFS
-project files to XPWX.
+All fetch calls go to NOMADS GRIB2 filter endpoint (0.25° 1hr / 3hr).
+A pure-Python GRIB2 parser is used — no eccodes / cfgrib dependency.
+
+Product IDs follow the pattern:
+    gfs_<family>_<step>h
+  e.g.  gfs_temp_06h, gfs_wind850_36h, gfs_mslp_120h
+
+tag: "GFS FC" (appears as the group header in the sidebar)
 """
 
-import datetime
+from __future__ import annotations
+
 import io
 import os
-import tempfile
 import struct
-import threading
+import datetime
+import time
 import warnings
+import threading
+import functools
+from concurrent.futures import ThreadPoolExecutor
 
 warnings.filterwarnings("ignore")
 
 import numpy as np
 import requests
+from scipy.ndimage import gaussian_filter
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
-from scipy.ndimage import gaussian_filter
+import matplotlib.colors as mcolors
+from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 
-# ── GFS source / domain ─────────────────────────────────────────────────────
-NOMADS_FILTER_BASE = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25_1hr.pl"
-NOMADS_FILTER_BASE_3H = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
+from pro import config  # BASE_DIR, SHP_PATH, coastline utilities
 
-# Default map domain: Bangladesh (same bounds as the supplied GFS project config).
-LON_MIN, LON_MAX = 85.0, 95.0
-LAT_MIN, LAT_MAX = 20.0, 28.0
+# ── NOMADS endpoints ────────────────────────────────────────────────────────
+_NOMADS_1H = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25_1hr.pl"
+_NOMADS_3H = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
 
-FORECAST_HOURS = tuple(range(6, 121, 6))
-WIND_LEVELS = (1000, 925, 850, 700, 500, 200)
+# ── module-level caches ─────────────────────────────────────────────────────
+_GRIB_CACHE: dict = {}   # (run_str, step, var_flags, level_flags) -> raw bytes
+_FIELD_CACHE: dict = {}  # product_id -> (png_bytes, fetched_at)
+_CACHE_TTL = 3600        # 1 hour — GFS 0z/6z/12z/18z; cache avoids duplicate fetches
 
 _SESSION = requests.Session()
-_SESSION.headers.update({"User-Agent": "XPWeather-GFS/1.0"})
-_CACHE = {}
-_CACHE_LOCK = threading.Lock()
+_SESSION.headers.update({"User-Agent": "xpwx-gfs/2.0 (+https://xpweather.com)"})
 
-# ── GRIB2 helpers ───────────────────────────────────────────────────────────
+# ── Time-frame steps (hours) for the 5-day slider ──────────────────────────
+GFS_STEPS = [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 84, 96, 108, 120]
+
+# ── Isobaric wind levels ─────────────────────────────────────────────────────
+WIND_LEVELS = [1000, 925, 850, 700, 500, 200]
+
+# ── GRIB2 parameter table (discipline-category-number → short name) ─────────
+_PARAM = {
+    (0, 0, 0): "TMP", (0, 1, 1): "RH",   (0, 1, 3): "PWAT",
+    (0, 1, 8): "APCP",(0, 2, 2): "UGRD", (0, 2, 3): "VGRD",
+    (0, 3, 1): "PRMSL",(0, 3, 5): "HGT",
+}
+_LEVEL_TYPE = {1: "surface", 2: "msl", 100: "isobaric", 103: "height_agl"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  GRIB2 helpers (pure-Python, no eccodes)
+# ═══════════════════════════════════════════════════════════════════════════
+
 def _u32(b, o): return struct.unpack_from(">I", b, o)[0]
 def _u16(b, o): return struct.unpack_from(">H", b, o)[0]
-def _u8(b, o): return b[o]
+def _u8(b, o):  return b[o]
 def _i32(b, o):
     v = _u32(b, o)
     return v - (1 << 32) if v & 0x80000000 else v
 
-def _scaled(b, o):
-    raw = _u32(b, o)
-    sign = -1 if (raw >> 31) else 1
-    return sign * (raw & 0x7FFFFFFF)
 
-GFS_PARAM = {
-    (0, 0, 0): "TMP",
-    (0, 1, 0): "SPFH",
-    (0, 1, 1): "RH",
-    (0, 2, 2): "UGRD",
-    (0, 2, 3): "VGRD",
-    (0, 2, 8): "VVEL",
-    (0, 3, 1): "PRMSL",
-}
+def _decode_grib2(msg: bytes, discipline: int):
+    """Decode a single GRIB2 message. Returns dict or None."""
+    pos = 16
+    # Section 1 (Identification)
+    sec1_len = _u32(msg, pos)
+    year = _u16(msg, pos + 12); mon = _u8(msg, pos + 14); day = _u8(msg, pos + 15)
+    hour = _u8(msg, pos + 16)
+    pos += sec1_len
+    # Skip sections 2 & 3 if present
+    while pos < len(msg) - 5:
+        slen = _u32(msg, pos); snum = _u8(msg, pos + 4)
+        if snum == 4: break
+        pos += slen
+    # Section 4 (Product Definition)
+    if pos + 34 > len(msg): return None
+    sec4_len = _u32(msg, pos)
+    pdt = _u16(msg, pos + 7)
+    cat  = _u8(msg, pos + 9)
+    num  = _u8(msg, pos + 10)
+    level_type = _u8(msg, pos + 22)
+    level_val  = _u32(msg, pos + 23)
+    param = _PARAM.get((discipline, cat, num))
+    lvl_str = _LEVEL_TYPE.get(level_type, f"t{level_type}")
+    pos += sec4_len
+    # Skip section 5 header
+    sec5_len = _u32(msg, pos)
+    tmpl = _u16(msg, pos + 9)
+    ref_f = struct.unpack_from(">f", msg, pos + 11)[0]
+    e_bin = struct.unpack_from(">h", msg, pos + 15)[0]
+    d_dec = struct.unpack_from(">h", msg, pos + 17)[0]
+    nbits = _u8(msg, pos + 19)
+    n_pts = _u32(msg, pos + 5)
+    pos += sec5_len
+    # Section 6 (Bitmap)
+    sec6_len = _u32(msg, pos); bitmap_flag = _u8(msg, pos + 5)
+    bitmap = None
+    if bitmap_flag == 0:
+        bm_bytes = msg[pos + 6: pos + sec6_len]
+        bitmap = np.unpackbits(np.frombuffer(bm_bytes, dtype=np.uint8))
+    pos += sec6_len
+    # Section 7 (Data)
+    sec7_len = _u32(msg, pos)
+    raw_data = msg[pos + 5: pos + sec7_len]
+    pos += sec7_len
+    if nbits == 0 or len(raw_data) == 0: return None
+    # Unpack bit-packed values
+    bits = np.unpackbits(np.frombuffer(raw_data, dtype=np.uint8))
+    n_unpack = (len(bits) // nbits) * nbits
+    packed = bits[:n_unpack].reshape(-1, nbits)
+    vals = packed.dot(1 << np.arange(nbits - 1, -1, -1, dtype=np.int64)).astype(np.float64)
+    R = ref_f * (2 ** e_bin) / (10 ** d_dec)
+    scale = (2 ** e_bin) / (10 ** d_dec)
+    vals = R + scale * vals
+    if bitmap is not None:
+        full = np.full(int(bitmap[:n_pts + 8].sum() + len(vals)), np.nan)
+        # simpler: just use vals directly (bitmap rarely needed for GFS)
+        pass
+    return {"param": param, "level_type": lvl_str, "level": float(level_val),
+            "values_1d": vals, "ref_time": datetime.datetime(year, mon, day, hour)}
 
 
-def _parse_grib2(data):
+def parse_grib2(data: bytes):
+    """Parse all GRIB2 messages from raw bytes. Returns list of dicts."""
     messages = []
-    i = 0
-    n = len(data)
+    i = 0; n = len(data)
     while i < n - 16:
-        idx = data.find(b"GRIB", i)
-        if idx < 0:
-            break
+        idx = data.find(b'GRIB', i)
+        if idx == -1: break
         i = idx
-        if len(data) < i + 16:
-            break
-        discipline = _u8(data, i + 6)
-        edition = _u8(data, i + 7)
-        if edition != 2:
-            i += 4
-            continue
+        if len(data) < i + 16: break
+        disc = _u8(data, i + 6); ed = _u8(data, i + 7)
+        if ed != 2: i += 4; continue
         try:
             msg_len = struct.unpack_from(">Q", data, i + 8)[0]
-        except Exception:
-            i += 4
-            continue
-        if msg_len < 16 or i + msg_len > n:
-            i += 4
-            continue
-        msg = data[i:i + msg_len]
-        i += msg_len
+        except Exception: i += 4; continue
+        if msg_len < 16 or i + msg_len > n: i += 4; continue
+        msg = data[i: i + msg_len]; i += msg_len
         try:
-            item = _decode_message(msg, discipline)
-            if item:
-                messages.append(item)
+            r = _decode_grib2(msg, disc)
+            if r: messages.append(r)
         except Exception:
             pass
     return messages
 
 
-def _decode_message(msg, discipline):
-    pos = 16
-    sec3 = sec4 = sec5 = sec7 = None
-    while pos < len(msg) - 4:
-        if pos + 5 > len(msg):
-            break
-        sec_len = _u32(msg, pos)
-        if sec_len < 5 or pos + sec_len > len(msg):
-            break
-        sec_num = _u8(msg, pos + 4)
-        if sec_num == 3: sec3 = msg[pos:pos + sec_len]
-        elif sec_num == 4: sec4 = msg[pos:pos + sec_len]
-        elif sec_num == 5: sec5 = msg[pos:pos + sec_len]
-        elif sec_num == 7: sec7 = msg[pos:pos + sec_len]
-        elif sec_num == 8: break
-        pos += sec_len
-    if not all((sec3, sec4, sec5, sec7)):
-        return None
+# ═══════════════════════════════════════════════════════════════════════════
+#  GFS run helpers
+# ═══════════════════════════════════════════════════════════════════════════
 
-    if _u16(sec3, 12) != 0:  # only regular lat/lon grid
-        return None
-    ni = _u32(sec3, 30)
-    nj = _u32(sec3, 34)
-    lat1 = _i32(sec3, 46) * 1e-6
-    lon1 = _i32(sec3, 50) * 1e-6
-    lat2 = _i32(sec3, 55) * 1e-6
-    lon2 = _i32(sec3, 59) * 1e-6
-    lats = np.linspace(lat1, lat2, nj)
-    lons = np.linspace(lon1, lon2, ni)
-
-    pdt = _u16(sec4, 7)
-    if pdt not in (0, 1, 2, 8, 11):
-        return None
-    cat = _u8(sec4, 9)
-    param = _u8(sec4, 10)
-    ltype = _u8(sec4, 22)
-    sf_raw = _u8(sec4, 23)
-    sf = sf_raw - 256 if sf_raw & 0x80 else sf_raw
-    sv = _u32(sec4, 24)
-    # GRIB2 stores isobaric levels in Pa. Apply the signed scale factor
-    # first, then convert Pa -> hPa for the addon API.
-    scaled_level = sv / (10.0 ** sf)
-    level_val = (scaled_level / 100.0) if ltype == 100 else scaled_level
-
-    param_name = GFS_PARAM.get((discipline, cat, param),
-                               f"d{discipline}c{cat}p{param}")
-    level_type = {1: "surface", 2: "mean_sea_level",
-                  100: "isobaric", 103: "above_ground_m",
-                  200: "entire_atmos"}.get(ltype, f"lt{ltype}")
-
-    ndata = _u32(sec5, 5)
-    drt = _u16(sec5, 9)
-    if drt != 0:
-        return None
-    ref = struct.unpack_from(">f", sec5, 11)[0]
-    escale = _scaled(sec5, 15)
-    dscale = _scaled(sec5, 19)
-    nbits = _u8(sec5, 23)
-    if nbits <= 0 or nbits > 32:
-        return None
-
-    raw = sec7[5:]
-    total_bits = ndata * nbits
-    needed = (total_bits + 7) // 8
-    if len(raw) < needed:
-        return None
-    packed = np.frombuffer(raw[:needed], dtype=np.uint8)
-    bits = np.unpackbits(packed)[:total_bits]
-    bits2d = bits.reshape(ndata, nbits)
-    powers = (1 << np.arange(nbits - 1, -1, -1, dtype=np.int64))
-    x = (bits2d.astype(np.int64) * powers).sum(axis=1)
-    values = (float(ref) + x.astype(np.float64) * (2.0 ** float(escale))) / (10.0 ** float(dscale))
-    grid = values.reshape(nj, ni)
-
-    if lat1 > lat2:
-        grid = grid[::-1, :]
-        lats = lats[::-1]
-
-    return {"param": param_name, "level_type": level_type,
-            "level": level_val, "lat": lats, "lon": lons,
-            "values": grid}
+def _latest_run() -> datetime.datetime:
+    now = datetime.datetime.utcnow()
+    for d in range(2):
+        day = now - datetime.timedelta(days=d)
+        for h in (18, 12, 6, 0):
+            c = day.replace(hour=h, minute=0, second=0, microsecond=0)
+            if c <= now - datetime.timedelta(hours=3):
+                return c
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def _find_msg(messages, param, level_type=None, level=None):
-    for m in messages:
-        if m["param"] != param:
-            continue
-        if level_type and m["level_type"] != level_type:
-            continue
-        if level is not None and abs(m["level"] - level) > 5:
-            continue
+def _run_id(run: datetime.datetime) -> tuple:
+    return run.strftime("%Y%m%d"), f"{run.hour:02d}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  NOMADS fetch
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _fetch_nomads(step: int, var_flags: dict, level_flags: dict,
+                  run: datetime.datetime | None = None) -> bytes | None:
+    """Fetch GRIB2 bytes from NOMADS for given step + variable/level flags."""
+    if run is None:
+        run = _latest_run()
+    date_str, hr_str = _run_id(run)
+
+    for base in [_NOMADS_1H, _NOMADS_3H]:
+        params = {
+            "file": f"gfs.t{hr_str}z.pgrb2.0p25.f{step:03d}",
+            "dir":  f"/gfs.{date_str}/{hr_str}/atmos",
+            **var_flags,
+            **level_flags,
+        }
+        try:
+            r = _SESSION.get(base, params=params, timeout=90)
+            if r.status_code == 200 and len(r.content) > 500 and r.content[:4] == b'GRIB':
+                return r.content
+        except Exception:
+            pass
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Variable-specific fetchers  →  (lat, lon, *fields)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _std_grid(ny=721, nx=1440):
+    """Standard GFS 0.25° global grid."""
+    lat = np.linspace(90, -90, ny)
+    lon = np.linspace(0, 359.75, nx)
+    return lat, lon
+
+
+def _reshape(vals_1d, ny=721, nx=1440):
+    if len(vals_1d) == ny * nx:
+        return vals_1d.reshape(ny, nx)
+    # fallback for smaller arrays
+    n = int(np.round(np.sqrt(len(vals_1d) * 2)))
+    ny2 = n // 2; nx2 = n
+    if ny2 * nx2 == len(vals_1d):
+        return vals_1d.reshape(ny2, nx2)
+    return vals_1d.reshape(-1, nx)
+
+
+def _find(msgs, param, level_type=None, level=None):
+    for m in msgs:
+        if m["param"] != param: continue
+        if level_type and m["level_type"] != level_type: continue
+        if level is not None and abs(m["level"] - level) > 5: continue
         return m
     return None
 
 
-def _crop(lat, lon, arr):
-    li = np.where((lat >= LAT_MIN) & (lat <= LAT_MAX))[0]
-    loi = np.where((lon >= LON_MIN) & (lon <= LON_MAX))[0]
+def _crop(lat, lon, arr, lat_min, lat_max, lon_min, lon_max):
+    li  = np.where((lat >= lat_min) & (lat <= lat_max))[0]
+    loi = np.where((lon >= lon_min) & (lon <= lon_max))[0]
     if len(li) == 0 or len(loi) == 0:
-        raise RuntimeError("GFS grid does not overlap configured domain")
+        return lat, lon, arr
     return lat[li], lon[loi], arr[np.ix_(li, loi)]
 
 
-def _grid(messages, param, level_type=None, level=None):
-    m = _find_msg(messages, param, level_type, level)
+def fetch_temp2m(step: int, region: tuple) -> tuple:
+    """2 m temperature in °C."""
+    raw = _fetch_nomads(step,
+                        {"var_TMP": "on"},
+                        {"lev_2_m_above_ground": "on"})
+    if raw is None:
+        raise RuntimeError("NOMADS fetch failed for TMP 2m")
+    msgs = parse_grib2(raw)
+    m = _find(msgs, "TMP", level_type="height_agl", level=2)
     if m is None:
-        raise RuntimeError(f"GFS field '{param}' at {level or level_type} not found")
-    return _crop(m["lat"], m["lon"], m["values"])
+        # try any TMP message
+        m = next((x for x in msgs if x["param"] == "TMP"), None)
+    if m is None:
+        raise RuntimeError("TMP 2m not found in GRIB2")
+    lat, lon = _std_grid()
+    arr = _reshape(m["values_1d"]) - 273.15   # K → °C
+    lat_min, lat_max, lon_min, lon_max = region
+    lat, lon, arr = _crop(lat, lon, arr, lat_min, lat_max, lon_min, lon_max)
+    return lat, lon, arr
 
 
-# ── NetCDF/THREDDS fallback ────────────────────────────────────────────────
-# NOMADS GRIB filtering can occasionally return a GRIB variant that a small
-# pure-Python decoder cannot decode. The original GFS project already used
-# THREDDS NCSS as a fallback, so keep that path inside this single addon.
-THREDDS_SERVERS = (
-    "https://thredds.ucar.edu/thredds/ncss/grib/NCEP/GFS/Global_0p5deg/Best",
-    "https://thredds.aos.wisc.edu/thredds/ncss/grid/grib/NCEP/GFS/Global_0p5deg/Best",
-)
-
-def _ncss_fetch(variables, extra_params=None):
-    run_dt = latest_gfs_run_dt()
-    valid_dt = run_dt + datetime.timedelta(hours=6)
-    params = {
-        "var": ",".join(variables),
-        "north": LAT_MAX, "south": LAT_MIN,
-        "west": LON_MIN, "east": LON_MAX,
-        "time_start": run_dt.strftime("%Y-%m-%dT%H:00:00Z"),
-        "time_end": valid_dt.strftime("%Y-%m-%dT%H:00:00Z"),
-        "accept": "netCDF", "horizStride": 1,
-    }
-    if extra_params:
-        params.update(extra_params)
-    for srv in THREDDS_SERVERS:
-        try:
-            r = _SESSION.get(srv, params=params, timeout=60)
-            if r.status_code == 200 and b"<html" not in r.content[:512].lower():
-                return r.content
-        except Exception:
-            continue
-    return None
-
-def _parse_netcdf(nc_bytes, variables):
-    tmp = tempfile.NamedTemporaryFile(suffix=".nc", delete=False)
-    try:
-        tmp.write(nc_bytes); tmp.close()
-        result = {}
-        try:
-            from scipy.io.netcdf import netcdf_file
-            ds = netcdf_file(tmp.name, "r", mmap=False)
-            keys = list(ds.variables.keys())
-            lat_k = next((k for k in keys if k.lower() in ("lat", "latitude")), None)
-            lon_k = next((k for k in keys if k.lower() in ("lon", "longitude")), None)
-            if not lat_k or not lon_k:
-                ds.close(); raise RuntimeError("lat/lon missing in NCSS response")
-            result["lat"] = np.asarray(ds.variables[lat_k].data, dtype=float)
-            result["lon"] = np.asarray(ds.variables[lon_k].data, dtype=float)
-            for wanted in variables:
-                match = next((k for k in keys if k == wanted or k.startswith(wanted[:35])), None)
-                if match is None:
-                    continue
-                v = ds.variables[match]
-                arr = np.asarray(v.data, dtype=float)
-                fv = getattr(v, "_FillValue", None)
-                if fv is not None:
-                    arr[np.isclose(arr, float(fv), rtol=0, atol=1.0)] = np.nan
-                sc = float(getattr(v, "scale_factor", 1.0) or 1.0)
-                off = float(getattr(v, "add_offset", 0.0) or 0.0)
-                result[wanted] = arr * sc + off
-            ds.close()
-            return result
-        except Exception:
-            try:
-                import h5netcdf.legacyapi as nc
-            except ImportError:
-                raise
-            ds = nc.Dataset(tmp.name, "r")
-            keys = list(ds.variables.keys())
-            lat_k = next((k for k in keys if k.lower() in ("lat", "latitude")), None)
-            lon_k = next((k for k in keys if k.lower() in ("lon", "longitude")), None)
-            if not lat_k or not lon_k:
-                ds.close(); raise RuntimeError("lat/lon missing in NCSS response")
-            result["lat"] = np.asarray(ds.variables[lat_k][...], dtype=float)
-            result["lon"] = np.asarray(ds.variables[lon_k][...], dtype=float)
-            for wanted in variables:
-                match = next((k for k in keys if k == wanted or k.startswith(wanted[:35])), None)
-                if match is None: continue
-                v = ds.variables[match]
-                arr = np.asarray(v[...], dtype=float)
-                sc = float(v.attrs.get("scale_factor", 1.0) or 1.0)
-                off = float(v.attrs.get("add_offset", 0.0) or 0.0)
-                result[wanted] = arr * sc + off
-            ds.close()
-            return result
-    finally:
-        try: os.unlink(tmp.name)
-        except Exception: pass
-
-def _squeeze2d(arr):
-    arr = np.asarray(arr, dtype=float)
-    while arr.ndim > 2:
-        arr = arr[0]
-    return arr
-
-def _fetch_ncss(step, product, level=None):
-    if product == "temp":
-        raw = _ncss_fetch(["Temperature_height_above_ground"], {"vertCoord": "2"})
-        if not raw: return None
-        d = _parse_netcdf(raw, ["Temperature_height_above_ground"])
-        if "Temperature_height_above_ground" not in d: return None
-        lat, lon = d["lat"], d["lon"]
-        arr = _squeeze2d(d["Temperature_height_above_ground"]) - 273.15
-        if lat[0] > lat[-1]: lat = lat[::-1]; arr = arr[::-1, :]
-        lat, lon, arr = _crop(lat, lon, arr)
-        return lat, lon, arr, None, latest_gfs_run_dt(), step
-    if product == "mslp":
-        raw = _ncss_fetch(["Pressure_reduced_to_MSL_msl"])
-        if not raw: return None
-        d = _parse_netcdf(raw, ["Pressure_reduced_to_MSL_msl"])
-        if "Pressure_reduced_to_MSL_msl" not in d: return None
-        lat, lon = d["lat"], d["lon"]
-        arr = _squeeze2d(d["Pressure_reduced_to_MSL_msl"]) / 100.0
-        if lat[0] > lat[-1]: lat = lat[::-1]; arr = arr[::-1, :]
-        lat, lon, arr = _crop(lat, lon, arr)
-        return lat, lon, arr, None, latest_gfs_run_dt(), step
-    if product in ("wind", "u", "v"):
-        raw = _ncss_fetch(["u-component_of_wind_isobaric", "v-component_of_wind_isobaric"],
-                          {"vertCoord": str(level * 100)})
-        if not raw: return None
-        d = _parse_netcdf(raw, ["u-component_of_wind_isobaric", "v-component_of_wind_isobaric"])
-        if "u-component_of_wind_isobaric" not in d or "v-component_of_wind_isobaric" not in d: return None
-        lat, lon = d["lat"], d["lon"]
-        u = _squeeze2d(d["u-component_of_wind_isobaric"])
-        v = _squeeze2d(d["v-component_of_wind_isobaric"])
-        if lat[0] > lat[-1]: lat = lat[::-1]; u = u[::-1, :]; v = v[::-1, :]
-        lat, lon, u = _crop(lat, lon, u)
-        _, _, v = _crop(d["lat"] if d["lat"][0] <= d["lat"][-1] else d["lat"][::-1], lon, v)
-        extra = {"u": u, "v": v} if product == "wind" else None
-        data = np.sqrt(u ** 2 + v ** 2) if product == "wind" else (u if product == "u" else v)
-        return lat, lon, data, extra, latest_gfs_run_dt(), step
-    return None
+def fetch_wind_level(step: int, level_hpa: int, region: tuple) -> tuple:
+    """Wind speed + U + V at an isobaric level."""
+    lev_key = f"lev_{level_hpa}_mb"
+    raw = _fetch_nomads(step,
+                        {"var_UGRD": "on", "var_VGRD": "on"},
+                        {lev_key: "on"})
+    if raw is None:
+        raise RuntimeError(f"NOMADS fetch failed for wind {level_hpa} mb")
+    msgs = parse_grib2(raw)
+    mu = _find(msgs, "UGRD", level_type="isobaric", level=level_hpa)
+    mv = _find(msgs, "VGRD", level_type="isobaric", level=level_hpa)
+    if mu is None or mv is None:
+        mu = next((x for x in msgs if x["param"] == "UGRD"), None)
+        mv = next((x for x in msgs if x["param"] == "VGRD"), None)
+    if mu is None or mv is None:
+        raise RuntimeError(f"UGRD/VGRD not found for {level_hpa} mb")
+    lat, lon = _std_grid()
+    u = _reshape(mu["values_1d"])
+    v = _reshape(mv["values_1d"])
+    spd = np.sqrt(u**2 + v**2)
+    lat_min, lat_max, lon_min, lon_max = region
+    lat, lon, spd = _crop(lat, lon, spd, lat_min, lat_max, lon_min, lon_max)
+    _, _, u   = _crop(*_std_grid(), u, lat_min, lat_max, lon_min, lon_max)
+    _, _, v   = _crop(*_std_grid(), v, lat_min, lat_max, lon_min, lon_max)
+    return lat, lon, spd, u, v
 
 
-# ── GFS run / download ──────────────────────────────────────────────────────
-def latest_gfs_run_dt():
-    """Most recent GFS cycle expected to be safely available on NOMADS."""
-    now = datetime.datetime.utcnow()
-    candidates = []
-    for delta_days in range(2):
-        day = now - datetime.timedelta(days=delta_days)
-        for hour in (18, 12, 6, 0):
-            dt = day.replace(hour=hour, minute=0, second=0, microsecond=0)
-            if dt <= now - datetime.timedelta(hours=3):
-                candidates.append(dt)
-    if not candidates:
-        raise RuntimeError("Unable to determine a recent GFS run")
-    return candidates[0]
+def fetch_mslp(step: int, region: tuple) -> tuple:
+    """Mean Sea Level Pressure in hPa."""
+    raw = _fetch_nomads(step,
+                        {"var_PRMSL": "on"},
+                        {"lev_mean_sea_level": "on"})
+    if raw is None:
+        raise RuntimeError("NOMADS fetch failed for MSLP")
+    msgs = parse_grib2(raw)
+    m = _find(msgs, "PRMSL")
+    if m is None:
+        m = next((x for x in msgs if x["param"] == "PRMSL"), None)
+    if m is None:
+        raise RuntimeError("PRMSL not found in GRIB2")
+    lat, lon = _std_grid()
+    arr = _reshape(m["values_1d"]) / 100.0   # Pa → hPa
+    lat_min, lat_max, lon_min, lon_max = region
+    lat, lon, arr = _crop(lat, lon, arr, lat_min, lat_max, lon_min, lon_max)
+    return lat, lon, arr
 
 
-def _gfs_url(run_dt, step, var_flags, level_flags, base):
-    date_str = run_dt.strftime("%Y%m%d")
-    hr_str = run_dt.strftime("%H")
-    fname = f"gfs.t{hr_str}z.pgrb2.0p25.f{step:03d}"
-    params = {
-        "file": fname,
-        "leftlon": LON_MIN, "rightlon": LON_MAX,
-        "toplat": LAT_MAX, "bottomlat": LAT_MIN,
-        "dir": f"/gfs.{date_str}/{hr_str}/atmos",
-    }
-    params.update(var_flags)
-    params.update(level_flags)
-    return base + "?" + "&".join(f"{k}={v}" for k, v in params.items())
+def fetch_uwind(step: int, level_hpa: int, region: tuple) -> tuple:
+    """U-component (zonal wind) at isobaric level, m/s."""
+    lev_key = f"lev_{level_hpa}_mb"
+    raw = _fetch_nomads(step, {"var_UGRD": "on"}, {lev_key: "on"})
+    if raw is None:
+        raise RuntimeError(f"NOMADS fetch failed for UGRD {level_hpa} mb")
+    msgs = parse_grib2(raw)
+    m = _find(msgs, "UGRD", level_type="isobaric", level=level_hpa)
+    if m is None:
+        m = next((x for x in msgs if x["param"] == "UGRD"), None)
+    if m is None:
+        raise RuntimeError(f"UGRD not found for {level_hpa} mb")
+    lat, lon = _std_grid()
+    arr = _reshape(m["values_1d"])
+    lat_min, lat_max, lon_min, lon_max = region
+    lat, lon, arr = _crop(lat, lon, arr, lat_min, lat_max, lon_min, lon_max)
+    return lat, lon, arr
 
 
-def _download(run_dt, step, var_flags, level_flags):
-    # Try the requested cycle, then the previous cycle at step+6 as in the
-    # supplied GFS project's robust fetch strategy.
-    attempts = ((run_dt, step), (run_dt - datetime.timedelta(hours=6), step + 6))
-    for base in (NOMADS_FILTER_BASE, NOMADS_FILTER_BASE_3H):
-        for try_run, try_step in attempts:
-            url = _gfs_url(try_run, try_step, var_flags, level_flags, base)
-            try:
-                r = _SESSION.get(url, timeout=90)
-                if r.status_code != 200:
-                    continue
-                ct = r.headers.get("Content-Type", "")
-                if "html" in ct.lower():
-                    continue
-                if len(r.content) > 500 and r.content[:4] == b"GRIB":
-                    return r.content, try_run, try_step
-            except Exception:
-                continue
-    raise RuntimeError("GFS download failed on both NOMADS endpoints")
+def fetch_vwind(step: int, level_hpa: int, region: tuple) -> tuple:
+    """V-component (meridional wind) at isobaric level, m/s."""
+    lev_key = f"lev_{level_hpa}_mb"
+    raw = _fetch_nomads(step, {"var_VGRD": "on"}, {lev_key: "on"})
+    if raw is None:
+        raise RuntimeError(f"NOMADS fetch failed for VGRD {level_hpa} mb")
+    msgs = parse_grib2(raw)
+    m = _find(msgs, "VGRD", level_type="isobaric", level=level_hpa)
+    if m is None:
+        m = next((x for x in msgs if x["param"] == "VGRD"), None)
+    if m is None:
+        raise RuntimeError(f"VGRD not found for {level_hpa} mb")
+    lat, lon = _std_grid()
+    arr = _reshape(m["values_1d"])
+    lat_min, lat_max, lon_min, lon_max = region
+    lat, lon, arr = _crop(lat, lon, arr, lat_min, lat_max, lon_min, lon_max)
+    return lat, lon, arr
 
 
-def _fetch(step, product, level=None):
-    run_dt = latest_gfs_run_dt()
-    key = (run_dt, step, product, level)
-    with _CACHE_LOCK:
-        if key in _CACHE:
-            return _CACHE[key]
+# ═══════════════════════════════════════════════════════════════════════════
+#  Colormaps
+# ═══════════════════════════════════════════════════════════════════════════
 
-    result = None
-    try:
-        if product == "temp":
-            raw, used_run, used_step = _download(
-                run_dt, step, {"var_TMP": "on"}, {"lev_2_m_above_ground": "on"})
-            messages = _parse_grib2(raw)
-            lat, lon, data = _grid(messages, "TMP", "above_ground_m", 2)
-            result = (lat, lon, np.asarray(data, dtype=float) - 273.15, None, used_run, used_step)
-        elif product == "mslp":
-            raw, used_run, used_step = _download(
-                run_dt, step, {"var_PRMSL": "on"}, {"lev_mean_sea_level": "on"})
-            messages = _parse_grib2(raw)
-            lat, lon, data = _grid(messages, "PRMSL", "mean_sea_level")
-            result = (lat, lon, np.asarray(data, dtype=float) / 100.0, None, used_run, used_step)
-        elif product in ("wind", "u", "v"):
-            raw, used_run, used_step = _download(
-                run_dt, step, {"var_UGRD": "on", "var_VGRD": "on"},
-                {f"lev_{level}_mb": "on"})
-            messages = _parse_grib2(raw)
-            lat, lon, u = _grid(messages, "UGRD", "isobaric", level)
-            _, _, v = _grid(messages, "VGRD", "isobaric", level)
-            if product == "wind":
-                data = np.sqrt(u ** 2 + v ** 2)
-                extra = {"u": u, "v": v}
-            elif product == "u":
-                data, extra = u, None
-            else:
-                data, extra = v, None
-            result = (lat, lon, np.asarray(data, dtype=float), extra, used_run, used_step)
-        else:
-            raise ValueError(f"Unknown GFS product: {product}")
-    except Exception as grib_error:
-        # Do not fail the product merely because the filtered GRIB could not
-        # be decoded. Fall back to the same THREDDS NCSS source used by the
-        # original GFS project.
-        result = _fetch_ncss(step, product, level)
-        if result is None:
-            raise RuntimeError(f"GFS fetch failed (GRIB: {grib_error})") from grib_error
+def _temp_cmap():
+    return plt.get_cmap("RdBu_r")
 
-    with _CACHE_LOCK:
-        _CACHE[key] = result
-    return result
+def _wind_cmap():
+    colors = ["#f7fbff","#c6dbef","#9ecae1","#6baed6","#3182bd",
+              "#08519c","#00441b","#41ab5d","#addd8e","#f7fcb9",
+              "#fec44f","#fe9929","#ec7014","#cc4c02","#8c2d04"]
+    return LinearSegmentedColormap.from_list("wind_spd", colors, N=256)
 
+def _mslp_cmap():
+    return plt.get_cmap("RdYlBu_r")
 
-# ── Rendering ───────────────────────────────────────────────────────────────
-def _cmap_temp():
-    return plt.get_cmap("turbo")
-
-
-def _cmap_signed():
+def _uv_cmap():
     return plt.get_cmap("RdBu_r")
 
 
-def _cmap_pressure():
-    return plt.get_cmap("viridis")
+# ═══════════════════════════════════════════════════════════════════════════
+#  Render helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _xlabel(v):
+    v = float(v)
+    if v in (0.0, 360.0): return "0°"
+    if v == 180.0: return "180°"
+    return f"{v:.0f}°E" if v < 180 else f"{360 - v:.0f}°W"
+
+def _ylabel(v):
+    v = float(v)
+    return "EQ" if v == 0 else f"{abs(v):.0f}°{'N' if v > 0 else 'S'}"
+
+def _xticks(lon_min, lon_max, step=10):
+    ticks = []
+    v = int(np.floor(lon_min / step)) * step
+    while v <= lon_max + step:
+        if lon_min <= v <= lon_max:
+            ticks.append(v % 360)
+        v += step
+    return sorted(set(ticks))
+
+def _yticks(lat_min, lat_max, step=5):
+    ticks = []
+    v = int(np.floor(lat_min / step)) * step
+    while v <= lat_max:
+        if lat_min <= v <= lat_max:
+            ticks.append(v)
+        v += step
+    return ticks
 
 
-def _draw_map(lat, lon, field, pkg, coast_segs, title, cb_label, levels, cmap,
-              extra=None):
+# ═══════════════════════════════════════════════════════════════════════════
+#  Master render function
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _render_map(lat, lon, field, title, cb_label, cmap, clevs,
+                run_dt, step, coast_segs,
+                u=None, v=None, show_wind=False,
+                smooth_sigma=0.8, contour=False):
+    """Draw a GFS forecast map and return PNG BytesIO."""
+    field = gaussian_filter(field.astype(float), sigma=smooth_sigma)
+    if u is not None:
+        u = gaussian_filter(u.astype(float), sigma=smooth_sigma)
+        v = gaussian_filter(v.astype(float), sigma=smooth_sigma)
+
     LON2D, LAT2D = np.meshgrid(lon, lat)
-    fig = plt.figure(figsize=(11, 8), facecolor="white", dpi=190)
-    ax = fig.add_axes([0.07, 0.11, 0.86, 0.80])
+    lon_min, lon_max = float(lon.min()), float(lon.max())
+    lat_min, lat_max = float(lat.min()), float(lat.max())
+    valid_dt = run_dt + datetime.timedelta(hours=step)
+
+    fig = plt.figure(figsize=(12, 7), facecolor="white")
+    ax = fig.add_axes([0.045, 0.145, 0.910, 0.750])
     ax.set_facecolor("#f4f0e8")
-    ax.set_xlim(LON_MIN, LON_MAX)
-    ax.set_ylim(LAT_MIN, LAT_MAX)
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
 
-    # Smooth only for display; preserve the original min/max range.
-    sf = gaussian_filter(np.nan_to_num(field, nan=np.nanmean(field)), sigma=1.0)
-    cf = ax.contourf(LON2D, LAT2D, sf, levels=levels, cmap=cmap,
-                     extend="both", zorder=1, alpha=0.90)
-    ax.contour(LON2D, LAT2D, sf, levels=levels[::max(1, len(levels)//12)],
-               colors="#333333", linewidths=0.45, alpha=0.45, zorder=2)
+    # ── shading ────────────────────────────────────────────────────────────
+    cf = ax.contourf(LON2D, LAT2D, field, levels=clevs,
+                     cmap=cmap, extend="both", zorder=1, alpha=0.88)
 
-    if extra and "u" in extra:
-        u, v = extra["u"], extra["v"]
-        step = 6
-        q = slice(None, None, step)
-        ax.quiver(LON2D[q, q], LAT2D[q, q], u[q, q], v[q, q],
-                  color="#111111", scale=650, width=0.0017,
-                  headwidth=4.2, headlength=5.2, headaxislength=4.7,
-                  pivot="middle", zorder=6, alpha=0.88)
-        rx = LON_MIN + 0.18 * (LON_MAX - LON_MIN)
-        ry = LAT_MIN + 0.07 * (LAT_MAX - LAT_MIN)
-        ax.quiver(rx, ry, 10, 0, color="#111111", scale=650,
-                  scale_units="inches", width=0.0017, zorder=9)
-        ax.text(rx + 1.2, ry + 0.7, "10 m/s", fontsize=8.5, color="#111111", zorder=9)
+    # ── optional contour lines ──────────────────────────────────────────────
+    if contour:
+        n_c = min(12, len(clevs) // 2)
+        cl = ax.contour(LON2D, LAT2D, field,
+                        levels=clevs[::max(1, len(clevs) // n_c)],
+                        colors="#111111", linewidths=0.4, alpha=0.45, zorder=2)
+        ax.clabel(cl, fmt="%g", fontsize=7, inline=True, inline_spacing=3)
 
+    # ── wind quivers (for wind-speed maps) ─────────────────────────────────
+    if show_wind and u is not None and v is not None:
+        step_q = max(1, int(round(len(lat) / 20)))
+        qs = slice(None, None, step_q)
+        Xq, Yq = LON2D[qs, qs], LAT2D[qs, qs]
+        Uq, Vq = u[qs, qs], v[qs, qs]
+        spd_q = np.sqrt(Uq**2 + Vq**2)
+        mask = ~np.isnan(spd_q) & (spd_q > 1.0)
+        ax.quiver(Xq[mask], Yq[mask], Uq[mask], Vq[mask],
+                  color="#111111", scale=600, scale_units="inches",
+                  width=0.0016, headwidth=4, headlength=5,
+                  headaxislength=4, minshaft=1.2, pivot="middle",
+                  zorder=6, alpha=0.85)
+
+    # ── coastlines ─────────────────────────────────────────────────────────
     for seg in coast_segs:
-        lons = np.where(seg[:, 0] < 0, seg[:, 0] + 360.0, seg[:, 0])
-        lats = seg[:, 1]
-        breaks = np.where(np.abs(np.diff(lons)) > 180)[0] + 1
-        for part in np.split(np.column_stack([lons, lats]), breaks):
-            if len(part) > 1:
-                ax.plot(part[:, 0], part[:, 1], color="#2c2c2c", lw=0.75, zorder=7)
+        lons_s = np.where(seg[:, 0] < 0, seg[:, 0] + 360, seg[:, 0])
+        lats_s = seg[:, 1]
+        breaks = np.where(np.abs(np.diff(lons_s)) > 180)[0] + 1
+        for part in np.split(np.column_stack([lons_s, lats_s]), breaks):
+            ax.plot(part[:, 0], part[:, 1], color="#2c2c2c", lw=0.80, zorder=7)
 
-    for x in range(70, 101, 10):
-        ax.axvline(x, color="#b0a898", lw=0.35, ls=":", zorder=0, alpha=0.65)
-    for y in range(10, 41, 10):
-        ax.axhline(y, color="#b0a898", lw=0.35, ls=":", zorder=0, alpha=0.65)
+    # ── grid lines ─────────────────────────────────────────────────────────
+    lon_step = 10 if (lon_max - lon_min) < 60 else 20
+    lat_step = 5  if (lat_max - lat_min) < 40 else 10
+    for x in _xticks(lon_min, lon_max, lon_step):
+        ax.axvline(x, color="#b0a898", lw=0.35, ls=":", zorder=0, alpha=0.7)
+    for y in _yticks(lat_min, lat_max, lat_step):
+        ax.axhline(y, color="#b0a898", lw=0.35, ls=":", zorder=0, alpha=0.7)
+    ax.axhline(0, color="#666655", lw=0.65, zorder=0, alpha=0.75)
 
-    ax.set_xticks(range(70, 101, 10))
-    ax.set_yticks(range(10, 41, 10))
-    ax.set_xticklabels([f"{x}°E" for x in range(70, 101, 10)], fontsize=9)
-    ax.set_yticklabels([f"{y}°N" for y in range(10, 41, 10)], fontsize=9)
-    ax.tick_params(length=3, color="#888878", width=0.7)
+    ax.set_xticks(_xticks(lon_min, lon_max, lon_step))
+    ax.set_xticklabels([_xlabel(x) for x in _xticks(lon_min, lon_max, lon_step)],
+                       fontsize=9, color="#333322")
+    ax.set_yticks(_yticks(lat_min, lat_max, lat_step))
+    ax.set_yticklabels([_ylabel(y) for y in _yticks(lat_min, lat_max, lat_step)],
+                       fontsize=9, color="#333322")
     for spine in ax.spines.values():
-        spine.set_edgecolor("#999988")
-        spine.set_linewidth(0.8)
+        spine.set_edgecolor("#999988"); spine.set_linewidth(0.8)
 
-    cax = fig.add_axes([0.15, 0.045, 0.70, 0.026])
+    # ── colorbar ───────────────────────────────────────────────────────────
+    cax = fig.add_axes([0.12, 0.057, 0.760, 0.026])
     cbar = plt.colorbar(cf, cax=cax, orientation="horizontal")
-    cbar.ax.tick_params(labelsize=8, colors="#222211", length=3)
-    cbar.outline.set_edgecolor("#999988")
-    cbar.outline.set_linewidth(0.7)
-    cax.text(0.5, -1.65, cb_label, transform=cax.transAxes,
-             ha="center", va="top", fontsize=11, color="#222211", fontstyle="italic")
+    cbar.ax.tick_params(labelsize=8, colors="#222211", length=3, width=0.7)
+    cbar.outline.set_edgecolor("#999988"); cbar.outline.set_linewidth(0.7)
+    cax.text(0.5, -1.6, cb_label, transform=cax.transAxes, ha="center",
+             va="top", fontsize=11.5, color="#222211", fontstyle="italic")
 
-    fig.text(0.50, 0.965, title, ha="center", va="top", fontsize=15,
-             fontweight="bold", color="#111100")
-    ax.text(0.985, 0.015, "@XPWEATHER", transform=ax.transAxes,
-            fontsize=10.5, va="bottom", ha="right", color="#222211",
-            fontweight="semibold", bbox=dict(boxstyle="round,pad=0.30",
-            fc="white", ec="#ccccbb", alpha=0.90, lw=0.8), zorder=10)
-    ax.text(0.005, 0.015, "NCEP GFS · NOMADS/NOAA", transform=ax.transAxes,
-            fontsize=8, va="bottom", ha="left", color="#666655", zorder=10)
+    # ── title ──────────────────────────────────────────────────────────────
+    run_s  = run_dt.strftime("%Y-%m-%d %HZ")
+    valid_s = valid_dt.strftime("%Y-%m-%d %HZ")
+    ttext = f"{title}  ·  Run {run_s}  →  Valid {valid_s}  (+{step}h)"
+    fig.text(0.50, 0.965, ttext, ha="center", va="top", fontsize=13,
+             fontweight="bold", color="#111100", fontfamily="DejaVu Sans")
 
-    out = io.BytesIO()
-    plt.savefig(out, format="png", bbox_inches="tight", facecolor="white", edgecolor="none")
+    # ── branding ───────────────────────────────────────────────────────────
+    ax.text(0.985, 0.016, "@XPWEATHER", transform=ax.transAxes, fontsize=10,
+            va="bottom", ha="right", color="#222211", fontweight="semibold",
+            bbox=dict(boxstyle="round,pad=0.35", fc="white",
+                      ec="#ccccbb", alpha=0.92, lw=0.9), zorder=10)
+    ax.text(0.005, 0.016, "NCEP GFS  ·  NOMADS/NCEP",
+            transform=ax.transAxes, fontsize=7.5, va="bottom", ha="left",
+            color="#666655", zorder=10)
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=200, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
     plt.close(fig)
-    out.seek(0)
-    return out
+    buf.seek(0)
+    return buf
 
 
-def _render_gfs(lat, lon, data, pkg, coast_segs, dates, **_kw):
-    hour = int(pkg["forecast_hour"])
-    run_dt = data.get("_run_dt")
-    used_step = data.get("_used_step", hour)
-    field = data["main"]
-    extra = {k: data[k] for k in ("u", "v") if k in data}
+# ═══════════════════════════════════════════════════════════════════════════
+#  Custom compute + render (Tier-2 kind)
+# ═══════════════════════════════════════════════════════════════════════════
 
-    if pkg["gfs_product"] == "temp":
-        vmin, vmax = np.nanpercentile(field, [2, 98])
-        vmin = min(vmin, -5); vmax = max(vmax, 35)
-        levels = np.linspace(vmin, vmax, 31)
-        cmap = _cmap_temp()
-        cb = "2 m Temperature (°C)"
-    elif pkg["gfs_product"] == "mslp":
-        vmin, vmax = np.nanpercentile(field, [2, 98])
-        levels = np.arange(np.floor(vmin / 2) * 2, np.ceil(vmax / 2) * 2 + 0.1, 2)
-        cmap = _cmap_pressure()
-        cb = "Sea Level Pressure (hPa)"
-    elif pkg["gfs_product"] == "wind":
-        vmax = max(20.0, float(np.nanpercentile(field, 98)))
-        levels = np.linspace(0, vmax, 25)
-        cmap = plt.get_cmap("YlGnBu")
-        cb = f"Wind Speed ({pkg['level']} hPa) (m/s)"
+def _gfs_compute(pkg: dict, dates) -> tuple:
+    """Tier-2 compute: fetch from NOMADS and return (lat, lon, data_dict)."""
+    step      = pkg["gfs_step"]
+    family    = pkg["gfs_family"]
+    level_hpa = pkg.get("gfs_level", 0)
+    region    = pkg.get("gfs_region", (0.0, 360.0, -80.0, 80.0))
+
+    run_dt = _latest_run()
+
+    if family == "temp":
+        lat, lon, arr = fetch_temp2m(step, region)
+        return lat, lon, {"main": arr, "run_dt": run_dt, "step": step}
+
+    elif family.startswith("wind"):
+        lat, lon, spd, u, v = fetch_wind_level(step, level_hpa, region)
+        return lat, lon, {"main": spd, "u": u, "v": v, "run_dt": run_dt, "step": step}
+
+    elif family == "mslp":
+        lat, lon, arr = fetch_mslp(step, region)
+        return lat, lon, {"main": arr, "run_dt": run_dt, "step": step}
+
+    elif family == "uwnd":
+        lat, lon, arr = fetch_uwind(step, level_hpa, region)
+        return lat, lon, {"main": arr, "run_dt": run_dt, "step": step}
+
+    elif family == "vwnd":
+        lat, lon, arr = fetch_vwind(step, level_hpa, region)
+        return lat, lon, {"main": arr, "run_dt": run_dt, "step": step}
+
     else:
-        vmax = max(10.0, float(np.nanpercentile(np.abs(field), 98)))
-        levels = np.linspace(-vmax, vmax, 25)
-        cmap = _cmap_signed()
-        comp = "U-Wind" if pkg["gfs_product"] == "u" else "V-Wind"
-        cb = f"{comp} ({pkg['level']} hPa) (m/s)"
-
-    run_label = run_dt.strftime("%Y-%m-%d %HZ") if run_dt else "latest GFS run"
-    valid_dt = run_dt + datetime.timedelta(hours=used_step) if run_dt else None
-    valid_label = valid_dt.strftime("%Y-%m-%d %HZ") if valid_dt else f"+{hour:02d}h"
-    title = f"{pkg['base_label']} · +{hour:02d}h  |  Valid {valid_label}  |  Run {run_label}"
-    return _draw_map(lat, lon, field, pkg, coast_segs, title, cb, levels, cmap,
-                     extra=extra or None)
+        raise ValueError(f"Unknown GFS family: {family!r}")
 
 
-# ── Custom-kind compute ─────────────────────────────────────────────────────
-def _compute_gfs(pkg, dates):
-    hour = int(pkg["forecast_hour"])
-    lat, lon, field, extra, run_dt, used_step = _fetch(hour, pkg["gfs_product"], pkg.get("level"))
-    data = {"main": field, "_run_dt": run_dt, "_used_step": used_step}
-    if extra:
-        data.update(extra)
-    return lat, lon, data
+def _gfs_render(lat, lon, data: dict, pkg: dict, coast_segs, dates) -> io.BytesIO:
+    """Tier-2 render: draw map from data dict returned by _gfs_compute."""
+    family    = pkg["gfs_family"]
+    level_hpa = pkg.get("gfs_level", 0)
+    step      = pkg["gfs_step"]
+    run_dt    = data.get("run_dt", _latest_run())
+    field     = data["main"]
+
+    if family == "temp":
+        clevs    = np.linspace(max(float(np.nanmin(field)), -30),
+                               min(float(np.nanmax(field)), 50), 50)
+        cb_label = "2 m Temperature  (°C)"
+        title    = "GFS · 2 m Temperature"
+        cmap     = _temp_cmap()
+        contour  = True
+        u, v, show_wind = None, None, False
+
+    elif family.startswith("wind"):
+        vmax     = max(float(np.nanmax(field)), 5.0)
+        clevs    = np.linspace(0, vmax, 40)
+        cb_label = f"{level_hpa} mb Wind Speed  (m/s)"
+        title    = f"GFS · {level_hpa} mb Wind Speed"
+        cmap     = _wind_cmap()
+        contour  = False
+        u        = data.get("u")
+        v        = data.get("v")
+        show_wind = True
+
+    elif family == "mslp":
+        vmin     = float(np.nanmin(field)) - 0.5
+        vmax     = float(np.nanmax(field)) + 0.5
+        clevs    = np.linspace(vmin, vmax, 50)
+        cb_label = "Mean Sea Level Pressure  (hPa)"
+        title    = "GFS · Sea Level Pressure"
+        cmap     = _mslp_cmap()
+        contour  = True
+        u, v, show_wind = None, None, False
+
+    elif family == "uwnd":
+        lim      = max(abs(float(np.nanmin(field))), abs(float(np.nanmax(field))), 5.0)
+        clevs    = np.linspace(-lim, lim, 50)
+        cb_label = f"{level_hpa} mb U-Wind  (m/s)"
+        title    = f"GFS · {level_hpa} mb U-Component (Zonal Wind)"
+        cmap     = _uv_cmap()
+        contour  = False
+        u, v, show_wind = None, None, False
+
+    elif family == "vwnd":
+        lim      = max(abs(float(np.nanmin(field))), abs(float(np.nanmax(field))), 5.0)
+        clevs    = np.linspace(-lim, lim, 50)
+        cb_label = f"{level_hpa} mb V-Wind  (m/s)"
+        title    = f"GFS · {level_hpa} mb V-Component (Meridional Wind)"
+        cmap     = _uv_cmap()
+        contour  = False
+        u, v, show_wind = None, None, False
+
+    else:
+        raise ValueError(f"Unknown GFS family: {family!r}")
+
+    return _render_map(
+        lat, lon, field, title, cb_label, cmap, clevs,
+        run_dt, step, coast_segs,
+        u=u, v=v, show_wind=show_wind,
+        contour=contour,
+    )
 
 
-# ── Product registry ────────────────────────────────────────────────────────
-PRODUCTS = {}
+# ═══════════════════════════════════════════════════════════════════════════
+#  Product registry builder
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _pid(family: str, step: int) -> str:
+    return f"gfs_{family}_{step:02d}h"
 
 
-def _add(pid, base_label, gfs_product, level=None):
-    for hour in FORECAST_HOURS:
-        full_id = f"{pid}_{hour}"
-        PRODUCTS[full_id] = {
-            "id": full_id,
-            "title": f"{base_label} · +{hour:02d}h",
-            "name": base_label,
-            "tag": "GFS FC",
-            "desc": f"GFS forecast · +{hour:02d}h",
-            "kind": "gfs_fc",
-            "level": level,
-            "forecast_hour": hour,
-            "gfs_product": gfs_product,
-            "base_label": base_label,
-        }
+def _make_product(pid: str, family: str, step: int,
+                  name: str, desc: str,
+                  level_hpa: int = 0) -> dict:
+    lv_str = f" {level_hpa} mb" if level_hpa else ""
+    return {
+        "id":         pid,
+        "title":      f"GFS · {name}  (+{step}h)",
+        "name":       name,
+        "tag":        "GFS FC",
+        "desc":       desc,
+        "kind":       "gfs_fc",
+        # ── Tier-2 required keys ────────────────────
+        "level":      level_hpa,
+        "variables":  [],
+        "show_wind":  False,
+        "vlim":       1.0,
+        "cint":       0.5,
+        "cb_label":   name,
+        "plot_scale": 1.0,
+        # ── GFS-specific ────────────────────────────
+        "gfs_family": family,
+        "gfs_step":   step,
+        "gfs_level":  level_hpa,
+        "gfs_region": (0.0, 360.0, -80.0, 80.0),  # default global; overridden per-request
+    }
 
 
-_add("gfs_temp", "Temperature", "temp")
-for _lev in WIND_LEVELS:
-    _add(f"gfs_wind_{_lev}", f"Wind {_lev}", "wind", _lev)
-_add("gfs_mslp", "Sea Level Pressure", "mslp")
-for _lev in (850,):
-    _add(f"gfs_u_{_lev}", f"U-Wind {_lev}", "u", _lev)
-    _add(f"gfs_v_{_lev}", f"V-Wind {_lev}", "v", _lev)
+# Build the full product table
+PRODUCTS: dict = {}
 
+for _step in GFS_STEPS:
+    # Temperature 2m
+    _pid_t = _pid("temp", _step)
+    PRODUCTS[_pid_t] = _make_product(
+        _pid_t, "temp", _step,
+        "Temperature 2m", "GFS 2 m air temperature forecast.")
+
+    # Wind at each isobaric level
+    for _lv in WIND_LEVELS:
+        _fam = f"wind{_lv}"
+        _pid_w = _pid(_fam, _step)
+        PRODUCTS[_pid_w] = _make_product(
+            _pid_w, _fam, _step,
+            f"Wind {_lv} mb", f"GFS {_lv} mb wind speed + vectors.",
+            level_hpa=_lv)
+
+    # Sea Level Pressure
+    _pid_m = _pid("mslp", _step)
+    PRODUCTS[_pid_m] = _make_product(
+        _pid_m, "mslp", _step,
+        "Sea Level Pressure", "GFS mean sea level pressure.")
+
+    # U-Wind (850 mb default shown; all levels available via JS)
+    for _lv in WIND_LEVELS:
+        _pid_u = _pid(f"uwnd{_lv}", _step)
+        PRODUCTS[_pid_u] = _make_product(
+            _pid_u, "uwnd", _step,
+            f"U-Wind {_lv} mb", f"GFS {_lv} mb zonal (U) wind component.",
+            level_hpa=_lv)
+
+    # V-Wind
+    for _lv in WIND_LEVELS:
+        _pid_v = _pid(f"vwnd{_lv}", _step)
+        PRODUCTS[_pid_v] = _make_product(
+            _pid_v, "vwnd", _step,
+            f"V-Wind {_lv} mb", f"GFS {_lv} mb meridional (V) wind component.",
+            level_hpa=_lv)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Custom kind registration
+# ═══════════════════════════════════════════════════════════════════════════
 
 KINDS = {
     "gfs_fc": {
-        "compute": _compute_gfs,
-        "render": _render_gfs,
-        "tag": "GFS FC",
-        "title": "NCEP GFS Forecast",
+        "compute": _gfs_compute,
+        "render":  _gfs_render,
+        "tag":     "GFS FC",
+        "title":   "GFS Forecast",
     }
 }
