@@ -17,6 +17,7 @@ import datetime
 from flask import Flask, render_template, request, send_file, jsonify
 
 import pro as metmap
+import gfs_web
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
@@ -40,7 +41,8 @@ def index():
                            default_n_days=metmap.DEFAULT_N_DAYS,
                            default_product=metmap.DEFAULT_PRODUCT,
                            products=metmap.list_products(),
-                           groups=metmap.group_products())
+                           groups=metmap.group_products(),
+                           gfs_config=gfs_web.metadata())
 
 
 @app.route("/health")
@@ -92,6 +94,45 @@ def generate():
     data = buf.getvalue()
     _cache[key] = data
     return _serve_png(data)
+
+
+@app.route("/gfs/config")
+def gfs_config():
+    return jsonify(gfs_web.metadata())
+
+
+@app.route("/gfs/generate", methods=["POST"])
+def gfs_generate():
+    body = request.get_json(silent=True) or {}
+    variable_key = body.get("variable", "wind")
+    level = int(body.get("level", 850) or 0)
+    avg_days = int(body.get("avg_days", 0) or 0)
+    step = int(body.get("step", gfs_web.gconfig.DEFAULT_STEP) or 0)
+    compute_anom = bool(body.get("anomaly", False))
+    region_id = str(body.get("region", "2"))
+
+    try:
+        data, meta = gfs_web.generate(
+            variable_key=variable_key,
+            level=level,
+            avg_days=avg_days,
+            step=step,
+            compute_anom=compute_anom,
+            region_id=region_id,
+        )
+        resp = _serve_png(data)
+        resp.headers["X-GFS-Run"] = meta.get("run", "")
+        resp.headers["X-GFS-Region"] = meta.get("region", "")
+        resp.headers["X-GFS-Cache"] = str(meta.get("cache", False)).lower()
+        if "seconds" in meta:
+            resp.headers["X-GFS-Seconds"] = str(meta["seconds"])
+        return resp
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("GFS map generation failed")
+        return jsonify({
+            "error": str(exc),
+            "code": "gfs_generation_failed",
+        }), 500
 
 
 @app.route("/diff", methods=["POST"])
