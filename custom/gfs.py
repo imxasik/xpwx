@@ -59,7 +59,7 @@ _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": "xpwx-gfs/2.0 (+https://xpweather.com)"})
 
 # ── Time-frame steps (hours) for the 5-day slider ──────────────────────────
-GFS_STEPS = [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 84, 96, 108, 120]
+GFS_STEPS = list(range(6, 121, 6))
 
 # ── Isobaric wind levels ─────────────────────────────────────────────────────
 WIND_LEVELS = [1000, 925, 850, 700, 500, 200]
@@ -132,8 +132,12 @@ def _decode_grib2(msg: bytes, discipline: int):
     if nbits == 0 or len(raw_data) == 0: return None
     # Unpack bit-packed values
     bits = np.unpackbits(np.frombuffer(raw_data, dtype=np.uint8))
-    n_unpack = (len(bits) // nbits) * nbits
-    packed = bits[:n_unpack].reshape(-1, nbits)
+    # GRIB2 section 7 is byte-padded. Decode exactly n_pts values;
+    # do not treat the padding bits as additional grid points.
+    needed_bits = int(n_pts) * int(nbits)
+    if needed_bits <= 0 or needed_bits > len(bits):
+        return None
+    packed = bits[:needed_bits].reshape(int(n_pts), nbits)
     vals = packed.dot(1 << np.arange(nbits - 1, -1, -1, dtype=np.int64)).astype(np.float64)
     R = ref_f * (2 ** e_bin) / (10 ** d_dec)
     scale = (2 ** e_bin) / (10 ** d_dec)
