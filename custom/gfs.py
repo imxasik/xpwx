@@ -17,6 +17,8 @@ project files to XPWX.
 
 import datetime
 import io
+import os
+import tempfile
 import struct
 import threading
 import warnings
@@ -145,7 +147,10 @@ def _decode_message(msg, discipline):
     sf_raw = _u8(sec4, 23)
     sf = sf_raw - 256 if sf_raw & 0x80 else sf_raw
     sv = _u32(sec4, 24)
-    level_val = (sv / 100.0) if ltype == 100 else (sv / (10.0 ** sf))
+    # GRIB2 stores isobaric levels in Pa. Apply the signed scale factor
+    # first, then convert Pa -> hPa for the addon API.
+    scaled_level = sv / (10.0 ** sf)
+    level_val = (scaled_level / 100.0) if ltype == 100 else scaled_level
 
     param_name = GFS_PARAM.get((discipline, cat, param),
                                f"d{discipline}c{cat}p{param}")
@@ -213,6 +218,138 @@ def _grid(messages, param, level_type=None, level=None):
     return _crop(m["lat"], m["lon"], m["values"])
 
 
+# ── NetCDF/THREDDS fallback ────────────────────────────────────────────────
+# NOMADS GRIB filtering can occasionally return a GRIB variant that a small
+# pure-Python decoder cannot decode. The original GFS project already used
+# THREDDS NCSS as a fallback, so keep that path inside this single addon.
+THREDDS_SERVERS = (
+    "https://thredds.ucar.edu/thredds/ncss/grib/NCEP/GFS/Global_0p5deg/Best",
+    "https://thredds.aos.wisc.edu/thredds/ncss/grid/grib/NCEP/GFS/Global_0p5deg/Best",
+)
+
+def _ncss_fetch(variables, extra_params=None):
+    run_dt = latest_gfs_run_dt()
+    valid_dt = run_dt + datetime.timedelta(hours=6)
+    params = {
+        "var": ",".join(variables),
+        "north": LAT_MAX, "south": LAT_MIN,
+        "west": LON_MIN, "east": LON_MAX,
+        "time_start": run_dt.strftime("%Y-%m-%dT%H:00:00Z"),
+        "time_end": valid_dt.strftime("%Y-%m-%dT%H:00:00Z"),
+        "accept": "netCDF", "horizStride": 1,
+    }
+    if extra_params:
+        params.update(extra_params)
+    for srv in THREDDS_SERVERS:
+        try:
+            r = _SESSION.get(srv, params=params, timeout=60)
+            if r.status_code == 200 and b"<html" not in r.content[:512].lower():
+                return r.content
+        except Exception:
+            continue
+    return None
+
+def _parse_netcdf(nc_bytes, variables):
+    tmp = tempfile.NamedTemporaryFile(suffix=".nc", delete=False)
+    try:
+        tmp.write(nc_bytes); tmp.close()
+        result = {}
+        try:
+            from scipy.io.netcdf import netcdf_file
+            ds = netcdf_file(tmp.name, "r", mmap=False)
+            keys = list(ds.variables.keys())
+            lat_k = next((k for k in keys if k.lower() in ("lat", "latitude")), None)
+            lon_k = next((k for k in keys if k.lower() in ("lon", "longitude")), None)
+            if not lat_k or not lon_k:
+                ds.close(); raise RuntimeError("lat/lon missing in NCSS response")
+            result["lat"] = np.asarray(ds.variables[lat_k].data, dtype=float)
+            result["lon"] = np.asarray(ds.variables[lon_k].data, dtype=float)
+            for wanted in variables:
+                match = next((k for k in keys if k == wanted or k.startswith(wanted[:35])), None)
+                if match is None:
+                    continue
+                v = ds.variables[match]
+                arr = np.asarray(v.data, dtype=float)
+                fv = getattr(v, "_FillValue", None)
+                if fv is not None:
+                    arr[np.isclose(arr, float(fv), rtol=0, atol=1.0)] = np.nan
+                sc = float(getattr(v, "scale_factor", 1.0) or 1.0)
+                off = float(getattr(v, "add_offset", 0.0) or 0.0)
+                result[wanted] = arr * sc + off
+            ds.close()
+            return result
+        except Exception:
+            try:
+                import h5netcdf.legacyapi as nc
+            except ImportError:
+                raise
+            ds = nc.Dataset(tmp.name, "r")
+            keys = list(ds.variables.keys())
+            lat_k = next((k for k in keys if k.lower() in ("lat", "latitude")), None)
+            lon_k = next((k for k in keys if k.lower() in ("lon", "longitude")), None)
+            if not lat_k or not lon_k:
+                ds.close(); raise RuntimeError("lat/lon missing in NCSS response")
+            result["lat"] = np.asarray(ds.variables[lat_k][...], dtype=float)
+            result["lon"] = np.asarray(ds.variables[lon_k][...], dtype=float)
+            for wanted in variables:
+                match = next((k for k in keys if k == wanted or k.startswith(wanted[:35])), None)
+                if match is None: continue
+                v = ds.variables[match]
+                arr = np.asarray(v[...], dtype=float)
+                sc = float(v.attrs.get("scale_factor", 1.0) or 1.0)
+                off = float(v.attrs.get("add_offset", 0.0) or 0.0)
+                result[wanted] = arr * sc + off
+            ds.close()
+            return result
+    finally:
+        try: os.unlink(tmp.name)
+        except Exception: pass
+
+def _squeeze2d(arr):
+    arr = np.asarray(arr, dtype=float)
+    while arr.ndim > 2:
+        arr = arr[0]
+    return arr
+
+def _fetch_ncss(step, product, level=None):
+    if product == "temp":
+        raw = _ncss_fetch(["Temperature_height_above_ground"], {"vertCoord": "2"})
+        if not raw: return None
+        d = _parse_netcdf(raw, ["Temperature_height_above_ground"])
+        if "Temperature_height_above_ground" not in d: return None
+        lat, lon = d["lat"], d["lon"]
+        arr = _squeeze2d(d["Temperature_height_above_ground"]) - 273.15
+        if lat[0] > lat[-1]: lat = lat[::-1]; arr = arr[::-1, :]
+        lat, lon, arr = _crop(lat, lon, arr)
+        return lat, lon, arr, None, latest_gfs_run_dt(), step
+    if product == "mslp":
+        raw = _ncss_fetch(["Pressure_reduced_to_MSL_msl"])
+        if not raw: return None
+        d = _parse_netcdf(raw, ["Pressure_reduced_to_MSL_msl"])
+        if "Pressure_reduced_to_MSL_msl" not in d: return None
+        lat, lon = d["lat"], d["lon"]
+        arr = _squeeze2d(d["Pressure_reduced_to_MSL_msl"]) / 100.0
+        if lat[0] > lat[-1]: lat = lat[::-1]; arr = arr[::-1, :]
+        lat, lon, arr = _crop(lat, lon, arr)
+        return lat, lon, arr, None, latest_gfs_run_dt(), step
+    if product in ("wind", "u", "v"):
+        raw = _ncss_fetch(["u-component_of_wind_isobaric", "v-component_of_wind_isobaric"],
+                          {"vertCoord": str(level * 100)})
+        if not raw: return None
+        d = _parse_netcdf(raw, ["u-component_of_wind_isobaric", "v-component_of_wind_isobaric"])
+        if "u-component_of_wind_isobaric" not in d or "v-component_of_wind_isobaric" not in d: return None
+        lat, lon = d["lat"], d["lon"]
+        u = _squeeze2d(d["u-component_of_wind_isobaric"])
+        v = _squeeze2d(d["v-component_of_wind_isobaric"])
+        if lat[0] > lat[-1]: lat = lat[::-1]; u = u[::-1, :]; v = v[::-1, :]
+        lat, lon, u = _crop(lat, lon, u)
+        _, _, v = _crop(d["lat"] if d["lat"][0] <= d["lat"][-1] else d["lat"][::-1], lon, v)
+        extra = {"u": u, "v": v} if product == "wind" else None
+        data = np.sqrt(u ** 2 + v ** 2) if product == "wind" else (u if product == "u" else v)
+        return lat, lon, data, extra, latest_gfs_run_dt(), step
+    return None
+
+
 # ── GFS run / download ──────────────────────────────────────────────────────
 def latest_gfs_run_dt():
     """Most recent GFS cycle expected to be safely available on NOMADS."""
@@ -272,40 +409,45 @@ def _fetch(step, product, level=None):
         if key in _CACHE:
             return _CACHE[key]
 
-    if product == "temp":
-        raw, used_run, used_step = _download(
-            run_dt, step, {"var_TMP": "on"}, {"lev_2_m_above_ground": "on"})
-        messages = _parse_grib2(raw)
-        lat, lon, data = _grid(messages, "TMP", "above_ground_m", 2)
-        data = data - 273.15
-    elif product == "mslp":
-        raw, used_run, used_step = _download(
-            run_dt, step, {"var_PRMSL": "on"}, {"lev_mean_sea_level": "on"})
-        messages = _parse_grib2(raw)
-        lat, lon, data = _grid(messages, "PRMSL", "mean_sea_level")
-        data = data / 100.0
-    elif product in ("wind", "u", "v"):
-        raw, used_run, used_step = _download(
-            run_dt, step,
-            {"var_UGRD": "on", "var_VGRD": "on"},
-            {f"lev_{level}_mb": "on"})
-        messages = _parse_grib2(raw)
-        lat, lon, u = _grid(messages, "UGRD", "isobaric", level)
-        _, _, v = _grid(messages, "VGRD", "isobaric", level)
-        if product == "wind":
-            data = np.sqrt(u ** 2 + v ** 2)
-            extra = {"u": u, "v": v}
-        elif product == "u":
-            data = u
-            extra = None
+    result = None
+    try:
+        if product == "temp":
+            raw, used_run, used_step = _download(
+                run_dt, step, {"var_TMP": "on"}, {"lev_2_m_above_ground": "on"})
+            messages = _parse_grib2(raw)
+            lat, lon, data = _grid(messages, "TMP", "above_ground_m", 2)
+            result = (lat, lon, np.asarray(data, dtype=float) - 273.15, None, used_run, used_step)
+        elif product == "mslp":
+            raw, used_run, used_step = _download(
+                run_dt, step, {"var_PRMSL": "on"}, {"lev_mean_sea_level": "on"})
+            messages = _parse_grib2(raw)
+            lat, lon, data = _grid(messages, "PRMSL", "mean_sea_level")
+            result = (lat, lon, np.asarray(data, dtype=float) / 100.0, None, used_run, used_step)
+        elif product in ("wind", "u", "v"):
+            raw, used_run, used_step = _download(
+                run_dt, step, {"var_UGRD": "on", "var_VGRD": "on"},
+                {f"lev_{level}_mb": "on"})
+            messages = _parse_grib2(raw)
+            lat, lon, u = _grid(messages, "UGRD", "isobaric", level)
+            _, _, v = _grid(messages, "VGRD", "isobaric", level)
+            if product == "wind":
+                data = np.sqrt(u ** 2 + v ** 2)
+                extra = {"u": u, "v": v}
+            elif product == "u":
+                data, extra = u, None
+            else:
+                data, extra = v, None
+            result = (lat, lon, np.asarray(data, dtype=float), extra, used_run, used_step)
         else:
-            data = v
-            extra = None
-    else:
-        raise ValueError(f"Unknown GFS product: {product}")
+            raise ValueError(f"Unknown GFS product: {product}")
+    except Exception as grib_error:
+        # Do not fail the product merely because the filtered GRIB could not
+        # be decoded. Fall back to the same THREDDS NCSS source used by the
+        # original GFS project.
+        result = _fetch_ncss(step, product, level)
+        if result is None:
+            raise RuntimeError(f"GFS fetch failed (GRIB: {grib_error})") from grib_error
 
-    result = (lat, lon, np.asarray(data, dtype=float), extra if product == "wind" else None,
-              used_run, used_step)
     with _CACHE_LOCK:
         _CACHE[key] = result
     return result
