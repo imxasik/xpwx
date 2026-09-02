@@ -59,7 +59,7 @@ _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": "xpwx-gfs/2.0 (+https://xpweather.com)"})
 
 # ── Time-frame steps (hours) for the 5-day slider ──────────────────────────
-GFS_STEPS = list(range(6, 121, 6))
+GFS_STEPS = [6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 84, 96, 108, 120]
 
 # ── Isobaric wind levels ─────────────────────────────────────────────────────
 WIND_LEVELS = [1000, 925, 850, 700, 500, 200]
@@ -105,7 +105,13 @@ def _decode_grib2(msg: bytes, discipline: int):
     cat  = _u8(msg, pos + 9)
     num  = _u8(msg, pos + 10)
     level_type = _u8(msg, pos + 22)
-    level_val  = _u32(msg, pos + 23)
+    # GRIB2 fixed-surface value: signed scale factor at +23,
+    # unsigned scaled value at +24. Isobaric levels are encoded in Pa.
+    level_sf   = struct.unpack_from(">b", msg, pos + 23)[0]
+    level_raw  = _u32(msg, pos + 24)
+    level_val  = level_raw / (10 ** level_sf)
+    if level_type == 100:  # isobaric surface: Pa -> hPa
+        level_val /= 100.0
     param = _PARAM.get((discipline, cat, num))
     lvl_str = _LEVEL_TYPE.get(level_type, f"t{level_type}")
     pos += sec4_len
@@ -132,12 +138,8 @@ def _decode_grib2(msg: bytes, discipline: int):
     if nbits == 0 or len(raw_data) == 0: return None
     # Unpack bit-packed values
     bits = np.unpackbits(np.frombuffer(raw_data, dtype=np.uint8))
-    # GRIB2 section 7 is byte-padded. Decode exactly n_pts values;
-    # do not treat the padding bits as additional grid points.
-    needed_bits = int(n_pts) * int(nbits)
-    if needed_bits <= 0 or needed_bits > len(bits):
-        return None
-    packed = bits[:needed_bits].reshape(int(n_pts), nbits)
+    n_unpack = (len(bits) // nbits) * nbits
+    packed = bits[:n_unpack].reshape(-1, nbits)
     vals = packed.dot(1 << np.arange(nbits - 1, -1, -1, dtype=np.int64)).astype(np.float64)
     R = ref_f * (2 ** e_bin) / (10 ** d_dec)
     scale = (2 ** e_bin) / (10 ** d_dec)
