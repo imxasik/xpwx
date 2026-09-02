@@ -91,16 +91,6 @@
   }
   .tc-domain-sel:focus{outline:2px solid var(--acc2);outline-offset:1px}
 
-  /* forecast time selector inside the GFS FC group header */
-  .gfs-time-label{font-size:10.5px;font-weight:800;letter-spacing:1px;color:var(--mut);margin-left:auto;margin-right:5px}
-  .gfs-time-sel{
-    min-width:58px; max-width:70px;
-    padding:4px 7px; border:1px solid var(--line); border-radius:7px;
-    background:var(--card); color:var(--ink); font-size:12px; font-weight:700;
-    cursor:pointer;
-  }
-  .gfs-time-sel:focus{outline:2px solid var(--acc2);outline-offset:1px}
-
   .side-item{border:1px solid var(--line);border-radius:9px;padding:11px 12px;background:#fff;
     cursor:pointer;transition:.12s}
   .side-item:hover{border-color:#c3bba8;background:#faf9f4}
@@ -187,17 +177,7 @@
 
           <div class="group-h">
             <span class="group-h-label">{{ g.tag }}</span>
-            {% if g.tag == 'GFS FC' %}
-            <!-- Forecast time-frame selector — right side of the GFS FC header -->
-            <span class="gfs-time-label">Time Frame</span>
-            <select class="gfs-time-sel" id="gfs-time"
-                    onchange="gfsTimeChange(this.value)"
-                    title="Select GFS forecast time frame">
-              {% for h in range(6, 121, 6) %}
-              <option value="{{ h }}">{{ '%02d'|format(h) }}</option>
-              {% endfor %}
-            </select>
-            {% elif g.tag == 'SST' %}
+            {% if g.tag == 'SST' %}
             <!-- Region / Domain selector — right side of the SST header -->
             <select class="sst-domain-sel" id="sst-domain"
                     onchange="sstDomainChange(this.value)"
@@ -222,11 +202,7 @@
             {% endif %}
           </div>
 
-          {% if g.tag == 'GFS FC' %}
-          <!-- GFS product list — rendered by JS based on forecast time frame -->
-          <div id="gfs-product-list"></div>
-
-          {% elif g.tag == 'SST' %}
+          {% if g.tag == 'SST' %}
           <!-- SST product list — rendered by JS based on domain selection -->
           <div id="sst-product-list"></div>
 
@@ -394,50 +370,6 @@
 
   let _lastTcDomain = "global";
 
-  // ── GFS Forecast product families (time frame is controlled in the header) ──
-  const GFS_FAMILIES = [
-    { prefix: "gfs_temp", label: "Temperature", desc: "2 m temperature forecast." },
-    { prefix: "gfs_wind1000", label: "Wind 1000", desc: "1000 hPa wind speed + vectors." },
-    { prefix: "gfs_wind925",  label: "Wind 925",  desc: "925 hPa wind speed + vectors." },
-    { prefix: "gfs_wind850",  label: "Wind 850",  desc: "850 hPa wind speed + vectors." },
-    { prefix: "gfs_wind700",  label: "Wind 700",  desc: "700 hPa wind speed + vectors." },
-    { prefix: "gfs_wind500",  label: "Wind 500",  desc: "500 hPa wind speed + vectors." },
-    { prefix: "gfs_wind200",  label: "Wind 200",  desc: "200 hPa wind speed + vectors." },
-    { prefix: "gfs_mslp", label: "Sea Level Pressure", desc: "Mean sea level pressure forecast." },
-    { prefix: "gfs_uwnd850",  label: "U-Wind 850",  desc: "850 hPa zonal wind." },
-    { prefix: "gfs_vwnd850",  label: "V-Wind 850",  desc: "850 hPa meridional wind." },
-  ];
-  let _gfsHour = 6;
-
-  function gfsId(prefix, hour){ return `${prefix}_${String(hour).padStart(2, "0")}h`; }
-
-  function renderGfsList(hour){
-    const container = document.getElementById("gfs-product-list");
-    if (!container) return;
-    container.innerHTML = "";
-    GFS_FAMILIES.forEach(fam => {
-      const pid = gfsId(fam.prefix, hour);
-      if (!P(pid)) return;
-      const div = document.createElement("div");
-      div.className = "side-item" + (pid === current ? " active" : "");
-      div.dataset.id = pid;
-      div.onclick = () => pick(pid);
-      div.innerHTML = `<div class="nm">${fam.label}</div><div class="ds">${fam.desc}</div>`;
-      container.appendChild(div);
-    });
-  }
-
-  function gfsTimeChange(hour){
-    _gfsHour = parseInt(hour, 10) || 6;
-    renderGfsList(_gfsHour);
-    const cur = P(current);
-    if (cur && cur.tag === "GFS FC") {
-      const prefix = current.replace(/_\d+h$/, "");
-      const newId = gfsId(prefix, _gfsHour);
-      if (P(newId)) pick(newId);
-    }
-  }
-
   // ── mobile menu ───────────────────────────────────────────────────────────
   function toggleMenu(){ document.body.classList.toggle("menu-open"); }
   function closeMenu(){ document.body.classList.remove("menu-open"); }
@@ -498,7 +430,6 @@
   // ── initialise SST / TC lists ─────────────────────────────────────────────
   renderSstList("global");
   renderTcList("global");
-  renderGfsList(_gfsHour);
 
   const p0 = P(current);
   if(p0){ DL.setAttribute("download", current+".png"); }
