@@ -142,7 +142,10 @@ def _decode_message(msg, discipline):
     cat = _u8(sec4, 9)
     param = _u8(sec4, 10)
     ltype = _u8(sec4, 22)
-    level_val = (_u32(sec4, 23) / 100.0) if ltype == 100 else _u32(sec4, 23)
+    sf_raw = _u8(sec4, 23)
+    sf = sf_raw - 256 if sf_raw & 0x80 else sf_raw
+    sv = _u32(sec4, 24)
+    level_val = (sv / 100.0) if ltype == 100 else (sv / (10.0 ** sf))
 
     param_name = GFS_PARAM.get((discipline, cat, param),
                                f"d{discipline}c{cat}p{param}")
