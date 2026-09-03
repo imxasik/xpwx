@@ -88,7 +88,11 @@ def generate(variable_key, level, avg_days, step, compute_anom, region_id):
     if step < 0 or step > 384:
         raise ValueError("forecast step must be between 0 and 384 hours")
 
-    if variable_key not in gconfig.LEVEL_REQUIRED_VARS:
+    if variable_key == "geo850":
+        level = 850
+        avg_days = 0
+        compute_anom = False
+    elif variable_key not in gconfig.LEVEL_REQUIRED_VARS:
         level = 0
     if variable_key not in gconfig.ANOMALY_SUPPORTED_VARS:
         compute_anom = False
