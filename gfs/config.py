@@ -124,11 +124,10 @@ VARIABLES = {
     "11": {"key": "vp",         "name": "Velocity Potential (derived, m²/s)"},
     "12": {"key": "streamfunc", "name": "Stream Function (ψ, derived, m²/s)"},
     "13": {"key": "sf_pwat",    "name": "Stream Function + Precipitable Water Overlay"},
-    "14": {"key": "trueconverge", "name": "True Converge"},
 }
 
 # ── ভ্যারিয়েবলগুলো যেগুলো pressure level দরকার ────────────────────
-LEVEL_REQUIRED_VARS = {"wind", "rh", "vvel", "u", "v", "vp", "streamfunc", "sf_pwat", "trueconverge"}
+LEVEL_REQUIRED_VARS = {"wind", "rh", "vvel", "u", "v", "vp", "streamfunc", "sf_pwat"}
 
 # ════════════════════════════════════════════════════════════════════
 #  PRESSURE LEVELS
@@ -381,17 +380,6 @@ PLOT_CONFIGS = {
         "clevs"      : lambda d: _symmetric_levels(d, 60),
         "alpha"      : 0.88,
         "contour"    : True,
-        "streamlines": True,
-    },
-    # ── True Convergence Wind: convergent flow + speed change diagnostic ──
-    "trueconverge": {
-        "cmap"       : "RdBu_r",
-        "unit"       : "×10⁻⁵ s⁻¹",
-        "label"      : lambda lv: f"{lv} mb True Convergence Wind",
-        "title_var"  : lambda lv, avg: f"{lv} mb True Convergence Wind",
-        "clevs"      : lambda d: _symmetric_levels(d, 60),
-        "alpha"      : 0.88,
-        "contour"    : False,
         "streamlines": True,
     },
     "sf_pwat": {

@@ -635,49 +635,6 @@ def fetch_velocity_potential(level=850):
     lat, lon, u, v = fetch_wind(level)
     return lat, lon, _compute_velocity_potential(lat, lon, u, v)
 
-def _compute_true_convergence(lat, lon, u, v):
-    """
-    True-convergence diagnostic for convergent flow.
-
-    Decompose horizontal wind divergence as:
-        div(V) = directional term + speed-change term
-        speed-change term = V_hat · grad(|V|)
-
-    In areas of directional convergence, return + when wind speed decreases
-    downstream and − when wind speed increases downstream. Non-convergent
-    areas are masked to zero. Returned units are 1e-5 s^-1.
-    """
-    speed = np.hypot(u, v)
-    speed_safe = np.maximum(speed, 1e-6)
-    uh = u / speed_safe
-    vh = v / speed_safe
-
-    dlat_deg = abs(lat[1] - lat[0]) if len(lat) > 1 else 0.25
-    dlon_deg = abs(lon[1] - lon[0]) if len(lon) > 1 else 0.25
-    R = 6.371e6
-    lat_rad = np.radians(lat)
-    dy = np.radians(dlat_deg) * R
-
-    directional_div = np.zeros_like(speed, dtype=float)
-    speed_change = np.zeros_like(speed, dtype=float)
-
-    duhat_dx = np.zeros_like(speed, dtype=float)
-    dvhat_dy = np.gradient(vh, dy, axis=0)
-    dspeed_dy = np.gradient(speed, dy, axis=0)
-
-    for j in range(speed.shape[0]):
-        cos_lat = max(np.cos(lat_rad[j]), 1e-6)
-        dx = np.radians(dlon_deg) * R * cos_lat
-        duhat_dx[j, :] = np.gradient(uh[j, :], dx)
-        dspeed_dx = np.gradient(speed[j, :], dx)
-        directional_div[j, :] = speed[j, :] * (duhat_dx[j, :] + dvhat_dy[j, :])
-        speed_change[j, :] = uh[j, :] * dspeed_dx + vh[j, :] * dspeed_dy[j, :]
-
-    # Only convergent directional flow is part of this diagnostic.
-    out = np.where(directional_div < 0.0, -speed_change, 0.0)
-    return out * 1e5
-
-
 def fetch_stream_function(level=850):
     print(f"  [DERIVED] Computing Stream Function at {level} mb ...")
     lat, lon, u, v = fetch_wind(level)
@@ -885,7 +842,6 @@ def get_data(variable_key: str, level: int, avg_days: int, compute_anom: bool = 
     elif base_key == "vp":         fn = functools.partial(fetch_velocity_potential, level=level)
     elif base_key == "streamfunc": fn = functools.partial(fetch_stream_function, level=level)
     elif base_key == "sf_pwat":    fn = functools.partial(fetch_sf_pwat, level=level)
-    elif base_key == "trueconverge": fn = functools.partial(fetch_wind, level=level)
     elif base_key == "temp":       fn = fetch_temp_2m
     elif base_key == "mslp":       fn = fetch_mslp
     elif base_key == "rh":         fn = functools.partial(fetch_rh, level=level)
@@ -910,12 +866,6 @@ def get_data(variable_key: str, level: int, avg_days: int, compute_anom: bool = 
     if base_key == "wind":
         lat, lon, u, v = result
         data = np.sqrt(u**2 + v**2)
-        extra_data = (u, v)
-    elif base_key == "trueconverge":
-        # Use the same U/V fields for both the diagnostic and streamlines.
-        # fetch_multiday() returns averaged U/V for multi-day periods.
-        lat, lon, u, v = result
-        data = _compute_true_convergence(lat, lon, u, v)
         extra_data = (u, v)
     elif base_key == "streamfunc":
         if len(result) == 5:
