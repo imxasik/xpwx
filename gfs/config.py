@@ -124,10 +124,11 @@ VARIABLES = {
     "11": {"key": "vp",         "name": "Velocity Potential (derived, m²/s)"},
     "12": {"key": "streamfunc", "name": "Stream Function (ψ, derived, m²/s)"},
     "13": {"key": "sf_pwat",    "name": "Stream Function + Precipitable Water Overlay"},
+    "14": {"key": "geo850",      "name": "850 mb Geostrophic Convergence: Speed Convergence (+) / Divergence (−)"},
 }
 
 # ── ভ্যারিয়েবলগুলো যেগুলো pressure level দরকার ────────────────────
-LEVEL_REQUIRED_VARS = {"wind", "rh", "vvel", "u", "v", "vp", "streamfunc", "sf_pwat"}
+LEVEL_REQUIRED_VARS = {"wind", "rh", "vvel", "u", "v", "vp", "streamfunc", "sf_pwat", "geo850"}
 
 # ════════════════════════════════════════════════════════════════════
 #  PRESSURE LEVELS
@@ -216,6 +217,16 @@ def get_dynamic_precip_levels(d):
 #  PLOT CONFIGS
 # ════════════════════════════════════════════════════════════════════
 PLOT_CONFIGS = {
+    "geo850": {
+        "cmap"       : "RdBu_r",
+        "unit"       : "×10⁻⁵ s⁻¹",
+        "label"      : lambda lv: "850 mb Geostrophic Speed Convergence/Divergence",
+        "title_var"  : lambda lv, avg: "850 mb Geostrophic Convergence: Speed Convergence (+) / Speed Divergence (−)" + (f"  [{avg}-day avg]" if avg else ""),
+        "clevs"      : lambda d: _symmetric_levels(d, 60),
+        "alpha"      : 0.82,
+        "contour"    : False,
+        "streamlines": True,
+    },
     "wind": {
         "cmap"       : "turbo",
         "unit"       : "m/s",
