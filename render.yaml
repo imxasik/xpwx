@@ -1,0 +1,16 @@
+# Render.com blueprint — deploys this app automatically on every push.
+# Sign in at https://render.com → "New → Blueprint" and pick this repo, or just
+# create a "Web Service" and point it at this repo (it auto-detects Python).
+#
+# NOTE: use render.yaml as the single source of truth for the start command.
+# Do NOT add a Procfile — Render would otherwise try to execute the Procfile
+# line verbatim (including the "web:" prefix) and fail with
+# "bash: web:: command not found".
+services:
+  - type: web
+    name: vp-anomaly-map
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn -b 0.0.0.0:$PORT --timeout 120 app:app"
+    # Render injects its own $PORT; do NOT override it here.
