@@ -1,8 +1,0 @@
-Flask>=3.0
-gunicorn>=21.0
-numpy
-scipy
-matplotlib
-requests
-pydap
-pyshp
