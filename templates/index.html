@@ -280,10 +280,6 @@
             <div class="nm">Stream Function + PWAT</div>
             <div class="ds">Combined circulation and moisture overlay.</div>
           </div>
-          <div class="side-item" data-gfs-var="geo850" onclick="pickGfs('geo850')">
-            <div class="nm">850 mb Geostrophic Convergence</div>
-            <div class="ds">Positive: speed convergence (slowing) · Negative: speed divergence (accelerating) · Streamlines.</div>
-          </div>
         </div>
       </div>
     </aside>
@@ -559,7 +555,6 @@
     const meta = gfsProductMeta();
     const levelRequired = !!(meta && meta.level_required);
     GFS_LEVEL.disabled = !levelRequired;
-    if (gfsVar === "geo850") GFS_LEVEL.value = "850";
     GFS_ANOM.disabled = !(meta && meta.anomaly_supported);
     if (GFS_ANOM.disabled) GFS_ANOM.checked = false;
   }
