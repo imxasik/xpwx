@@ -241,21 +241,8 @@ def draw_map(run_dt, step, country_segs, coast_segs,
                         colors="#333333", linewidths=0.5, zorder=3)
         ax.clabel(cs, fmt="%.0f", fontsize=7, inline=True)
 
-    # ── 850-mb geostrophic convergence / speed diagnostic ──
-    if variable == "geo850" and extra_data is not None and len(extra_data) == 2:
-        ug, vg = extra_data
-        _draw_streamlines(ax, lat, lon, ug, vg, zorder=4)
-        # Reference-style labels: positive = speed convergence (slowing),
-        # negative = speed divergence (accelerating), only inside
-        # directionally convergent geostrophic flow.
-        ax.text(0.015, 0.935, "+ SPEED CONVERGENCE / − SPEED DIVERGENCE",
-                transform=ax.transAxes, fontsize=8, fontweight="bold",
-                color="#111111", ha="left", va="top",
-                bbox=dict(boxstyle="round,pad=0.3", fc="white",
-                          ec="#999999", alpha=0.92, lw=0.8), zorder=12)
-
     # ── Stream Function overlay on SF+PWAT (normal or anomaly) ──
-    elif is_sf_pwat and extra_data is not None and len(extra_data) == 3:
+    if is_sf_pwat and extra_data is not None and len(extra_data) == 3:
         u_sf, v_sf, psi = extra_data
         # SF contour lines over PWAT shading
         psi_s = smooth(psi)

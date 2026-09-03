@@ -635,6 +635,49 @@ def fetch_velocity_potential(level=850):
     lat, lon, u, v = fetch_wind(level)
     return lat, lon, _compute_velocity_potential(lat, lon, u, v)
 
+def _compute_true_convergence(lat, lon, u, v):
+    """
+    True-convergence diagnostic for convergent flow.
+
+    Decompose horizontal wind divergence as:
+        div(V) = directional term + speed-change term
+        speed-change term = V_hat · grad(|V|)
+
+    In areas of directional convergence, return + when wind speed decreases
+    downstream and − when wind speed increases downstream. Non-convergent
+    areas are masked to zero. Returned units are 1e-5 s^-1.
+    """
+    speed = np.hypot(u, v)
+    speed_safe = np.maximum(speed, 1e-6)
+    uh = u / speed_safe
+    vh = v / speed_safe
+
+    dlat_deg = abs(lat[1] - lat[0]) if len(lat) > 1 else 0.25
+    dlon_deg = abs(lon[1] - lon[0]) if len(lon) > 1 else 0.25
+    R = 6.371e6
+    lat_rad = np.radians(lat)
+    dy = np.radians(dlat_deg) * R
+
+    directional_div = np.zeros_like(speed, dtype=float)
+    speed_change = np.zeros_like(speed, dtype=float)
+
+    duhat_dx = np.zeros_like(speed, dtype=float)
+    dvhat_dy = np.gradient(vh, dy, axis=0)
+    dspeed_dy = np.gradient(speed, dy, axis=0)
+
+    for j in range(speed.shape[0]):
+        cos_lat = max(np.cos(lat_rad[j]), 1e-6)
+        dx = np.radians(dlon_deg) * R * cos_lat
+        duhat_dx[j, :] = np.gradient(uh[j, :], dx)
+        dspeed_dx = np.gradient(speed[j, :], dx)
+        directional_div[j, :] = speed[j, :] * (duhat_dx[j, :] + dvhat_dy[j, :])
+        speed_change[j, :] = uh[j, :] * dspeed_dx + vh[j, :] * dspeed_dy[j, :]
+
+    # Only convergent directional flow is part of this diagnostic.
+    out = np.where(directional_div < 0.0, -speed_change, 0.0)
+    return out * 1e5
+
+
 def fetch_stream_function(level=850):
     print(f"  [DERIVED] Computing Stream Function at {level} mb ...")
     lat, lon, u, v = fetch_wind(level)
@@ -696,87 +739,6 @@ def fetch_mslp():
         if lat[0]>lat[-1]: lat=lat[::-1]; arr=arr[::-1,:]
         lc,lnc,dc=crop(lat,lon,arr/100.0); return lc,lnc,dc
     raise RuntimeError("MSLP fetch failed.")
-
-
-def _geostrophic_wind_from_hgt(lat, lon, hgt):
-    """Compute geostrophic wind (m/s) from geopotential height (m)."""
-    R = 6.371e6
-    omega = 7.2921159e-5
-    g = 9.80665
-    lat_rad = np.radians(lat)
-    dlat = np.gradient(lat_rad)
-    dlon = np.gradient(np.radians(lon))
-
-    dz_dy = np.gradient(hgt, axis=0) / (dlat[:, None] * R)
-    dx = R * np.cos(lat_rad)[:, None] * dlon[None, :]
-    dz_dx = np.gradient(hgt, axis=1) / dx
-
-    f = 2.0 * omega * np.sin(lat_rad)
-    ug = np.full_like(hgt, np.nan, dtype=float)
-    vg = np.full_like(hgt, np.nan, dtype=float)
-    valid = np.abs(f) > 1.0e-5
-    ug[valid, :] = -(g / f[valid, None]) * dz_dy[valid, :]
-    vg[valid, :] =  (g / f[valid, None]) * dz_dx[valid, :]
-    return ug, vg
-
-
-def _geo850_decomposition(lat, lon, ug, vg):
-    """Return directional divergence and speed divergence of geostrophic wind."""
-    R = 6.371e6
-    lat_rad = np.radians(lat)
-    dlat = np.gradient(lat_rad)
-    dlon = np.gradient(np.radians(lon))
-    dy = dlat[:, None] * R
-    dx = R * np.cos(lat_rad)[:, None] * dlon[None, :]
-
-    speed = np.hypot(ug, vg)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        eu = np.where(speed > 1e-6, ug / speed, 0.0)
-        ev = np.where(speed > 1e-6, vg / speed, 0.0)
-
-    ds_dx = np.gradient(speed, axis=1) / dx
-    ds_dy = np.gradient(speed, axis=0) / dy
-    speed_div = eu * ds_dx + ev * ds_dy
-
-    de_dx = np.gradient(eu, axis=1) / dx
-    de_dy = np.gradient(ev, axis=0) / dy
-    directional_div = speed * (de_dx + de_dy)
-
-    bad = ~np.isfinite(speed) | (speed < 1e-6)
-    speed_div[bad] = np.nan
-    directional_div[bad] = np.nan
-    return directional_div, speed_div
-
-
-def fetch_geostrophic_850():
-    """Fetch 850-mb HGT and return geostrophic U/V plus decomposition."""
-    level = 850
-    print("  [DERIVED] Computing 850 mb Geostrophic Convergence / Speed diagnostic ...")
-    raw = _fetch_grib2_from_nomads({"var_HGT": "on"}, {"lev_850_mb": "on"})
-    if raw:
-        msgs = parse_grib2(raw)
-        try:
-            lat, lon, hgt = grib2_to_grid(msgs, "HGT", "isobaric", level)
-            ug, vg = _geostrophic_wind_from_hgt(lat, lon, hgt)
-            ddir, dspeed = _geo850_decomposition(lat, lon, ug, vg)
-            return lat, lon, ug, vg, ddir, dspeed
-        except Exception as e:
-            print(f"  GRIB2: {e}")
-
-    print("  Falling back to THREDDS ...")
-    raw_nc = _ncss_fetch_fallback(["Geopotential_height_isobaric"], {"vertCoord": "85000"})
-    if raw_nc:
-        parsed = _parse_nc_bytes(raw_nc, ["Geopotential_height_isobaric"])
-        lat = parsed["lat"]; lon = parsed["lon"]
-        hgt = parsed["Geopotential_height_isobaric"][0]
-        while hgt.ndim > 2: hgt = hgt[0]
-        if lat[0] > lat[-1]:
-            lat = lat[::-1]; hgt = hgt[::-1, :]
-        lat, lon, hgt = crop(lat, lon, hgt)
-        ug, vg = _geostrophic_wind_from_hgt(lat, lon, hgt)
-        ddir, dspeed = _geo850_decomposition(lat, lon, ug, vg)
-        return lat, lon, ug, vg, ddir, dspeed
-    raise RuntimeError("850 mb geopotential height fetch failed on all sources.")
 
 
 def fetch_rh(level=850):
@@ -917,13 +879,13 @@ def get_data(variable_key: str, level: int, avg_days: int, compute_anom: bool = 
     base_key = variable_key.replace("_anomaly", "") if anom_suffix else variable_key
     do_anom  = anom_suffix or compute_anom
 
-    if   base_key == "geo850":     return fetch_geostrophic_850()
-    elif base_key == "wind":       fn = functools.partial(fetch_wind, level=level)
+    if   base_key == "wind":       fn = functools.partial(fetch_wind, level=level)
     elif base_key == "u":          fn = functools.partial(fetch_u_wind, level=level)
     elif base_key == "v":          fn = functools.partial(fetch_v_wind, level=level)
     elif base_key == "vp":         fn = functools.partial(fetch_velocity_potential, level=level)
     elif base_key == "streamfunc": fn = functools.partial(fetch_stream_function, level=level)
     elif base_key == "sf_pwat":    fn = functools.partial(fetch_sf_pwat, level=level)
+    elif base_key == "trueconverge": fn = functools.partial(fetch_wind, level=level)
     elif base_key == "temp":       fn = fetch_temp_2m
     elif base_key == "mslp":       fn = fetch_mslp
     elif base_key == "rh":         fn = functools.partial(fetch_rh, level=level)
@@ -945,17 +907,15 @@ def get_data(variable_key: str, level: int, avg_days: int, compute_anom: bool = 
 
     extra_data = None
 
-    if base_key == "geo850":
-        lat, lon, ug, vg, directional_div, speed_div = result
-        # Only show the speed component where the geostrophic flow is
-        # directionally converging. Positive = speed convergence (deceleration);
-        # negative = speed divergence (acceleration). Scale to 10^-5 s^-1.
-        mask = directional_div < 0.0
-        data = np.where(mask, -speed_div * 1.0e5, np.nan)
-        extra_data = (ug, vg)
-    elif base_key == "wind":
+    if base_key == "wind":
         lat, lon, u, v = result
         data = np.sqrt(u**2 + v**2)
+        extra_data = (u, v)
+    elif base_key == "trueconverge":
+        # Use the same U/V fields for both the diagnostic and streamlines.
+        # fetch_multiday() returns averaged U/V for multi-day periods.
+        lat, lon, u, v = result
+        data = _compute_true_convergence(lat, lon, u, v)
         extra_data = (u, v)
     elif base_key == "streamfunc":
         if len(result) == 5:
