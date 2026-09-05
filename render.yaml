@@ -12,5 +12,5 @@ services:
     runtime: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn -b 0.0.0.0:$PORT --timeout 120 app:app"
+    startCommand: "gunicorn -b 0.0.0.0:$PORT --timeout 300 app:app"
     # Render injects its own $PORT; do NOT override it here.

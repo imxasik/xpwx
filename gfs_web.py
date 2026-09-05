@@ -66,7 +66,7 @@ def metadata():
             for k, v in gconfig.REGIONS.items()
         ],
         "default_step": gconfig.DEFAULT_STEP,
-        "default_region": "1",
+        "default_region": "2",
         "default_variable": "1",
         "default_level": "3",
         "default_period": "1",
