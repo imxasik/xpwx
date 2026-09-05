@@ -162,7 +162,7 @@ AVERAGE_OPTIONS = {
 }
 
 # Default single forecast step (used when average_days == 0)
-DEFAULT_STEP = 0
+DEFAULT_STEP = 18
 
 # Step interval for multi-day fetching (hours)
 AVG_STEP_INTERVAL = 24
