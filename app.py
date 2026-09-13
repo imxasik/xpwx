@@ -18,6 +18,7 @@ from flask import Flask, render_template, request, send_file, jsonify
 
 import pro as metmap
 import gfs_web
+import aifs_web
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
@@ -42,7 +43,8 @@ def index():
                            default_product=metmap.DEFAULT_PRODUCT,
                            products=metmap.list_products(),
                            groups=metmap.group_products(),
-                           gfs_config=gfs_web.metadata())
+                           gfs_config=gfs_web.metadata(),
+                           aifs_config=aifs_web.metadata())
 
 
 @app.route("/health")
@@ -132,6 +134,34 @@ def gfs_generate():
         return jsonify({
             "error": str(exc),
             "code": "gfs_generation_failed",
+        }), 500
+
+
+@app.route("/aifs/config")
+def aifs_config():
+    return jsonify(aifs_web.metadata())
+
+
+@app.route("/aifs/generate", methods=["POST"])
+def aifs_generate():
+    body = request.get_json(silent=True) or {}
+    product_id = str(body.get("product", "vp"))
+    level = int(body.get("level", aifs_web.DEFAULT_LEVEL) or aifs_web.DEFAULT_LEVEL)
+
+    try:
+        png, meta = aifs_web.generate(product_id=product_id, level=level)
+        resp = _serve_png(png)
+        resp.headers["X-AIFS-Run"]     = meta.get("run", "")
+        resp.headers["X-AIFS-Period"]  = meta.get("period", "")
+        resp.headers["X-AIFS-Cache"]   = str(meta.get("cache", False)).lower()
+        if "seconds" in meta:
+            resp.headers["X-AIFS-Seconds"] = str(meta["seconds"])
+        return resp
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("AIFS map generation failed")
+        return jsonify({
+            "error": str(exc),
+            "code": "aifs_generation_failed",
         }), 500
 
 
