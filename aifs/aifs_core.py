@@ -23,7 +23,6 @@ from matplotlib.colors import LinearSegmentedColormap
 import shapefile
 import requests
 import urllib.request, urllib.error
-from pydap.client import open_url
 
 # ---- ECMWF Open Data ----
 EC_ROOT   = "https://data.ecmwf.int/forecasts"
@@ -31,8 +30,9 @@ EC_MODEL  = "aifs-single"
 EC_RES    = "0p25"
 EC_STREAM = "oper"
 
-# ---- NOAA PSL (climatology) ----
-PSL      = "https://psl.noaa.gov/thredds/dodsC/Datasets/ncep"
+# ---- NOAA PSL climatology — direct HTTP file download (no pydap/OPeNDAP) ----
+# fileServer URL returns the raw NetCDF binary; far more reliable than thredds OPeNDAP.
+PSL_FILE = "https://psl.noaa.gov/thredds/fileServer/Datasets/ncep/{var}.{ltm}"
 LTM_FILE = "day.ltm.1991-2020.nc"
 
 SHP_URL = "https://naciscdn.org/naturalearth/110m/physical/ne_110m_coastline.zip"
@@ -584,40 +584,234 @@ def fetch_aifs_fields(base, steps, wants, cache_dir="aifs_cache"):
 
 # =========================================================
 #  NCEP 1991-2020 daily climatology (cached per day-of-year)
+#  Uses direct HTTP download of the NetCDF file — no pydap/OPeNDAP.
+#  Caches the full variable×level array (365×73×144 ≈ 3 MB) as a single
+#  .npy so PSL is only hit once per var/level ever, even across restarts
+#  (when mounted on a Fly volume at /data/aifs_cache).
 # =========================================================
+
+def _nc_read_var(nc_bytes, varname):
+    """
+    Minimal pure-numpy Classic NetCDF-3 reader.
+    Returns (data_int16_or_int32, attributes_dict, dim_sizes_list).
+    Only reads the one variable we ask for — no extra deps.
+    """
+    import struct
+    buf = io.BytesIO(nc_bytes)
+    magic = buf.read(4)
+    if magic[:3] != b"CDF":
+        raise ValueError("Not a NetCDF-3 file")
+    # version byte: 1=classic, 2=64bit
+    buf.read(4)  # numrecs (may be 0xFFFFFFFF for streaming)
+
+    def read_int():
+        return struct.unpack(">i", buf.read(4))[0]
+
+    def read_str():
+        n = read_int()
+        s = buf.read(n)
+        pad = (4 - n % 4) % 4
+        buf.read(pad)
+        return s.decode("utf-8", "replace")
+
+    def read_values():
+        nc_type = read_int()
+        n = read_int()
+        sizes = {1: 1, 2: 1, 3: 2, 4: 4, 5: 4, 6: 8}
+        fmt_map = {1: "b", 2: "B", 3: ">{}h", 4: ">{}i", 5: ">{}f", 6: ">{}d"}
+        sz = sizes[nc_type]
+        raw = buf.read(n * sz)
+        pad = (4 - (n * sz) % 4) % 4
+        buf.read(pad)
+        fmt = fmt_map[nc_type]
+        if "{}" in fmt:
+            arr = np.frombuffer(raw, dtype=fmt.format(n).replace(">{}","").replace("h","int16").replace("i","int32").replace("f","float32").replace("d","float64"))
+            # use struct for small arrays
+            arr = np.array(struct.unpack(fmt.format(n), raw))
+        else:
+            arr = np.array(struct.unpack(f">{n}{fmt}", raw))
+        if n == 1:
+            return arr[0]
+        return arr
+
+    def read_att_list():
+        tag = read_int()
+        n = read_int()
+        if tag == 0 and n == 0:
+            return {}
+        atts = {}
+        for _ in range(n):
+            name = read_str()
+            atts[name] = read_values()
+        return atts
+
+    def read_dim_list():
+        tag = read_int()
+        n = read_int()
+        if tag == 0 and n == 0:
+            return [], {}
+        dims, dim_sizes = [], {}
+        for _ in range(n):
+            name = read_str()
+            size = read_int()
+            dims.append(name)
+            dim_sizes[name] = size
+        return dims, dim_sizes
+
+    dim_names, dim_sizes = read_dim_list()
+    gatts = read_att_list()
+    tag = read_int()
+    n_vars = read_int()
+
+    var_meta = {}
+    for _ in range(n_vars):
+        vname = read_str()
+        nd = read_int()
+        vdims = [dim_names[read_int()] for _ in range(nd)]
+        vatts = read_att_list()
+        nc_type = read_int()
+        vsize = read_int()
+        offset_bytes = buf.read(4)  # classic = 4 bytes
+        offset = struct.unpack(">I", offset_bytes)[0]
+        var_meta[vname] = dict(dims=vdims, atts=vatts, nc_type=nc_type,
+                               vsize=vsize, offset=offset)
+
+    if varname not in var_meta:
+        raise KeyError(f"{varname!r} not found in file; available: {list(var_meta)}")
+
+    vm = var_meta[varname]
+    nc_type_map = {3: (np.int16, 2, ">i2"),
+                   4: (np.int32, 4, ">i4"),
+                   5: (np.float32, 4, ">f4"),
+                   6: (np.float64, 8, ">f8")}
+    dtype_np, item_sz, dtype_str = nc_type_map[vm["nc_type"]]
+
+    shape = []
+    for d in vm["dims"]:
+        shape.append(dim_sizes.get(d, 0))
+
+    nc_bytes_arr = np.frombuffer(nc_bytes, dtype=np.uint8)
+    off = vm["offset"]
+    total = int(np.prod(shape)) if shape else 1
+    raw = nc_bytes_arr[off: off + total * item_sz].tobytes()
+    data = np.frombuffer(raw, dtype=dtype_str).reshape(shape)
+    return data, vm["atts"], shape, vm["dims"]
+
+
+# Cache of fully-downloaded + decoded LTM arrays: key → (lat, lon, full_array[365,nlat,nlon])
+_LTM_MEM: dict = {}
+_LTM_LOCK = __import__("threading").Lock()
+
+def _ltm_nc_url(var):
+    return PSL_FILE.format(var=var, ltm=LTM_FILE)
+
+
+def _fetch_ltm_level(var, lv, cache_dir):
+    """
+    Download (once ever) the full LTM NetCDF for `var`, extract level `lv`,
+    and return (lat, lon, array[n_days, nlat, nlon]).
+    Uses a .npy sidecar next to the .nc file so the expensive download+parse
+    only happens once, even across process restarts on a Fly volume.
+    """
+    mem_key = (var, int(lv))
+    with _LTM_LOCK:
+        if mem_key in _LTM_MEM:
+            return _LTM_MEM[mem_key]
+
+    # Persistent cache: one .npy per (var, level) holding all 365 days
+    npy_key = None
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        npy_key = os.path.join(cache_dir, f"ltm_full_{var}_{int(lv)}.npy")
+        meta_key = npy_key + ".meta.json"
+        if os.path.exists(npy_key) and os.path.exists(meta_key):
+            try:
+                with open(meta_key) as mf:
+                    meta = json.load(mf)
+                arr = np.load(npy_key)
+                lat = np.array(meta["lat"])
+                lon = np.array(meta["lon"])
+                result = (lat, lon, arr)
+                with _LTM_LOCK:
+                    _LTM_MEM[mem_key] = result
+                print(f"      LTM {var} {int(lv)} hPa — loaded from disk cache")
+                return result
+            except Exception as e:
+                print(f"      LTM cache read failed ({e}), re-downloading")
+
+    # Download the full NetCDF file
+    url = _ltm_nc_url(var)
+    print(f"      LTM {var}: downloading {url} …")
+    nc_bytes = http_get(url, timeout=300, tries=4)
+    print(f"      LTM {var}: {len(nc_bytes)/1e6:.1f} MB downloaded, parsing…")
+
+    try:
+        data, atts, shape, dims = _nc_read_var(nc_bytes, var)
+        lat_data, _, _, _ = _nc_read_var(nc_bytes, "lat")
+        lon_data, _, _, _ = _nc_read_var(nc_bytes, "lon")
+        lev_data, _, _, _ = _nc_read_var(nc_bytes, "level")
+    except Exception:
+        # Fallback: use scipy if available (handles edge cases in NC files)
+        try:
+            from scipy.io import netcdf_file
+            with netcdf_file(io.BytesIO(nc_bytes), mmap=False) as ds:
+                lat_data = ds.variables["lat"][:].copy()
+                lon_data = ds.variables["lon"][:].copy()
+                lev_data = ds.variables["level"][:].copy()
+                v = ds.variables[var]
+                atts = {k: getattr(v, k) for k in v._attributes}
+                data = v[:].copy()
+                dims = list(v.dimensions)
+        except Exception as e2:
+            raise RuntimeError(f"Could not parse LTM NetCDF for {var}: {e2}") from e2
+
+    lat = np.array(lat_data, dtype=np.float64)
+    lon = np.array(lon_data, dtype=np.float64)
+    lev = np.array(lev_data, dtype=np.float64)
+    li  = int(np.argmin(np.abs(lev - lv)))
+
+    # Decode packed integers
+    sf = float(atts.get("scale_factor", 1.0))
+    ao = float(atts.get("add_offset",   0.0))
+    mv = float(atts.get("missing_value", -32767))
+    arr = np.array(data, dtype=np.float64)
+
+    # Extract the level dimension (dims typically: time, level, lat, lon)
+    if "level" in dims:
+        li_ax = dims.index("level")
+        arr = np.take(arr, li, axis=li_ax)   # → (time, lat, lon)
+
+    bad = np.abs(arr - mv) < max(abs(mv) * 1e-4, 1.0)
+    arr = arr * sf + ao
+    arr[bad] = np.nan
+
+    # Save to disk cache
+    if npy_key:
+        try:
+            np.save(npy_key, arr)
+            with open(meta_key, "w") as mf:
+                json.dump({"lat": lat.tolist(), "lon": lon.tolist()}, mf)
+            print(f"      LTM {var} {int(lv)} hPa — saved to disk cache ({arr.nbytes/1e6:.1f} MB)")
+        except Exception as e:
+            print(f"      LTM cache write failed: {e}")
+
+    result = (lat, lon, arr)
+    with _LTM_LOCK:
+        _LTM_MEM[mem_key] = result
+    return result
+
+
 def fetch_ltm_fields(dates, wants, cache_dir="aifs_cache"):
     """wants = [(var, level), ...]  →  (lat, lon, {(var,level): mean climo @2.5°})"""
     def one(var, lv):
-        ds = open_url(f"{PSL}/{var}.{LTM_FILE}")
-        lev = np.array(ds["level"][:])
-        li = int(np.argmin(np.abs(lev - lv)))
-        n_t = len(np.array(ds["time"][:]))
-        at = ds[var].attributes
-        sf = float(at.get("scale_factor", 1.0))
-        ao = float(at.get("add_offset", 0.0))
-        mv = float(at.get("missing_value", -9.96921e36))
+        lat, lon, full_arr = _fetch_ltm_level(var, lv, cache_dir)
+        n_t = full_arr.shape[0]
         out = []
         for d in dates:
             doy = d.timetuple().tm_yday
-            ti = min(doy - 1, n_t - 1)
-            a = None
-            if cache_dir:
-                os.makedirs(cache_dir, exist_ok=True)
-                key = os.path.join(cache_dir, f"ltm_{var}_{int(lv)}_doy{doy:03d}.npy")
-                if os.path.exists(key):
-                    a = np.load(key)
-            if a is None:
-                a = np.array(ds[var][ti, li, :, :].data).squeeze().astype(np.float64)
-                bad = np.abs(a - mv) < abs(mv) * 1e-6 if abs(mv) > 1e30 else (a == mv)
-                a = a * sf + ao
-                a[bad] = np.nan
-                if cache_dir:
-                    np.save(key, a)
-                print(f"      {var} {int(lv)} hPa DOY {doy:3d} → downloaded (~42 KB)")
-            out.append(a)
-        la = np.array(ds["lat"][:]).astype(np.float64)
-        lo = np.array(ds["lon"][:]).astype(np.float64)
-        return la, lo, np.nanmean(out, axis=0)
+            ti  = min(doy - 1, n_t - 1)
+            out.append(full_arr[ti])
+        return lat, lon, np.nanmean(out, axis=0)
 
     res, lat, lon = {}, None, None
     with ThreadPoolExecutor(max_workers=2) as pool:
