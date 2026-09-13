@@ -223,6 +223,41 @@
         </div>
         {% endfor %}
 
+        <!-- EC-AIFS Forecast — ECMWF AI model anomaly products -->
+        <div class="group" id="aifs-group">
+          <div class="group-h">
+            <span class="group-h-label">EC-AIFS</span>
+            <select class="sst-domain-sel" id="aifs-level"
+                    onchange="aifsLevelChange(this.value)"
+                    title="Select pressure level">
+              <option value="850">850 mb</option>
+              <option value="700">700 mb</option>
+              <option value="500">500 mb</option>
+              <option value="200" selected>200 mb</option>
+            </select>
+          </div>
+          <div class="side-item" data-aifs-product="vp" onclick="pickAifs('vp')">
+            <div class="nm">Velocity Potential</div>
+            <div class="ds">200 hPa velocity-potential anomaly & divergent wind.</div>
+          </div>
+          <div class="side-item" data-aifs-product="z" onclick="pickAifs('z')">
+            <div class="nm">Geopotential Height</div>
+            <div class="ds">Geopotential height anomaly vs 1991–2020 climatology.</div>
+          </div>
+          <div class="side-item" data-aifs-product="u" onclick="pickAifs('u')">
+            <div class="nm">Zonal Wind</div>
+            <div class="ds">Zonal (U) wind anomaly vs 1991–2020 climatology.</div>
+          </div>
+          <div class="side-item" data-aifs-product="v" onclick="pickAifs('v')">
+            <div class="nm">Meridional Wind</div>
+            <div class="ds">Meridional (V) wind anomaly vs 1991–2020 climatology.</div>
+          </div>
+          <div class="side-item" data-aifs-product="vws" onclick="pickAifs('vws')">
+            <div class="nm">Vertical Wind Shear</div>
+            <div class="ds">850–200 hPa shear magnitude anomaly with vector arrows.</div>
+          </div>
+        </div>
+
         <!-- GFS Forecast — added without removing any existing reanalysis products -->
         <div class="group" id="gfs-group">
           <div class="group-h">
@@ -306,6 +341,27 @@
         <button class="btn" id="go" onclick="run()">&#9654; Map</button>
       </section>
 
+      <section class="controls" id="aifs-controls" style="display:none">
+        <div class="field">
+          <label>EC-AIFS FORECAST</label>
+          <div class="seg">
+            <button class="active" type="button">Anomaly Map</button>
+          </div>
+        </div>
+        <div class="rowf">
+          <div class="field" id="aifs-level-field">
+            <label>PRESSURE LEVEL</label>
+            <select id="aifs-level-ctrl" onchange="runAifs()">
+              <option value="850">850 mb</option>
+              <option value="700">700 mb</option>
+              <option value="500">500 mb</option>
+              <option value="200" selected>200 mb</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn" id="aifs-go" onclick="runAifs()">&#9654; AIFS Map</button>
+      </section>
+
       <section class="controls" id="gfs-controls" style="display:none">
         <div class="field">
           <label>GFS FORECAST</label>
@@ -372,6 +428,21 @@
 
   const PROD = {{ products | tojson }};
   const P = id => PROD.find(x => x.id === id);
+
+  // ── AIFS config from server ───────────────────────────────────────────────
+  const AIFS = {{ aifs_config | tojson }};
+  const AIFS_CONTROLS  = document.getElementById("aifs-controls");
+  const AIFS_LEVEL_SEL = document.getElementById("aifs-level");        // sidebar select
+  const AIFS_LEVEL_CTRL= document.getElementById("aifs-level-ctrl");   // controls select
+  const AIFS_LEVEL_FLD = document.getElementById("aifs-level-field");
+  let aifsProduct = "vp";
+  let aifsLevel   = {{ aifs_config.default_level }};
+  const aifsCache = {};
+
+  // Products that use a fixed level (no selector shown)
+  const AIFS_FIXED_LEVEL = new Set(
+    AIFS.products.filter(p => p.levels_supported.length === 0).map(p => p.id)
+  );
 
   // ── SST product families (in display order) ──────────────────────────────
   const SST_FAMILIES = [
@@ -472,7 +543,8 @@
   function pick(id){
     appMode = "rean";
     if (typeof REAN_CONTROLS !== "undefined") REAN_CONTROLS.style.display = "flex";
-    if (typeof GFS_CONTROLS !== "undefined") GFS_CONTROLS.style.display = "none";
+    if (typeof GFS_CONTROLS  !== "undefined") GFS_CONTROLS.style.display  = "none";
+    if (typeof AIFS_CONTROLS !== "undefined") AIFS_CONTROLS.style.display = "none";
     current = id;
     document.querySelectorAll(".side-item").forEach(el =>
       el.classList.toggle("active", el.dataset.id === id));
@@ -568,6 +640,7 @@
       el.classList.toggle("active", el.dataset.gfsVar === variable));
     REAN_CONTROLS.style.display = "none";
     GFS_CONTROLS.style.display = "flex";
+    if (typeof AIFS_CONTROLS !== "undefined") AIFS_CONTROLS.style.display = "none";
     updateGfsControls();
     closeMenu();
     runGfs();
@@ -638,6 +711,97 @@
       + (region ? region.name : "") + " · "
       + (level ? level+" mb · " : "")
       + period + " · " + runLabel;
+  }
+
+  // ── AIFS Forecast web integration ────────────────────────────────────────
+
+  function aifsLevelChange(val) {
+    aifsLevel = parseInt(val, 10);
+    // keep both selectors in sync
+    if (AIFS_LEVEL_SEL.value  !== val) AIFS_LEVEL_SEL.value  = val;
+    if (AIFS_LEVEL_CTRL.value !== val) AIFS_LEVEL_CTRL.value = val;
+    if (appMode === "aifs") runAifs();
+  }
+
+  AIFS_LEVEL_CTRL.addEventListener("change", () => {
+    aifsLevelChange(AIFS_LEVEL_CTRL.value);
+  });
+
+  function pickAifs(productId) {
+    appMode = "aifs";
+    aifsProduct = productId;
+
+    // highlight active side-item
+    document.querySelectorAll(".side-item").forEach(el =>
+      el.classList.toggle("active", el.dataset.aifsProduct === productId));
+
+    // show/hide controls panels
+    if (typeof REAN_CONTROLS !== "undefined") REAN_CONTROLS.style.display = "none";
+    if (typeof GFS_CONTROLS  !== "undefined") GFS_CONTROLS.style.display  = "none";
+    AIFS_CONTROLS.style.display = "flex";
+
+    // hide level selector for VP and VWS (fixed-level products)
+    const fixedLevel = AIFS_FIXED_LEVEL.has(productId);
+    AIFS_LEVEL_FLD.style.display = fixedLevel ? "none" : "";
+    AIFS_LEVEL_SEL.style.display = fixedLevel ? "none" : "";
+
+    DL.setAttribute("download", "aifs-" + productId + ".png");
+    closeMenu();
+    runAifs();
+  }
+
+  async function runAifs() {
+    if (appMode !== "aifs") return;
+
+    const level = AIFS_FIXED_LEVEL.has(aifsProduct) ? 0 : aifsLevel;
+    const cacheKey = JSON.stringify({ p: aifsProduct, l: level });
+
+    if (aifsCache[cacheKey]) {
+      showAifs(aifsCache[cacheKey]);
+      S.textContent = "Cache · instant."; S.className = "ok";
+      return;
+    }
+
+    document.getElementById("aifs-go").disabled = true;
+    PH.style.display = "flex"; PT.textContent = "Fetching AIFS forecast…";
+    IMG.style.display = "none"; DL.style.display = "none";
+
+    const pMeta = AIFS.products.find(p => p.id === aifsProduct);
+    META.innerHTML = "<b>" + (pMeta ? pMeta.name : aifsProduct) + "</b> · Rendering…";
+
+    try {
+      const r = await fetch("/aifs/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product: aifsProduct, level })
+      });
+      if (!r.ok) {
+        let m = "AIFS server error " + r.status;
+        try { const j = await r.json(); m = j.error || m; } catch (e) {}
+        throw new Error(m);
+      }
+      const url = URL.createObjectURL(await r.blob());
+      aifsCache[cacheKey] = url;
+      showAifs(url, r.headers.get("X-AIFS-Run") || "", r.headers.get("X-AIFS-Period") || "");
+      S.textContent = "AIFS Ready."; S.className = "ok";
+    } catch (e) {
+      S.textContent = "AIFS Error: " + (e.message || e); S.className = "err";
+    } finally {
+      PH.style.display = "none";
+      document.getElementById("aifs-go").disabled = false;
+    }
+  }
+
+  function showAifs(url, runLabel, periodLabel) {
+    IMG.src = url; IMG.style.display = "block";
+    DL.href = url; DL.style.display = "inline-block";
+    DL.setAttribute("download", "aifs-" + aifsProduct + ".png");
+    const pMeta = AIFS.products.find(p => p.id === aifsProduct);
+    const fixedLevel = AIFS_FIXED_LEVEL.has(aifsProduct);
+    const levelStr = (!fixedLevel && aifsLevel) ? aifsLevel + " mb · " : "";
+    META.innerHTML = "<b>" + (pMeta ? pMeta.name : aifsProduct) + "</b> · "
+      + levelStr
+      + (periodLabel || "") + (runLabel ? " · " + runLabel : "");
   }
 
   // ── initialise SST / TC lists ─────────────────────────────────────────────
