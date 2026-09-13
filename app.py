@@ -18,7 +18,6 @@ from flask import Flask, render_template, request, send_file, jsonify
 
 import pro as metmap
 import gfs_web
-import aifs_web
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
@@ -43,8 +42,7 @@ def index():
                            default_product=metmap.DEFAULT_PRODUCT,
                            products=metmap.list_products(),
                            groups=metmap.group_products(),
-                           gfs_config=gfs_web.metadata(),
-                           aifs_config=aifs_web.metadata())
+                           gfs_config=gfs_web.metadata())
 
 
 @app.route("/health")
@@ -135,76 +133,6 @@ def gfs_generate():
             "error": str(exc),
             "code": "gfs_generation_failed",
         }), 500
-
-
-@app.route("/aifs/config")
-def aifs_config():
-    return jsonify(aifs_web.metadata())
-
-
-@app.route("/aifs/generate", methods=["POST"])
-def aifs_generate():
-    """
-    Enqueue an AIFS render job and return immediately.
-    - Cache hit  → serves PNG directly (200 image/png).
-    - Cache miss → starts background thread, returns JSON {job_id, status:"pending"} (202).
-    Client polls /aifs/status/<job_id> until done.
-    """
-    body       = request.get_json(silent=True) or {}
-    product_id = str(body.get("product", "vp"))
-    level      = int(body.get("level", aifs_web.DEFAULT_LEVEL) or aifs_web.DEFAULT_LEVEL)
-    avg_days   = body.get("avg_days")
-    lead_hour  = body.get("lead_hour")
-    avg_days   = int(avg_days)  if avg_days  not in (None, "", 0) else None
-    lead_hour  = int(lead_hour) if lead_hour not in (None, "", 0) else None
-
-    try:
-        job_id, cached = aifs_web.enqueue(product_id=product_id, level=level,
-                                          n_days=avg_days, lead_hours=lead_hour)
-    except ValueError as exc:
-        return jsonify({"error": str(exc), "code": "bad_params"}), 400
-    except Exception as exc:
-        app.logger.exception("AIFS enqueue failed")
-        return jsonify({"error": str(exc), "code": "enqueue_failed"}), 500
-
-    if cached:
-        meta = cached["meta"]
-        resp = _serve_png(cached["png"])
-        resp.headers["X-AIFS-Run"]    = meta.get("run", "")
-        resp.headers["X-AIFS-Period"] = meta.get("period", "")
-        resp.headers["X-AIFS-Cache"]  = "true"
-        return resp
-
-    return jsonify({"job_id": job_id, "status": "pending"}), 202
-
-
-@app.route("/aifs/status/<job_id>")
-def aifs_status(job_id):
-    """
-    Poll for a background AIFS render.
-    Returns:
-      - {status:"pending"} (202)        — still running
-      - PNG bytes (200 image/png)       — done
-      - {status:"error", error:"..."} (500) — failed
-    """
-    job = aifs_web.job_get(job_id)
-    if not job:
-        return jsonify({"status": "error", "error": "unknown job_id"}), 404
-
-    if job["status"] == "pending":
-        return jsonify({"status": "pending"}), 202
-
-    if job["status"] == "error":
-        return jsonify({"status": "error", "error": job.get("error", "unknown")}), 500
-
-    meta = job.get("meta") or {}
-    resp = _serve_png(job["png"])
-    resp.headers["X-AIFS-Run"]     = meta.get("run", "")
-    resp.headers["X-AIFS-Period"]  = meta.get("period", "")
-    resp.headers["X-AIFS-Cache"]   = "false"
-    if "seconds" in meta:
-        resp.headers["X-AIFS-Seconds"] = str(meta["seconds"])
-    return resp
 
 
 @app.route("/diff", methods=["POST"])

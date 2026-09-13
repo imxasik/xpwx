@@ -15,5 +15,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["gunicorn", "-b", "0.0.0.0:8080", "--timeout", "300", \
-     "--worker-class", "gthread", "--workers", "1", "--threads", "4", "app:app"]
+CMD [ "python3", "-m" , "flask", "run", "--host=0.0.0.0", "--port=8080"]
