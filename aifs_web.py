@@ -34,8 +34,15 @@ import aifs_core as C
 # ── Map folder (coastline shapefile) ──────────────────────────────────────────
 _MAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "map")
 
-# ── Cache directory for AIFS GRIB byte-range files ────────────────────────────
-_AIFS_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aifs_cache")
+# ── Cache directory for AIFS GRIB byte-range files + LTM climatology .npy ─────
+# On Fly.io a persistent volume is mounted at /data (see fly.toml [[mounts]]).
+# Fall back to a local dir when running in dev (no volume present).
+_FLY_DATA = "/data"
+_AIFS_CACHE_DIR = (
+    os.path.join(_FLY_DATA, "aifs_cache")
+    if os.path.isdir(_FLY_DATA)
+    else os.path.join(os.path.dirname(os.path.abspath(__file__)), "aifs_cache")
+)
 _CACHE_KEEP_DAYS = 3
 
 # ── Supported levels ──────────────────────────────────────────────────────────

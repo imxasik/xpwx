@@ -4,5 +4,4 @@ numpy
 scipy
 matplotlib
 requests
-pydap
 pyshp
