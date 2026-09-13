@@ -358,6 +358,16 @@
               <option value="200" selected>200 mb</option>
             </select>
           </div>
+          <div class="field">
+            <label>AVG DAY</label>
+            <input type="number" id="aifs-avg-days" value="3" min="1" max="30" step="1"
+                   title="Averaging window size in days" />
+          </div>
+          <div class="field">
+            <label>LEAD HOUR</label>
+            <input type="number" id="aifs-lead-hour" value="216" min="6" max="360" step="6"
+                   title="Forecast lead hour at which the averaging window ends" />
+          </div>
         </div>
         <button class="btn" id="aifs-go" onclick="runAifs()">&#9654; AIFS Map</button>
       </section>
@@ -753,8 +763,10 @@
   async function runAifs() {
     if (appMode !== "aifs") return;
 
-    const level = AIFS_FIXED_LEVEL.has(aifsProduct) ? 0 : aifsLevel;
-    const cacheKey = JSON.stringify({ p: aifsProduct, l: level });
+    const level    = AIFS_FIXED_LEVEL.has(aifsProduct) ? 0 : aifsLevel;
+    const avgDays  = parseInt(document.getElementById("aifs-avg-days").value,  10) || 3;
+    const leadHour = parseInt(document.getElementById("aifs-lead-hour").value, 10) || 216;
+    const cacheKey = JSON.stringify({ p: aifsProduct, l: level, d: avgDays, h: leadHour });
 
     if (aifsCache[cacheKey]) {
       showAifs(aifsCache[cacheKey]);
@@ -773,12 +785,12 @@
       const r = await fetch("/aifs/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ product: aifsProduct, level })
+        body: JSON.stringify({ product: aifsProduct, level, avg_days: avgDays, lead_hour: leadHour })
       });
       if (!r.ok) {
-        let m = "AIFS server error " + r.status;
-        try { const j = await r.json(); m = j.error || m; } catch (e) {}
-        throw new Error(m);
+        let errMsg = "AIFS server error " + r.status;
+        try { const j = await r.json(); errMsg = j.error || errMsg; } catch (_) {}
+        throw new Error(errMsg);
       }
       const url = URL.createObjectURL(await r.blob());
       aifsCache[cacheKey] = url;
@@ -786,6 +798,8 @@
       S.textContent = "AIFS Ready."; S.className = "ok";
     } catch (e) {
       S.textContent = "AIFS Error: " + (e.message || e); S.className = "err";
+      PH.style.display = "none";
+      IMG.style.display = IMG.src ? "block" : "none";  // keep last good image visible
     } finally {
       PH.style.display = "none";
       document.getElementById("aifs-go").disabled = false;
@@ -799,8 +813,11 @@
     const pMeta = AIFS.products.find(p => p.id === aifsProduct);
     const fixedLevel = AIFS_FIXED_LEVEL.has(aifsProduct);
     const levelStr = (!fixedLevel && aifsLevel) ? aifsLevel + " mb · " : "";
+    const avgDays  = parseInt(document.getElementById("aifs-avg-days").value,  10) || 3;
+    const leadHour = parseInt(document.getElementById("aifs-lead-hour").value, 10) || 216;
     META.innerHTML = "<b>" + (pMeta ? pMeta.name : aifsProduct) + "</b> · "
       + levelStr
+      + avgDays + "-day avg · +" + leadHour + " h · "
       + (periodLabel || "") + (runLabel ? " · " + runLabel : "");
   }
 
