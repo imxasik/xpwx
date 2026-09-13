@@ -761,10 +761,13 @@
   }
 
   // ── AIFS polling state ───────────────────────────────────────────────────
-  let _aifsPolling = null;   // interval handle for current poll loop
+  let _aifsPolling  = null;   // interval handle for current poll loop
+  let _aifsTimeout  = null;   // hard-limit timeout handle
+  const AIFS_MAX_WAIT_MS = 300000;  // 5 min absolute ceiling
 
   function _stopAifsPolling() {
     if (_aifsPolling !== null) { clearInterval(_aifsPolling); _aifsPolling = null; }
+    if (_aifsTimeout !== null) { clearTimeout(_aifsTimeout);  _aifsTimeout = null; }
   }
 
   async function runAifs() {
@@ -791,8 +794,10 @@
     const pMeta = AIFS.products.find(p => p.id === aifsProduct);
     META.innerHTML = "<b>" + (pMeta ? pMeta.name : aifsProduct) + "</b> · Queuing…";
 
-    let elapsed = 0;
-    const POLL_MS = 4000;   // poll every 4 s
+    let elapsed     = 0;
+    let _transientErrs = 0;        // consecutive transient errors (502/net)
+    const MAX_TRANSIENT = 5;       // give up after this many in a row
+    const POLL_MS = 4000;          // poll every 4 s
 
     async function _poll(jobId) {
       // called on each tick of the interval
@@ -806,8 +811,35 @@
       try {
         r = await fetch("/aifs/status/" + jobId);
       } catch (netErr) {
+        _transientErrs++;
+        if (_transientErrs >= MAX_TRANSIENT) {
+          _stopAifsPolling();
+          document.getElementById("aifs-go").disabled = false;
+          PH.style.display = "none";
+          S.textContent = "AIFS Error: network lost after " + etxt + ". Try again.";
+          S.className = "err";
+          if (IMG.src) IMG.style.display = "block";
+        }
         return;   // transient network error — keep polling
       }
+
+      // 502/503 = proxy/upstream transient error while machine warms or render thread busy
+      if (r.status === 502 || r.status === 503) {
+        _transientErrs++;
+        if (_transientErrs >= MAX_TRANSIENT) {
+          _stopAifsPolling();
+          document.getElementById("aifs-go").disabled = false;
+          PH.style.display = "none";
+          S.textContent = "AIFS Error: server unavailable after " + etxt + " (" + r.status + "). Try again.";
+          S.className = "err";
+          if (IMG.src) IMG.style.display = "block";
+        } else {
+          PT.textContent = "Rendering AIFS… (" + etxt + " elapsed) — server busy, retrying…";
+        }
+        return;   // keep polling — machine may be resuming from suspend
+      }
+
+      _transientErrs = 0;  // reset on any non-transient response
 
       if (r.status === 202) return;   // still pending
 
@@ -840,7 +872,7 @@
         body:    JSON.stringify({ product: aifsProduct, level, avg_days: avgDays, lead_hour: leadHour })
       });
 
-      if (r.ok && r.headers.get("Content-Type", "").includes("image/")) {
+      if (r.ok && (r.headers.get("Content-Type") || "").includes("image/")) {
         // Instant cache hit from server-side cache
         const blob = await r.blob();
         const url  = URL.createObjectURL(blob);
@@ -858,6 +890,15 @@
         const j = await r.json();
         const jobId = j.job_id;
         META.innerHTML = "<b>" + (pMeta ? pMeta.name : aifsProduct) + "</b> · Rendering…";
+        // Hard 5-min ceiling — give up gracefully if something went very wrong
+        _aifsTimeout = setTimeout(() => {
+          _stopAifsPolling();
+          document.getElementById("aifs-go").disabled = false;
+          PH.style.display = "none";
+          S.textContent = "AIFS Error: render timed out after 5 min. Try again.";
+          S.className = "err";
+          if (IMG.src) IMG.style.display = "block";
+        }, AIFS_MAX_WAIT_MS);
         // Start polling
         _aifsPolling = setInterval(() => _poll(jobId), POLL_MS);
         return;
