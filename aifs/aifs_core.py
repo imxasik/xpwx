@@ -39,7 +39,7 @@ SHP_URL = "https://naciscdn.org/naturalearth/110m/physical/ne_110m_coastline.zip
 
 G_STD   = 9.80665          # m/s²  (geopotential → height)
 TIMEOUT = 180
-RETRIES = 4
+RETRIES = 6   # increased from 4 — ECMWF open-data CDN can return 502/503 transiently
 
 
 # =========================================================
@@ -55,8 +55,9 @@ def http_get(url, headers=None, timeout=TIMEOUT, tries=RETRIES):
         except urllib.error.HTTPError as e:
             if e.code in (404, 410, 416):
                 raise
+            # 502/503/504 are transient proxy/upstream errors — always retry
             last = e
-            wait = 2.0 * (k + 1)
+            wait = 3.0 * (k + 1) if e.code in (502, 503, 504) else 2.0 * (k + 1)
             print(f"    ! retry {k+1}/{tries} in {wait:.0f}s  ({type(e).__name__}: {e})")
             time.sleep(wait)
         except Exception as e:                       # noqa
