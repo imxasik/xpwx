@@ -760,16 +760,26 @@
     runAifs();
   }
 
+  // ── AIFS polling state ───────────────────────────────────────────────────
+  let _aifsPolling = null;   // interval handle for current poll loop
+
+  function _stopAifsPolling() {
+    if (_aifsPolling !== null) { clearInterval(_aifsPolling); _aifsPolling = null; }
+  }
+
   async function runAifs() {
     if (appMode !== "aifs") return;
+
+    _stopAifsPolling();   // cancel any previous poll
 
     const level    = AIFS_FIXED_LEVEL.has(aifsProduct) ? 0 : aifsLevel;
     const avgDays  = parseInt(document.getElementById("aifs-avg-days").value,  10) || 3;
     const leadHour = parseInt(document.getElementById("aifs-lead-hour").value, 10) || 216;
     const cacheKey = JSON.stringify({ p: aifsProduct, l: level, d: avgDays, h: leadHour });
 
+    // Client-side memory cache (URL blobs survive the session)
     if (aifsCache[cacheKey]) {
-      showAifs(aifsCache[cacheKey]);
+      showAifs(aifsCache[cacheKey].url, aifsCache[cacheKey].run, aifsCache[cacheKey].period);
       S.textContent = "Cache · instant."; S.className = "ok";
       return;
     }
@@ -779,29 +789,90 @@
     IMG.style.display = "none"; DL.style.display = "none";
 
     const pMeta = AIFS.products.find(p => p.id === aifsProduct);
-    META.innerHTML = "<b>" + (pMeta ? pMeta.name : aifsProduct) + "</b> · Rendering…";
+    META.innerHTML = "<b>" + (pMeta ? pMeta.name : aifsProduct) + "</b> · Queuing…";
 
-    try {
-      const r = await fetch("/aifs/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ product: aifsProduct, level, avg_days: avgDays, lead_hour: leadHour })
-      });
+    let elapsed = 0;
+    const POLL_MS = 4000;   // poll every 4 s
+
+    async function _poll(jobId) {
+      // called on each tick of the interval
+      elapsed += POLL_MS / 1000;
+      const mins = Math.floor(elapsed / 60);
+      const secs = Math.round(elapsed % 60);
+      const etxt = mins ? mins + "m " + secs + "s" : secs + "s";
+      PT.textContent = "Rendering AIFS… (" + etxt + " elapsed)";
+
+      let r;
+      try {
+        r = await fetch("/aifs/status/" + jobId);
+      } catch (netErr) {
+        return;   // transient network error — keep polling
+      }
+
+      if (r.status === 202) return;   // still pending
+
+      _stopAifsPolling();
+      document.getElementById("aifs-go").disabled = false;
+      PH.style.display = "none";
+
       if (!r.ok) {
         let errMsg = "AIFS server error " + r.status;
         try { const j = await r.json(); errMsg = j.error || errMsg; } catch (_) {}
-        throw new Error(errMsg);
+        S.textContent = "AIFS Error: " + errMsg; S.className = "err";
+        if (IMG.src) IMG.style.display = "block";
+        return;
       }
-      const url = URL.createObjectURL(await r.blob());
-      aifsCache[cacheKey] = url;
-      showAifs(url, r.headers.get("X-AIFS-Run") || "", r.headers.get("X-AIFS-Period") || "");
-      S.textContent = "AIFS Ready."; S.className = "ok";
+
+      const blob = await r.blob();
+      const url  = URL.createObjectURL(blob);
+      const run  = r.headers.get("X-AIFS-Run") || "";
+      const per  = r.headers.get("X-AIFS-Period") || "";
+      aifsCache[cacheKey] = { url, run, period: per };
+      showAifs(url, run, per);
+      S.textContent = "AIFS Ready. (" + etxt + ")"; S.className = "ok";
+    }
+
+    try {
+      // POST to /aifs/generate — returns immediately
+      const r = await fetch("/aifs/generate", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ product: aifsProduct, level, avg_days: avgDays, lead_hour: leadHour })
+      });
+
+      if (r.ok && r.headers.get("Content-Type", "").includes("image/")) {
+        // Instant cache hit from server-side cache
+        const blob = await r.blob();
+        const url  = URL.createObjectURL(blob);
+        const run  = r.headers.get("X-AIFS-Run") || "";
+        const per  = r.headers.get("X-AIFS-Period") || "";
+        aifsCache[cacheKey] = { url, run, period: per };
+        showAifs(url, run, per);
+        S.textContent = "AIFS Ready (cached)."; S.className = "ok";
+        PH.style.display = "none";
+        document.getElementById("aifs-go").disabled = false;
+        return;
+      }
+
+      if (r.status === 202) {
+        const j = await r.json();
+        const jobId = j.job_id;
+        META.innerHTML = "<b>" + (pMeta ? pMeta.name : aifsProduct) + "</b> · Rendering…";
+        // Start polling
+        _aifsPolling = setInterval(() => _poll(jobId), POLL_MS);
+        return;
+      }
+
+      // Unexpected error from enqueue
+      let errMsg = "AIFS server error " + r.status;
+      try { const j = await r.json(); errMsg = j.error || errMsg; } catch (_) {}
+      throw new Error(errMsg);
+
     } catch (e) {
+      _stopAifsPolling();
       S.textContent = "AIFS Error: " + (e.message || e); S.className = "err";
       PH.style.display = "none";
-      IMG.style.display = IMG.src ? "block" : "none";  // keep last good image visible
-    } finally {
-      PH.style.display = "none";
+      if (IMG.src) IMG.style.display = "block";
       document.getElementById("aifs-go").disabled = false;
     }
   }
