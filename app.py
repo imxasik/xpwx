@@ -145,11 +145,16 @@ def aifs_config():
 @app.route("/aifs/generate", methods=["POST"])
 def aifs_generate():
     body = request.get_json(silent=True) or {}
-    product_id = str(body.get("product", "vp"))
-    level = int(body.get("level", aifs_web.DEFAULT_LEVEL) or aifs_web.DEFAULT_LEVEL)
+    product_id  = str(body.get("product", "vp"))
+    level       = int(body.get("level", aifs_web.DEFAULT_LEVEL) or aifs_web.DEFAULT_LEVEL)
+    avg_days    = body.get("avg_days")
+    lead_hour   = body.get("lead_hour")
+    avg_days    = int(avg_days)  if avg_days  not in (None, "", 0)  else None
+    lead_hour   = int(lead_hour) if lead_hour not in (None, "", 0)  else None
 
     try:
-        png, meta = aifs_web.generate(product_id=product_id, level=level)
+        png, meta = aifs_web.generate(product_id=product_id, level=level,
+                                      n_days=avg_days, lead_hours=lead_hour)
         resp = _serve_png(png)
         resp.headers["X-AIFS-Run"]     = meta.get("run", "")
         resp.headers["X-AIFS-Period"]  = meta.get("period", "")

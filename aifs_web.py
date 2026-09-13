@@ -125,14 +125,18 @@ def _cache_put(key, data):
 
 
 # ── Main generate function ─────────────────────────────────────────────────────
-def generate(product_id: str, level: int) -> tuple[bytes, dict]:
+def generate(product_id: str, level: int,
+             n_days: int | None = None,
+             lead_hours: int | None = None) -> tuple[bytes, dict]:
     """
     Render one AIFS anomaly PNG and return (png_bytes, meta_dict).
 
     Parameters
     ----------
-    product_id : one of 'vp', 'z', 'u', 'v', 'vws'
-    level      : pressure level in hPa (ignored for 'vp' and 'vws')
+    product_id  : one of 'vp', 'z', 'u', 'v', 'vws'
+    level       : pressure level in hPa (ignored for 'vp' and 'vws')
+    n_days      : averaging window size in days (default: _N_DAYS = 3)
+    lead_hours  : forecast lead hour at which the window ends (default: _LEAD_HOURS = 216)
     """
     if product_id not in PRODUCTS:
         raise ValueError(f"Unknown AIFS product '{product_id}'")
@@ -148,8 +152,14 @@ def generate(product_id: str, level: int) -> tuple[bytes, dict]:
         if level not in VALID_LEVELS:
             level = pdef["default_level"]
 
-    # Check cache
-    cache_key = (product_id, level)
+    # Normalise n_days and lead_hours (fall back to module defaults)
+    n_days_eff     = int(n_days)     if n_days     is not None else _N_DAYS
+    lead_hours_eff = int(lead_hours) if lead_hours is not None else _LEAD_HOURS
+    n_days_eff     = max(1, min(30, n_days_eff))
+    lead_hours_eff = max(6, min(360, lead_hours_eff))
+
+    # Check cache — keyed on all four inputs so different params don't collide
+    cache_key = (product_id, level, n_days_eff, lead_hours_eff)
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached["png"], {**cached["meta"], "cache": True}
@@ -160,19 +170,21 @@ def generate(product_id: str, level: int) -> tuple[bytes, dict]:
             return cached["png"], {**cached["meta"], "cache": True}
 
         t0 = time.time()
-        png, meta = _render(product_id, level)
+        png, meta = _render(product_id, level, n_days_eff, lead_hours_eff)
         _cache_put(cache_key, {"png": png, "meta": meta})
         meta["seconds"] = round(time.time() - t0, 1)
         meta["cache"] = False
         return png, meta
 
 
-def _render(product_id: str, level: int) -> tuple[bytes, dict]:
+def _render(product_id: str, level: int,
+            n_days: int = _N_DAYS,
+            lead_hours: int = _LEAD_HOURS) -> tuple[bytes, dict]:
     """Do the actual computation + plotting, return raw PNG bytes."""
     os.makedirs(_AIFS_CACHE_DIR, exist_ok=True)
     C.prune_cache(_AIFS_CACHE_DIR, _CACHE_KEEP_DAYS)
 
-    steps = C.steps_from_config(_N_DAYS, _LEAD_HOURS)
+    steps = C.steps_from_config(n_days, lead_hours)
     coast = C.load_coastlines(C.ensure_coastline(_MAP_DIR))
     base  = C.find_latest_run(steps, _BASE_HOURS)
     valid = [base + datetime.timedelta(hours=s) for s in steps]
