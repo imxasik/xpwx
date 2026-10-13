@@ -14,6 +14,10 @@ from pro import config
 
 PATH = os.path.join(config.SHP_DIR, "ne_50m_admin_0_borders.shp")
 
+# country borders and coastlines share one line style on every map
+LINE_COLOUR = "#2c2c2c"
+LINE_WIDTH = 0.8
+
 _LOCK = threading.Lock()
 _CACHE = None
 
@@ -46,5 +50,5 @@ def draw(ax, lon_lo, lon_hi, lat_lo, lat_hi):
             continue
         if part[:, 1].max() < lat_lo or part[:, 1].min() > lat_hi:
             continue
-        ax.plot(part[:, 0], part[:, 1], color="#000000", lw=1.8, zorder=7,
+        ax.plot(part[:, 0], part[:, 1], color=LINE_COLOUR, lw=LINE_WIDTH, zorder=7,
                 solid_capstyle="round")
