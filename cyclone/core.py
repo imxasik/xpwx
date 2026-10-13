@@ -203,38 +203,38 @@ def tilt(zeta3d, lev, lat, lon, lat_c, lon_c, levels_hPa, box_deg=3.0):
 # shear
 # ---------------------------------------------------------------------------
 
-def deep_shear(u3d, v3d, lev, lat, lon, lat_c, lon_c, rmax_km=500.0,
-               lo_hPa=850.0, hi_hPa=200.0):
-    """Deep-layer shear (hi minus lo) inside rmax_km, from the pointwise maximum.
+def deep_shear(u3d, v3d, lev, lat, lon, lat_c, lon_c, box_deg=2.5,
+               lo_hPa=850.0, hi_hPa=200.0, step_deg=0.25):
+    """Deep-layer shear (hi minus lo) inside a square box around the centre.
 
-    The arrow used for the figures is the shear vector at the point of largest
-    |V_hi - V_lo| inside rmax_km (not a fixed-level or annulus-mean difference).
-    The annulus-mean vector is returned for reference only.
+    The box runs +/- box_deg in latitude and longitude from (lat_c, lon_c). The
+    arrow used for the figures is the shear vector at the point of largest
+    |V_hi - V_lo| inside the box (not a fixed-level or annulus-mean difference).
     """
     kl = level_index(lev, lo_hPa)
     kh = level_index(lev, hi_hPa)
-    R, TH, x, y, pla, plo = polar_points(lat_c, lon_c, rmax_km)
+    n = int(round(2.0 * box_deg / step_deg)) + 1
+    off = np.linspace(-box_deg, box_deg, n)
+    pla, plo = np.meshgrid(lat_c + off, lon_c + off, indexing="ij")
     ul = make_sampler(u3d[kl], lat, lon)(pla, plo)
     vl = make_sampler(v3d[kl], lat, lon)(pla, plo)
     uh = make_sampler(u3d[kh], lat, lon)(pla, plo)
     vh = make_sampler(v3d[kh], lat, lon)(pla, plo)
     du, dv = uh - ul, vh - vl
     pt = np.hypot(du, dv)
-    masked = np.where(np.isfinite(pt) & (R <= rmax_km + 1e-9), pt, -np.inf)
+    x, y = latlon_to_km(lat_c, lon_c, pla, plo)
+    R = np.hypot(x, y)
+    masked = np.where(np.isfinite(pt), pt, -np.inf)
     i, j = np.unravel_index(np.argmax(masked), masked.shape)
-    mu_ann = annulus_mean(du, R, 0.0, rmax_km)
-    mv_ann = annulus_mean(dv, R, 0.0, rmax_km)
     mu, mv = float(du[i, j]), float(dv[i, j])
     return {
         "u_ms": mu, "v_ms": mv,                              # max-shear vector (m/s)
         "mag_kt": float(np.hypot(mu, mv) / KT),
         "dir_from_deg": float((np.degrees(np.arctan2(-mu, -mv)) + 360.0) % 360.0),
         "max_kt": float(np.hypot(mu, mv) / KT),
-        "max_r_km": float(R[i, j]), "max_theta_deg": float(TH[i, j]),
+        "max_r_km": float(R[i, j]),
         "max_lat": float(pla[i, j]), "max_lon": float(plo[i, j]),
-        "annulus_u_ms": mu_ann, "annulus_v_ms": mv_ann,
-        "annulus_mag_kt": float(np.hypot(mu_ann, mv_ann) / KT),
-        "rmax_km": float(rmax_km),
+        "box_deg": float(box_deg),
         "point_mag_kt": pt / KT, "R_km": R, "x_km": x, "y_km": y,
     }
 
