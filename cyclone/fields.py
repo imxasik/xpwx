@@ -6,6 +6,10 @@ scale_factor, add_offset and missing_value.
 
 Returned fields: u, v (m/s), T (K), z (gpm), w = omega (Pa/s); lev (hPa, ascending),
 lat (ascending), lon (0-360).
+
+NOAA PSL does not publish a daily omega file for the NCEP/NCAR reanalysis (there is
+no omega.YEAR.nc on the server). w is therefore diagnosed from the winds by mass
+continuity (core.omega_from_divergence), with omega = 0 at the top level.
 """
 import threading
 
@@ -13,8 +17,9 @@ import numpy as np
 
 from pro import config
 from pro import data as pdata
+from cyclone import core
 
-VARS = {"uwnd": "u", "vwnd": "v", "air": "T", "hgt": "z", "omega": "w"}
+VARS = {"uwnd": "u", "vwnd": "v", "air": "T", "hgt": "z"}
 
 _LOCK = threading.Lock()
 _DAY_CACHE = {}
@@ -52,10 +57,12 @@ def read_day(date):
         # ascending pressure and latitude
         ol = np.argsort(lev)
         oa = np.argsort(lat)
-        for k in "uvTzw":
+        for k in "uvTz":
             out[k] = out[k][ol][:, oa, :]
         out["lev"] = lev[ol]
         out["lat"] = lat[oa]
         out["lon"] = lon
+        out["w"] = core.omega_from_divergence(out["u"], out["v"], out["lev"],
+                                              out["lat"], out["lon"])
         _DAY_CACHE[key] = out
         return out

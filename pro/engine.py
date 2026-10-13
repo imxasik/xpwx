@@ -15,8 +15,11 @@ render_hov = _render.render_hov
 render_rossby = _render.render_rossby
 
 def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
-             n_days=DEFAULT_N_DAYS, log=None):
+             n_days=DEFAULT_N_DAYS, log=None, lat=None, lon=None):
+    """Build one product. lat/lon (degrees) are passed to products that need a location."""
     pkg = PRODUCTS.get(product_id, PRODUCTS[DEFAULT_PRODUCT])
+    if lat is not None and lon is not None:
+        pkg = dict(pkg, lat=float(lat), lon=float(lon))
     say = (lambda m: log.append(m)) if log is not None else (lambda m: None)
 
     dates = _resolve_dates(mode, manual_date, n_days)

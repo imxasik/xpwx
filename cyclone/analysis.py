@@ -1,9 +1,9 @@
-"""cyclone/analysis.py — runs every diagnostic for one storm.
+"""cyclone/analysis.py — runs every diagnostic for one location and date.
 
-Centre: the 850-hPa cyclonic vorticity maximum within CENTER_BOX_DEG of the
-nominal centre on the storm date (D). The centres on D-1 and D+1 are searched
-within TRACK_BOX_DEG of the D centre. Motion is the displacement between them
-over two days.
+The user gives a nominal centre (lat, lon) and the date D. Centre: the 850-hPa
+cyclonic vorticity maximum within CENTER_BOX_DEG of the nominal centre on D. The
+centres on D-1 and D+1 are searched within TRACK_BOX_DEG of the D centre. Motion
+is the displacement between them over two days.
 
 Shear arrow: the 850->200 hPa shear vector at the point of largest magnitude
 inside SHEAR_RMAX_KM of the centre (core.deep_shear).
@@ -17,7 +17,6 @@ import numpy as np
 
 from cyclone import core
 from cyclone import fields as F
-from cyclone.storms import STORMS
 
 CENTER_BOX_DEG = 2.5     # search box for the 850-hPa centre on the storm date
 TRACK_BOX_DEG = 5.0      # search box for the centres on D-1 and D+1
@@ -37,9 +36,9 @@ def _window(lat, lon, la_rng, lo_rng):
     return ia, io
 
 
-def analyze(key):
-    spec = STORMS[key]
-    D = datetime.date.fromisoformat(spec["date"])
+def analyze(lat0, lon0, D):
+    """Diagnostics for the centre nearest (lat0, lon0) on date D (datetime.date)."""
+    lat0, lon0 = float(lat0), float(lon0)
     dates = {"prev": D - datetime.timedelta(days=1), "date": D,
              "next": D + datetime.timedelta(days=1)}
     day = {k: F.read_day(d) for k, d in dates.items()}
@@ -51,7 +50,7 @@ def analyze(key):
     # --- storm centres -----------------------------------------------------
     zeta850 = {k: core.vorticity(d["u"][k850], d["v"][k850], lat, lon) for k, d in day.items()}
     la_c, lo_c, edge = core.find_center(zeta850["date"], lat, lon,
-                                        spec["nominal_center"][0], spec["nominal_center"][1],
+                                        lat0, lon0,
                                         box_deg=CENTER_BOX_DEG)
     centers = {"date": (la_c, lo_c)}
     track_edge = {}
@@ -90,7 +89,7 @@ def analyze(key):
     }
 
     res = {
-        "storm": spec["name"], "kind": spec["kind"], "date": spec["date"],
+        "date": D.isoformat(), "nominal_center": (lat0, lon0),
         "center": {"lat": la_c, "lon": lo_c, "at_edge": edge},
         "centers": centers, "motion": motion,
         "motion_kt": motion["speed_kt"], "motion_dir": motion["bearing_deg"],

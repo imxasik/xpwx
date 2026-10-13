@@ -298,9 +298,19 @@
             <label>END DATE</label>
             <input type="date" id="date" value="{{ today }}" disabled />
           </div>
-          <div class="field">
+          <div class="field" id="ndays-field">
             <label>DAYS</label>
             <input type="number" id="ndays" value="{{ default_n_days }}" min="1" max="30" step="1" />
+          </div>
+        </div>
+        <div class="rowf" id="latlon-row" style="display:none">
+          <div class="field">
+            <label>LATITUDE (°N)</label>
+            <input type="number" id="lat" step="0.01" min="-90" max="90" placeholder="e.g. 16.5" />
+          </div>
+          <div class="field">
+            <label>LONGITUDE (°E)</label>
+            <input type="number" id="lon" step="0.01" min="-180" max="360" placeholder="e.g. 84.5" />
           </div>
         </div>
         <button class="btn" id="go" onclick="run()">&#9654; Map</button>
@@ -478,7 +488,31 @@
       el.classList.toggle("active", el.dataset.id === id));
     DL.setAttribute("download", id + ".png");
     closeMenu();
+    const p = P(id);
+    setLatLonVisible(!!(p && p.needs_latlon));
+    if (p && p.needs_latlon) { askLatLon(p); return; }
     run();
+  }
+
+  // Products that need a location: show the lat/lon fields and wait for "Map".
+  function setLatLonVisible(on){
+    document.getElementById("latlon-row").style.display = on ? "flex" : "none";
+    document.getElementById("ndays-field").style.display = on ? "none" : "";
+  }
+  function askLatLon(p){
+    IMG.style.display = "none"; DL.style.display = "none"; PH.style.display = "none";
+    META.innerHTML = "<b>" + p.name + "</b> · enter the centre latitude and longitude, "
+      + "choose the date, then press Map.";
+    S.textContent = "Enter latitude and longitude."; S.className = "";
+    document.getElementById("lat").focus();
+  }
+  function latlonInput(){
+    const la = parseFloat(document.getElementById("lat").value);
+    const lo = parseFloat(document.getElementById("lon").value);
+    if (!isFinite(la) || !isFinite(lo)) return {error: "Enter latitude and longitude."};
+    if (la < -90 || la > 90 || lo < -180 || lo > 360)
+      return {error: "Latitude must be -90 to 90 and longitude -180 to 360."};
+    return {lat: la, lon: lo};
   }
   function setMode(m){
     mode = m;
@@ -487,7 +521,10 @@
     DATE.disabled = m === "auto";
   }
   function key(){
-    return JSON.stringify({p:current, m:mode, d:DATE.value||null, n:+nd()});
+    const p = P(current);
+    const ll = (p && p.needs_latlon) ? latlonInput() : null;
+    return JSON.stringify({p:current, m:mode, d:DATE.value||null, n:+nd(),
+                           ll: ll && ll.lat !== undefined ? [ll.lat, ll.lon] : null});
   }
   function nd(){ return parseInt(document.getElementById("ndays").value,10)||5; }
 
@@ -495,6 +532,11 @@
     const p = P(current);
     const ndv = nd();
     if (mode === "manual" && !DATE.value){ S.textContent="Pick an end date."; S.className="err"; return; }
+    let ll = null;
+    if (p && p.needs_latlon){
+      ll = latlonInput();
+      if (ll.error){ S.textContent = ll.error; S.className = "err"; return; }
+    }
     const k = key();
 
     if (cache[k]){ show(cache[k]); S.textContent="Cache · instant."; S.className="ok"; return; }
@@ -504,6 +546,7 @@
 
     const body = { product: current, mode, n_days: ndv };
     if (mode === "manual") body.date = DATE.value;
+    if (ll) { body.lat = ll.lat; body.lon = ll.lon; }
 
     try{
       const r = await fetch("/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -521,6 +564,13 @@
     IMG.src = url; IMG.style.display = "block";
     DL.href = url; DL.style.display = "inline-block";
     const p = P(current);
+    if (p && p.needs_latlon){
+      const ll = latlonInput();
+      META.innerHTML = "<b>" + p.name + "</b> · " + (ll.lat !== undefined
+        ? ll.lat.toFixed(2) + "°N " + ll.lon.toFixed(2) + "°E" : "")
+        + " · " + (mode==="manual" ? "to "+DATE.value : "auto");
+      return;
+    }
     META.innerHTML = "<b>" + (p ? p.name : current) + "</b> · "
       + (mode==="manual" ? "to "+DATE.value : "auto") + " · " + nd() + "-day";
   }
