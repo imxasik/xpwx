@@ -6,7 +6,7 @@ centres on D-1 and D+1 are searched within TRACK_BOX_DEG of the D centre. Motion
 is the displacement between them over two days.
 
 Shear arrow: the 850->200 hPa shear vector at the point of largest magnitude
-inside SHEAR_RMAX_KM of the centre (core.deep_shear).
+inside a square box of +/- SHEAR_BOX_DEG around the centre (core.deep_shear).
 
 Search boxes, radii and the annulus widths are analysis parameters declared
 below. Physical constants live in core.py.
@@ -22,7 +22,7 @@ CENTER_BOX_DEG = 2.5     # search box for the 850-hPa centre on the storm date
 TRACK_BOX_DEG = 5.0      # search box for the centres on D-1 and D+1
 TILT_BOX_DEG = 3.0       # search box for the centre at each upper level
 TILT_LEVELS = [700.0, 500.0, 300.0, 200.0]     # with 850 (the centre) they form the tilt
-SHEAR_RMAX_KM = 500.0    # radius inside which the max shear is searched
+SHEAR_BOX_DEG = 2.5      # half-width of the square box in which the max shear is searched
 STEER_R1_KM = 500.0      # steering = layer-mean wind averaged over this annulus
 STEER_R2_KM = 1000.0     # (keeps the vortex core out)
 HADLEY_BAND_KM = 500.0   # longitudes within this distance of the centre form the φ-p section
@@ -66,8 +66,8 @@ def analyze(lat0, lon0, D):
     tilt = [{"hPa": 850.0, "lat": la_c, "lon": lo_c, "at_edge": edge}]
     tilt += core.tilt(zeta3d, lev, lat, lon, la_c, lo_c, TILT_LEVELS, box_deg=TILT_BOX_DEG)
 
-    # --- deep-layer shear: max vector inside SHEAR_RMAX_KM -------------------
-    shear = core.deep_shear(g["u"], g["v"], lev, lat, lon, la_c, lo_c, rmax_km=SHEAR_RMAX_KM)
+    # --- deep-layer shear: max vector inside the +/- SHEAR_BOX_DEG box -------
+    shear = core.deep_shear(g["u"], g["v"], lev, lat, lon, la_c, lo_c, box_deg=SHEAR_BOX_DEG)
 
     # --- sections through the centre --------------------------------------
     vt, y_tan = core.tangential_wind(g["u"], g["v"], lat, lon, la_c, lo_c)

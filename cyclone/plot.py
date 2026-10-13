@@ -226,7 +226,7 @@ def _panel_B(ax, fig, res, coast_segs):
     sh = res["shear"]
     sm = m["shear_mag"]
     pm = _filled(ax, lon, lat, sm, "YlOrRd", 0.0, float(np.nanmax(sm)))
-    _cbar(fig, pm, ax, "850–200 hPa shear magnitude (kt)")
+    cb = _cbar(fig, pm, ax, "850–200 hPa shear magnitude (kt)")
     step = max(1, lat.size // 14)
     ax.quiver(lon[::step], lat[::step], m["shear_u"][::step, ::step], m["shear_v"][::step, ::step],
               color="#1f1f1f", scale=12.0 * max(_symlim(m["shear_u"]), _symlim(m["shear_v"])), width=0.003)
@@ -235,7 +235,8 @@ def _panel_B(ax, fig, res, coast_segs):
     _box(ax, f"max shear {sh['max_kt']:.1f} kt at r = {sh['max_r_km']:.0f} km (square)\n"
              f"shear vector from {sh['dir_from_deg']:.0f}°")
     _outlines(ax, coast_segs, lon[0], lon[-1], lat[0], lat[-1])
-    _map_axes(ax, lat, lon, "B  Deep-layer shear 850–200 hPa (pointwise, 0–500 km)")
+    _map_axes(ax, lat, lon, f"B  Deep-layer shear 850–200 hPa (pointwise, ±{sh['box_deg']:g}° box)")
+    return cb
 
 
 def _panel_C_tilt(ax, fig, res, coast_segs):
@@ -286,19 +287,15 @@ def _panel_C_tilt(ax, fig, res, coast_segs):
     tip = (lon_c + ux * Lg, lat_c + vy * Lg)
     tail = (lon_c - ux * 0.55 * Lg, lat_c - vy * 0.55 * Lg)
     _arrow(ax, lon_c, lat_c, tip[0], tip[1], "#111111", lw=2.4, zorder=11)
-    ax.text(tip[0] + ux * 0.35, tip[1] + vy * 0.35, "downshear", fontsize=7.5, style="italic",
-            ha="center", va="center", color="#111111", zorder=12)
-    ax.text(tail[0] - ux * 0.45, tail[1] - vy * 0.45, "upshear", fontsize=7.5, style="italic",
-            ha="center", va="center", color="#111111", zorder=12)
-
     _box(ax, f"850→200 hPa shear arrow: {sh['max_kt']:.1f} kt\n"
-             f"(max inside {sh['rmax_km']:.0f} km; square = point of max shear)\n"
-             f"arrow points downshear; upshear is the opposite side",
+             f"(max inside ±{sh['box_deg']:g}° box; square = point of max shear)",
          loc="upper left")
     _outlines(ax, coast_segs, to[0], to[-1], tl[0], tl[-1])
     _map_axes(ax, tl, to, "C  Vortex tilt: 850-hPa centre, 700 · 500 · 300 · 200 hPa centres")
     ax.set_xlim(to[0], to[-1])
     ax.set_ylim(tl[0], tl[-1])
+    # fill the whole panel box: the window is a fixed 2.5-deg grid, so do not lock the aspect
+    ax.set_aspect("auto")
 
 
 def _panel_D_hadley(ax, fig, res):
@@ -320,16 +317,52 @@ def _panel_D_hadley(ax, fig, res):
                  f"(arrows: v, w; up = ascent)", fontsize=9, loc="left")
 
 
+def _shrink_panel(ax, cb, s):
+    """Scale a map and its colourbar about their common centre by factor s (after layout)."""
+    fig = ax.figure
+    fig.canvas.draw()                                    # settle the equal-aspect boxes
+    p, c = ax.get_position(), cb.ax.get_position()
+    cx, cy = p.x0 + 0.5 * p.width, p.y0 + 0.5 * p.height
+    ax.set_position([cx - 0.5 * s * p.width, cy - 0.5 * s * p.height, s * p.width, s * p.height])
+    cb.ax.set_position([c.x0, cy - 0.5 * s * p.height, c.width, s * p.height])
+
+
+def _size_like(ax, ref, fig):
+    """Give ax the width and height of ref, keeping its own row and aligning the left edges.
+
+    Equal-aspect axes get their data window widened or narrowed so the box fills the
+    target exactly (no distortion); auto-aspect axes simply take the box.
+    """
+    fig.canvas.draw()
+    rr = ref.get_position()                              # ref after its own aspect is applied
+    own = ax.get_position(original=True)                 # ax's grid cell (its row)
+    W, H = fig.get_size_inches()
+    if ax.get_aspect() != "auto":
+        ratio = (rr.width * W) / (rr.height * H)
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        cx, cy, sx, sy = 0.5 * (x0 + x1), 0.5 * (y0 + y1), x1 - x0, y1 - y0
+        if sx / sy < ratio:
+            sx = sy * ratio
+        else:
+            sy = sx / ratio
+        ax.set_xlim(cx - 0.5 * sx, cx + 0.5 * sx)
+        ax.set_ylim(cy - 0.5 * sy, cy + 0.5 * sy)
+    ax.set_position([rr.x0, own.y0, rr.width, rr.height])
+
+
 def figure1(res, coast_segs=()):
     lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
     fig, axs = plt.subplots(2, 2, figsize=(14, 12), facecolor="white")
     fig.suptitle(f"Dynamic Fig — tropical cyclone diagnostics · {res['date']}  ·  "
                  f"{_centre_note(res)}", fontsize=13, y=0.995)
     _panel_A(axs[0, 0], fig, res, coast_segs)
-    _panel_B(axs[0, 1], fig, res, coast_segs)
+    cbB = _panel_B(axs[0, 1], fig, res, coast_segs)
     _panel_C_tilt(axs[1, 0], fig, res, coast_segs)
     _panel_D_hadley(axs[1, 1], fig, res)
     fig.tight_layout(rect=[0, 0.02, 1, 0.97])
+    _shrink_panel(axs[0, 1], cbB, 0.9)                   # B slightly smaller
+    _size_like(axs[1, 0], axs[0, 0], fig)                # tilt map: same size as A (filled, aspect free)
     _watermark(fig, SRC)
     return _png(fig)
 
@@ -468,5 +501,8 @@ def figure2(res, coast_segs=()):
     _tw_panel_C_hodo(axs[1, 0], fig, res)
     _tw_panel_D_steer(axs[1, 1], fig, res, coast_segs)
     fig.tight_layout(rect=[0, 0.02, 1, 0.97])
+    axs[1, 1].set_aspect("auto")                         # steering window is square; fill B's shape
+    _size_like(axs[1, 0], axs[0, 0], fig)                # hodograph: same size as A
+    _size_like(axs[1, 1], axs[0, 1], fig)                # steering map: same size as B
     _watermark(fig, SRC)
     return _png(fig)
