@@ -5,4 +5,5 @@ scipy
 matplotlib
 requests
 netCDF4
+pydap
 pyshp

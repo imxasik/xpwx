@@ -554,8 +554,40 @@ def _compute_vws(pkg, dates):
 # ── 3. Wind Shear Anom (directional) ────────────────────────
 # ===========================================================================
 
+def _compute_vwsa(pkg, dates):
+    """850–200 hPa directional shear ANOMALY.
+
+    Anomaly = observed shear vector (200 − 850 hPa) minus its 1991–2020
+    climatology.  The returned speed is the magnitude of that anomaly vector;
+    u/v carry its direction for the quiver arrows.
+    """
+    region = pkg.get("region", "io")
+    lon_min, lon_max, lat_min, lat_max = _get_bounds(region)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f1 = pool.submit(_fetch_uv_obs, 850, dates, lon_min, lon_max, lat_min, lat_max)
+        f2 = pool.submit(_fetch_uv_ltm, 850, dates, lon_min, lon_max, lat_min, lat_max)
+        f3 = pool.submit(_fetch_uv_obs, 200, dates, lon_min, lon_max, lat_min, lat_max)
+        f4 = pool.submit(_fetch_uv_ltm, 200, dates, lon_min, lon_max, lat_min, lat_max)
+        lat, lon, u_obs_850, v_obs_850 = f1.result()
+        _,   _,   u_ltm_850, v_ltm_850 = f2.result()
+        _,   _,   u_obs_200, v_obs_200 = f3.result()
+        _,   _,   u_ltm_200, v_ltm_200 = f4.result()
+
+    du_obs = u_obs_200 - u_obs_850
+    dv_obs = v_obs_200 - v_obs_850
+    du_ltm = u_ltm_200 - u_ltm_850
+    dv_ltm = v_ltm_200 - v_ltm_850
+
+    u_anom = gaussian_filter(du_obs - du_ltm, sigma=1.5)
+    v_anom = gaussian_filter(dv_obs - dv_ltm, sigma=1.5)
+    anom_speed = gaussian_filter(np.sqrt(u_anom**2 + v_anom**2), sigma=2.0)
+
+    return lat, lon, {"main": anom_speed, "u": u_anom, "v": v_anom,
+                      "_region": region, "_total": False}
+
+
 def _compute_shear(pkg, dates):
-    # identical to _compute_vwsa logic; kept as separate kind for labelling
     return _compute_vwsa(pkg, dates)
 
 

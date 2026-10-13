@@ -18,11 +18,6 @@ PSL = os.environ.get(
     "PSL_BASE_URL", "https://downloads.psl.noaa.gov/Datasets/ncep"
 ).rstrip("/")
 
-# NOAA OISST v2 high-resolution daily SST (used by custom/sst.py).
-OISST = os.environ.get(
-    "OISST_BASE_URL", "https://downloads.psl.noaa.gov/Datasets/noaa.oisst.v2.highres"
-).rstrip("/")
-
 # Downloaded netCDF files are kept here (git-ignored).  Files for the current
 # year are still being appended by NOAA, so they are re-downloaded once older
 # than CACHE_TTL_HOURS; every other file is kept as-is.
