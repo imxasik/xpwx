@@ -2,8 +2,8 @@
 
 The diagram design is the same as the original script. The only change is the
 data source: instead of downloading the NOAA PSL RMM text file, the index is
-computed from the project's NCEP/NCAR daily u850/u200 files (see
-rmm/ncep_rmm.py for the method and its approximation).
+computed from the project's NCEP/NCAR daily fields (u850, u200 and the 200-hPa
+velocity potential χ200 in place of OLR). See rmm/ncep_rmm.py.
 
 Run from the project root (after building the EOF file once):
     python -m rmm.ncep_rmm build

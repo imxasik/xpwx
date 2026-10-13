@@ -103,18 +103,18 @@ skipped (safe reference templates).
 
 ## MJO phase diagram (`rmm/`)
 
-Draws the RMM1/RMM2 MJO phase diagram for the last 40 days of NCEP/NCAR
-Reanalysis data. The data are read from `downloads.psl.noaa.gov` (the same
-`uwnd.YEAR.nc` files as the rest of the project).
+Draws the RMM1/RMM2 MJO phase diagram for the last 40 days of the NCEP/NCAR
+Reanalysis record. The method is Wheeler & Hendon (2004), with OLR replaced by
+the 200-hPa velocity potential χ200. χ200 is computed from the data (rmm/velpot.py,
+exact flux-form inversion of the global 200-hPa wind, no smoothing).
 
-**Approximation:** the index is wind-only (u850 and u200, 15°S–15°N). The
-official NOAA RMM index also uses OLR, which is not in this dataset. Its values
-therefore differ from the official index. The method is described in
-`rmm/ncep_rmm.py`.
+- Inputs: `uwnd.YEAR.nc` and `vwnd.YEAR.nc` from `downloads.psl.noaa.gov`.
+- Base period: 1991–2020 (seasonal cycle, scales and EOFs are fitted on it).
+- Not identical to the official NOAA RMM index, because OLR is replaced by χ200.
 
 ```bash
-# 1. One-time: fit the EOFs on 1991–2020 (downloads ~1.5 GB of uwnd files,
-#    needs roughly 2–3 GB RAM). Writes rmm/rmm_eofs_ncep.npz.
+# 1. One-time: fit the EOFs on 1991–2020. Reads the full uwnd and vwnd files for
+#    those years. Writes rmm/rmm_eofs_ncep.npz (not committed).
 python -m rmm.ncep_rmm build
 
 # 2. Draw the diagram → rmm/output/mjo_diagram.png
@@ -123,5 +123,4 @@ python -m rmm.plot_mjo
 
 The window ends at the last day in the NCEP record. NCEP/NCAR Reanalysis 1 ends
 on 17 Mar 2026, so the diagram will not show current conditions until that
-dataset is extended. `rmm/rmm_eofs_ncep.npz` is not committed. Build it
-locally or on the server.
+dataset is extended.
