@@ -63,7 +63,7 @@ def parse_csv(text):
     rows = list(csv.reader(io.StringIO(text)))
     head_i = None
     for i, row in enumerate(rows):
-        names = [c.strip() for c in row]
+        names = [c.strip().lstrip('#').strip() for c in row]
         if _find(names, _RMM1) is not None and _find(names, _RMM2) is not None:
             head_i = i
             break
@@ -71,7 +71,8 @@ def parse_csv(text):
         sample = " | ".join(",".join(r) for r in rows[:3])
         raise ValueError(f"RMM1/RMM2 header not found in the JMA CSV. First rows: {sample}")
 
-    names = [c.strip() for c in rows[head_i]]
+    # header names may carry a comment marker, e.g. '#year'
+    names = [c.strip().lstrip("#").strip() for c in rows[head_i]]
     lower = [n.lower() for n in names]
     c1 = _find(names, _RMM1)
     c2 = _find(names, _RMM2)
