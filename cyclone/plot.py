@@ -33,7 +33,7 @@ import matplotlib.colors as mcolors
 import matplotlib.cm as mcm
 import matplotlib.patheffects as pe
 import matplotlib.ticker
-from matplotlib.patches import Circle, FancyArrowPatch
+from matplotlib.patches import Circle, FancyArrowPatch, Rectangle
 
 from cyclone import borders, core
 
@@ -223,19 +223,22 @@ def _panel_B(ax, fig, res, coast_segs):
     m = res["map"]
     lat, lon = m["lat"], m["lon"]
     lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
-    sh = res["shear"]
+    sb = res["shear_box"]                                # box mean about the input point
     sm = m["shear_mag"]
     pm = _filled(ax, lon, lat, sm, "YlOrRd", 0.0, float(np.nanmax(sm)))
     cb = _cbar(fig, pm, ax, "850–200 hPa shear magnitude (kt)")
     step = max(1, lat.size // 14)
     ax.quiver(lon[::step], lat[::step], m["shear_u"][::step, ::step], m["shear_v"][::step, ::step],
               color="#1f1f1f", scale=12.0 * max(_symlim(m["shear_u"]), _symlim(m["shear_v"])), width=0.003)
-    ax.plot(sh["max_lon"], sh["max_lat"], marker="s", ms=8, mfc="none", mec="#1f1f1f", mew=1.5, zorder=8)
+    h = sb["box_deg"]
+    ax.add_patch(Rectangle((sb["lon_lo"], sb["lat_lo"]), 2 * h, 2 * h, fill=False,
+                           ec="#1f1f1f", lw=1.5, ls="--", zorder=8))
     _mark_center(ax, lat_c, lon_c)
-    _box(ax, f"max shear {sh['max_kt']:.1f} kt at r = {sh['max_r_km']:.0f} km (square)\n"
-             f"shear vector from {sh['dir_from_deg']:.0f}°")
+    _box(ax, f"box-mean 850–200 hPa shear: {sb['max_kt']:.1f} kt\n"
+             f"box {sb['lat_lo']:g}–{sb['lat_hi']:g}°N, {sb['lon_lo']:g}–{sb['lon_hi']:g}°E (±{h:g}°)\n"
+             f"shear vector from {sb['dir_from_deg']:.0f}°")
     _outlines(ax, coast_segs, lon[0], lon[-1], lat[0], lat[-1])
-    _map_axes(ax, lat, lon, f"B  Deep-layer shear 850–200 hPa (pointwise, ±{sh['box_deg']:g}° box)")
+    _map_axes(ax, lat, lon, f"B  Deep-layer shear 850–200 hPa (box mean, ±{h:g}°)")
     return cb
 
 

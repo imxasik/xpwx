@@ -46,5 +46,5 @@ def draw(ax, lon_lo, lon_hi, lat_lo, lat_hi):
             continue
         if part[:, 1].max() < lat_lo or part[:, 1].min() > lat_hi:
             continue
-        ax.plot(part[:, 0], part[:, 1], color="#3a3a3a", lw=0.8, zorder=7,
+        ax.plot(part[:, 0], part[:, 1], color="#000000", lw=1.8, zorder=7,
                 solid_capstyle="round")

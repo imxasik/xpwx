@@ -68,6 +68,8 @@ def analyze(lat0, lon0, D):
 
     # --- deep-layer shear: max vector inside the +/- SHEAR_BOX_DEG box -------
     shear = core.deep_shear(g["u"], g["v"], lev, lat, lon, la_c, lo_c, box_deg=SHEAR_BOX_DEG)
+    # box mean about the INPUT point (lat0, lon0): the figure's B panel
+    shear_box = core.box_mean_shear(g["u"], g["v"], lev, lat, lon, lat0, lon0, half_deg=SHEAR_BOX_DEG)
 
     # --- sections through the centre --------------------------------------
     vt, y_tan = core.tangential_wind(g["u"], g["v"], lat, lon, la_c, lo_c)
@@ -93,7 +95,7 @@ def analyze(lat0, lon0, D):
         "center": {"lat": la_c, "lon": lo_c, "at_edge": edge},
         "centers": centers, "motion": motion,
         "motion_kt": motion["speed_kt"], "motion_dir": motion["bearing_deg"],
-        "tilt": tilt, "shear": shear,
+        "tilt": tilt, "shear": shear, "shear_box": shear_box,
         "tangential": {"vt": vt, "y_km": y_tan},
         "theta": {"th": th_p, "y_km": y_th},
         "overturn": {"v": v_s, "w": w_s, "y_km": y_ov, "u": u_s},
