@@ -10,7 +10,8 @@ SHP_PATH = os.path.join(SHP_DIR, "ne_110m_coastline.shp")
 
 SHP_URL = "https://naciscdn.org/naturalearth/110m/physical/ne_110m_coastline.zip"
 
-PSL = "https://psl.noaa.gov/thredds/dodsC/Datasets/ncep"
+#PSL = "https://psl.noaa.gov/thredds/dodsC/Datasets/ncep"
+PSL = "https://downloads.psl.noaa.gov/Datasets/ncep/"
 
 DEFAULT_N_DAYS = 3
 
