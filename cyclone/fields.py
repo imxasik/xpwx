@@ -1,0 +1,61 @@
+"""Read one day of the fields used by the cyclone diagnostics.
+
+Files come from the project's PSL/NCEP downloads (``pro.config.PSL``), read with
+``pro.data.open_remote``. Packed values are unpacked here with the file's
+scale_factor, add_offset and missing_value.
+
+Returned fields: u, v (m/s), T (K), z (gpm), w = omega (Pa/s); lev (hPa, ascending),
+lat (ascending), lon (0-360).
+"""
+import threading
+
+import numpy as np
+
+from pro import config
+from pro import data as pdata
+
+VARS = {"uwnd": "u", "vwnd": "v", "air": "T", "hgt": "z", "omega": "w"}
+
+_LOCK = threading.Lock()
+_DAY_CACHE = {}
+
+
+def _unpack(ds, name, t):
+    """(nlev, nlat, nlon) float array of variable ``name`` at time index ``t``."""
+    attr = ds[name].attributes
+    sf = float(attr.get("scale_factor", 1.0))
+    ao = float(attr.get("add_offset", 0.0))
+    mv = attr.get("missing_value", None)
+    raw = np.asarray(ds[name][t, :, :, :].data, dtype=np.float64)
+    f = raw * sf + ao
+    if mv is not None:
+        f[raw == float(mv)] = np.nan
+    return f
+
+
+def read_day(date):
+    """Fields for one day (cached per data root and date)."""
+    key = (config.PSL, date.isoformat())
+    with _LOCK:
+        if key in _DAY_CACHE:
+            return _DAY_CACHE[key]
+        out = {"date": date}
+        lev = lat = lon = None
+        for name, short in VARS.items():
+            ds = pdata.open_remote(f"{config.PSL}/{name}.{date.year}.nc")
+            t = pdata._time_idx(ds, date)
+            if lev is None:
+                lev = np.asarray(ds["level"].data, dtype=float)
+                lat = np.asarray(ds["lat"].data, dtype=float)
+                lon = np.asarray(ds["lon"].data, dtype=float)
+            out[short] = _unpack(ds, name, t)
+        # ascending pressure and latitude
+        ol = np.argsort(lev)
+        oa = np.argsort(lat)
+        for k in "uvTzw":
+            out[k] = out[k][ol][:, oa, :]
+        out["lev"] = lev[ol]
+        out["lat"] = lat[oa]
+        out["lon"] = lon
+        _DAY_CACHE[key] = out
+        return out
