@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 
-from pydap.client import open_url
+from pro.data import open_remote
 from pro import config   # BASE_DIR, SHP_PATH, PSL, coastline cache
 
 PSL = config.PSL
@@ -70,12 +70,12 @@ def _get_bounds(region):
 
 def _open_ds(varname, year):
     url = f"{PSL}/{varname}.{year}.nc"
-    return open_url(url)
+    return open_remote(url)
 
 
 def _open_ltm(varname):
     url = f"{PSL}/{varname}.day.ltm.1991-2020.nc"
-    return open_url(url)
+    return open_remote(url)
 
 
 def _latlon(ds):
@@ -372,7 +372,7 @@ def _fetch_uv_obs_global(dates):
         out = arr * sf + ao
         out[np.abs(arr - mv) < 0.5] = np.nan
         return out
-    # re-open to get attrs (already cached by pydap)
+    # re-open to get attrs (cached by pro.data.open_remote)
     ds_u0 = _open_ds("uwnd", list(by_year.keys())[0])
     ds_v0 = _open_ds("vwnd", list(by_year.keys())[0])
     u_mean = np.nanmean([_scale(ds_u0, "uwnd", s) for s in u_slices], axis=0)
@@ -554,8 +554,40 @@ def _compute_vws(pkg, dates):
 # ── 3. Wind Shear Anom (directional) ────────────────────────
 # ===========================================================================
 
+def _compute_vwsa(pkg, dates):
+    """850–200 hPa directional shear ANOMALY.
+
+    Anomaly = observed shear vector (200 − 850 hPa) minus its 1991–2020
+    climatology.  The returned speed is the magnitude of that anomaly vector;
+    u/v carry its direction for the quiver arrows.
+    """
+    region = pkg.get("region", "io")
+    lon_min, lon_max, lat_min, lat_max = _get_bounds(region)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f1 = pool.submit(_fetch_uv_obs, 850, dates, lon_min, lon_max, lat_min, lat_max)
+        f2 = pool.submit(_fetch_uv_ltm, 850, dates, lon_min, lon_max, lat_min, lat_max)
+        f3 = pool.submit(_fetch_uv_obs, 200, dates, lon_min, lon_max, lat_min, lat_max)
+        f4 = pool.submit(_fetch_uv_ltm, 200, dates, lon_min, lon_max, lat_min, lat_max)
+        lat, lon, u_obs_850, v_obs_850 = f1.result()
+        _,   _,   u_ltm_850, v_ltm_850 = f2.result()
+        _,   _,   u_obs_200, v_obs_200 = f3.result()
+        _,   _,   u_ltm_200, v_ltm_200 = f4.result()
+
+    du_obs = u_obs_200 - u_obs_850
+    dv_obs = v_obs_200 - v_obs_850
+    du_ltm = u_ltm_200 - u_ltm_850
+    dv_ltm = v_ltm_200 - v_ltm_850
+
+    u_anom = gaussian_filter(du_obs - du_ltm, sigma=1.5)
+    v_anom = gaussian_filter(dv_obs - dv_ltm, sigma=1.5)
+    anom_speed = gaussian_filter(np.sqrt(u_anom**2 + v_anom**2), sigma=2.0)
+
+    return lat, lon, {"main": anom_speed, "u": u_anom, "v": v_anom,
+                      "_region": region, "_total": False}
+
+
 def _compute_shear(pkg, dates):
-    # identical to _compute_vwsa logic; kept as separate kind for labelling
     return _compute_vwsa(pkg, dates)
 
 

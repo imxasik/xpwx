@@ -23,7 +23,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from pydap.client import open_url
+from pro.data import open_remote
 
 from pro import config
 
@@ -31,11 +31,11 @@ PSL = config.PSL
 
 
 def _open(varname, year):
-    return open_url(f"{PSL}/{varname}.{year}.nc")
+    return open_remote(f"{PSL}/{varname}.{year}.nc")
 
 
 def _open_ltm(varname):
-    return open_url(f"{PSL}/{varname}.day.ltm.1991-2020.nc")
+    return open_remote(f"{PSL}/{varname}.day.ltm.1991-2020.nc")
 
 
 def _latlon(ds):

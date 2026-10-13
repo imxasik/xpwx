@@ -3,7 +3,7 @@
 Modules
 -------
 config    module constants & process-wide caches (datasets, fields, lat/lon, coast)
-data      OPeNDAP access, cached field means, coastline, date resolution
+data      NOAA PSL file download + local netCDF access, cached field means, coastline, date resolution
 physics   pure spherical/physical operators (no data access)
 products  PRODUCTS registry + sidebar grouping
 compute   per-product computation (obs minus 1991-2020 climatology)
