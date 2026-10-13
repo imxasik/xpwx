@@ -361,7 +361,7 @@ def figure1(res, coast_segs=()):
     _panel_C_tilt(axs[1, 0], fig, res, coast_segs)
     _panel_D_hadley(axs[1, 1], fig, res)
     fig.tight_layout(rect=[0, 0.02, 1, 0.97])
-    _shrink_panel(axs[0, 1], cbB, 0.9)                   # B slightly smaller
+    _shrink_panel(axs[0, 1], cbB, 1.0)                   # B slightly smaller
     _size_like(axs[1, 0], axs[0, 0], fig)                # tilt map: same size as A (filled, aspect free)
     _watermark(fig, SRC)
     return _png(fig)
