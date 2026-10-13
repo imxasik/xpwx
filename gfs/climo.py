@@ -1,7 +1,7 @@
 """
 climo.py  —  PSL NCEP LTM Climatology Engine
 =============================================
-Source: https://psl.noaa.gov/thredds/catalog/Datasets/ncep/catalog.html
+Source: https://downloads.psl.noaa.gov/Datasets/ncep/  (plain netCDF files)
 
 PSL 1991-2020 Daily LTM files used:
   air.sfc.day.ltm.1991-2020.nc   → 2m Temperature         (K   → °C)
@@ -18,7 +18,8 @@ PSL 1991-2020 Daily LTM files used:
   hgt.day.ltm.1991-2020.nc       → Geopotential Height     (m)
 
 Speed design:
-  • PSL THREDDS NCSS → only bbox + today's DOY slice (~100-500 KB, not full file)
+  • Each LTM file is downloaded once into data_cache/ (see pro/data.py)
+  • Only the bbox + today's day-of-year slice is read from the local file
   • In-memory cache per (variable, doy, bbox) → zero cost on repeat calls
   • Parallel fetch with threading for combined fetches (e.g. wind speed)
   • Bilinear regrid LTM → GFS grid via scipy
@@ -30,20 +31,28 @@ VP & SF Anomaly:
   • Anomaly = GFS_VP/SF − LTM_VP/SF
 """
 
-import io, datetime, warnings, threading, concurrent.futures
+import os, sys, re, datetime, warnings, threading, concurrent.futures
 import numpy as np
-import requests
-from scipy.io.netcdf import netcdf_file
 from scipy.interpolate import RegularGridInterpolator
 
 warnings.filterwarnings("ignore")
 
-# ── PSL THREDDS NCSS base ─────────────────────────────────────────────
-PSL_NCSS = "https://psl.noaa.gov/thredds/ncss/grid/Datasets/ncep"
+# The PSL data layer lives in the parent project package (pro/). This file is
+# also imported as a top-level module by gfs_web.py, so make sure the project
+# root is importable.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from pro import config as _pro_config          # noqa: E402
+from pro.data import open_remote               # noqa: E402
+
+# ── PSL base (NOAA downloads server; override with PSL_BASE_URL) ──────
+PSL = _pro_config.PSL
 
 # ════════════════════════════════════════════════════════════════════
 #  LTM file registry
-#  key → (filename, ncss_varname, raw_unit, output_unit, note)
+#  key → (filename, netcdf_varname, raw_unit, output_unit, level_type)
 # ════════════════════════════════════════════════════════════════════
 LTM_REGISTRY = {
     # Surface / single-level
@@ -88,60 +97,57 @@ _LOCK = threading.Lock()
 
 
 # ════════════════════════════════════════════════════════════════════
-#  NCSS fetch — spatial + temporal subset only
+#  LTM fetch — bbox + today's day slice from the locally cached file
 # ════════════════════════════════════════════════════════════════════
 
-def _today_ltm_timestr() -> str:
-    """
-    Today's month/day mapped to the LTM file's reference year.
-    PSL NCEP LTM files store their time axis as year 0001
-    (days since 1800-01-01, actual range 0001-01-01 to 0001-12-31).
-    NCSS time_start/time_end must use '0001-MM-DD' format.
-    """
-    t = datetime.date.today()
-    return f"0001-{t.month:02d}-{t.day:02d}T00:00:00Z"
+def _epoch_of(ds_time_attrs) -> datetime.date:
+    units = ds_time_attrs.get("units", "hours since 1800-01-01")
+    m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", str(units))
+    return (datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            if m else datetime.date(1800, 1, 1))
 
 
-def _ncss_fetch(ltm_key: str,
-                lat_min, lat_max, lon_min, lon_max,
-                level_hpa: int = None) -> tuple:
+def _ltm_time_index(ds, n: int) -> int:
+    """Index of today's month/day in the LTM time axis (the file uses year 0001)."""
+    today = datetime.date.today()
+    tvar = ds["time"]
+    raw = np.asarray(tvar.data, dtype=np.float64)
+    units = str(tvar.attributes.get("units", "hours since 1800-01-01"))
+    scale = 1.0 / 24.0 if "hours" in units else 1.0
+    epoch = _epoch_of(tvar.attributes)
+    for i, t in enumerate(raw):
+        try:
+            d = epoch + datetime.timedelta(days=float(t) * scale)
+        except OverflowError:
+            continue
+        if (d.month, d.day) == (today.month, today.day):
+            return i
+    # Feb-29 or anything unmatched: fall back to day-of-year, as before.
+    return min(today.timetuple().tm_yday - 1, n - 1)
+
+
+def _ltm_fetch(ltm_key: str,
+               lat_min, lat_max, lon_min, lon_max,
+               level_hpa: int = None) -> tuple:
     """
-    Fetch ONE LTM field from PSL NCSS as a spatial bbox + single DOY slice.
+    Fetch ONE LTM field: bbox + today's day slice from the cached PSL file.
     Returns (lat_1d, lon_1d, data_2d) in OUTPUT units.
-    Result is ~100-500 KB — fast.
     """
     fname, varname, raw_unit, out_unit, ltype = LTM_REGISTRY[ltm_key]
-    time_str = _today_ltm_timestr()
-
-    params = {
-        "var"        : varname,
-        "north"      : lat_max,
-        "south"      : lat_min,
-        "west"       : lon_min,
-        "east"       : lon_max,
-        "time_start" : time_str,
-        "time_end"   : time_str,
-        "accept"     : "netCDF",
-        "horizStride": 1,
-    }
-    if ltype == "isobaric" and level_hpa:
-        params["vertCoord"] = str(int(level_hpa) * 100)  # Pa
-
-    url = f"{PSL_NCSS}/{fname}"
     label = f"{fname.split('.')[0]}({level_hpa or 'sfc'})"
-    print(f"  [LTM] {label}  {datetime.date.today().strftime('%b %d')} ...", end=" ", flush=True)
+    print(f"  [LTM] {label}  {datetime.date.today().strftime('%b %d')} ...",
+          end=" ", flush=True)
+    t0 = datetime.datetime.now()
 
     try:
-        r = requests.get(url, params=params, timeout=25)
+        ds = open_remote(f"{PSL}/{fname}")
     except Exception as e:
-        raise RuntimeError(f"Network error: {e}")
+        raise RuntimeError(f"PSL LTM file unavailable ({fname}): {e}")
 
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:150]}")
-
-    print(f"{len(r.content)/1024:.0f} KB  {r.elapsed.total_seconds():.2f}s")
-
-    lat, lon, data = _parse_nc(r.content, varname, lat_min, lat_max, lon_min, lon_max)
+    lev = level_hpa if (ltype == "isobaric" and level_hpa) else None
+    lat, lon, data = _read_ltm_subset(ds, varname, lat_min, lat_max,
+                                      lon_min, lon_max, lev)
+    print(f"{(datetime.datetime.now() - t0).total_seconds():.2f}s")
 
     # Unit conversion
     if   raw_unit == "K"  and out_unit == "degC": data = data - 273.15
@@ -151,63 +157,51 @@ def _ncss_fetch(ltm_key: str,
     return lat, lon, data
 
 
-# ════════════════════════════════════════════════════════════════════
-#  NetCDF3 parser (scipy — no heavy dependency)
-# ════════════════════════════════════════════════════════════════════
+def _read_ltm_subset(ds, varname, lat_min, lat_max, lon_min, lon_max,
+                     level_hpa=None) -> tuple:
+    """Crop one LTM variable to a bbox and to today's day, on the local file."""
+    lat = np.asarray(ds["lat"].data, dtype=np.float64)
+    lon = np.asarray(ds["lon"].data, dtype=np.float64)
 
-def _parse_nc(raw: bytes, varname: str,
-              lat_min, lat_max, lon_min, lon_max) -> tuple:
-    buf = io.BytesIO(raw)
-    ds  = netcdf_file(buf, 'r', mmap=False)
-    keys = list(ds.variables.keys())
-
-    def _arr(v):
-        a = np.array(v.data, dtype=np.float64)
-        for attr in ('_FillValue', 'missing_value', 'fill_value'):
-            fv = getattr(v, attr, None)
-            if fv is not None:
-                try: a[np.isclose(a, float(fv), rtol=0, atol=1.0)] = np.nan
-                except: pass
-        sc  = float(getattr(v, 'scale_factor', 1.0) or 1.0)
-        off = float(getattr(v, 'add_offset',   0.0) or 0.0)
-        return a * sc + off
-
-    lat_k = next((k for k in keys if k.lower() in ("lat","latitude")), None)
-    lon_k = next((k for k in keys if k.lower() in ("lon","longitude")), None)
-    if not lat_k or not lon_k:
-        ds.close(); raise RuntimeError(f"lat/lon not found. keys={keys}")
-
-    lat = _arr(ds.variables[lat_k])
-    lon = _arr(ds.variables[lon_k])
-
-    # Match variable name loosely
-    var_k = next(
-        (k for k in keys
-         if k.lower() == varname.lower()
-         or k.lower().startswith(varname.lower()[:5])),
-        None)
-    if not var_k:
-        ds.close(); raise RuntimeError(f"Var '{varname}' not found. keys={keys}")
-
-    data = _arr(ds.variables[var_k])
-    ds.close()
-
-    # Squeeze time / level dims → 2D
-    while data.ndim > 2:
-        data = data[0]
-
-    # Ensure lat ascending
-    if lat[0] > lat[-1]:
-        lat  = lat[::-1]
-        data = data[::-1, :]
-
-    # Crop to bbox
     li  = np.where((lat >= lat_min - 0.5) & (lat <= lat_max + 0.5))[0]
     loi = np.where((lon >= lon_min - 0.5) & (lon <= lon_max + 0.5))[0]
     if len(li) == 0 or len(loi) == 0:
-        raise RuntimeError(f"Empty crop. lat={lat[[0,-1]]} lon={lon[[0,-1]]}")
+        raise RuntimeError(f"Empty crop. lat={lat[[0, -1]]} lon={lon[[0, -1]]}")
+    lat_sl = slice(int(li[0]), int(li[-1]) + 1)
+    lon_sl = slice(int(loi[0]), int(loi[-1]) + 1)
 
-    return lat[li], lon[loi], data[np.ix_(li, loi)]
+    var = ds[varname]
+    n_time = var.shape[0]
+    t = _ltm_time_index(ds, n_time)
+
+    if level_hpa is not None and "level" in ds and len(var.shape) == 4:
+        levs = np.asarray(ds["level"].data, dtype=np.float64)
+        lv = int(np.argmin(np.abs(levs - float(level_hpa))))
+        raw = var[t, lv, lat_sl, lon_sl].data
+    else:
+        raw = var[t, lat_sl, lon_sl].data
+    data = np.asarray(raw, dtype=np.float64).reshape(len(li), len(loi))
+
+    # Fill values → NaN (same tolerance as before), then packing → physical units.
+    attr = var.attributes
+    for key in ("_FillValue", "missing_value", "fill_value"):
+        fv = attr.get(key)
+        if fv is not None:
+            try:
+                data[np.isclose(data, float(fv), rtol=0, atol=1.0)] = np.nan
+            except (TypeError, ValueError):
+                pass
+    sc  = float(attr.get("scale_factor", 1.0) or 1.0)
+    off = float(attr.get("add_offset", 0.0) or 0.0)
+    data = data * sc + off
+
+    lat_c = lat[lat_sl]
+    lon_c = lon[lon_sl]
+    # Ensure lat ascending (same convention as before)
+    if lat_c[0] > lat_c[-1]:
+        lat_c = lat_c[::-1]
+        data  = data[::-1, :]
+    return lat_c, lon_c, data
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -226,7 +220,7 @@ def _cached_fetch(ltm_key, lat_min, lat_max, lon_min, lon_max,
             print(f"  [LTM] cache hit: {ltm_key}({level_hpa or 'sfc'})")
             return _CACHE[ck]
 
-    result = _ncss_fetch(ltm_key, lat_min, lat_max, lon_min, lon_max, level_hpa)
+    result = _ltm_fetch(ltm_key, lat_min, lat_max, lon_min, lon_max, level_hpa)
     with _LOCK:
         _CACHE[ck] = result
     return result

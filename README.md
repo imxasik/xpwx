@@ -2,17 +2,17 @@
 
 Interactively render NCEP/NCAR Reanalysis **anomaly maps** (obs minus the
 1991–2020 daily climatology) from NOAA PSL, served through a Flask + React-style
-web UI. Every product is data-driven — the engine fetches the raw
-OPeNDAP fields, computes the diagnostics on the sphere, and renders a
-full-width map. There is no hard-coded imagery.
+web UI. Every product is data-driven — the engine downloads the raw NCEP/NCAR
+netCDF fields from NOAA PSL once (cached locally), computes the diagnostics on
+the sphere, and renders a full-width map. There is no hard-coded imagery.
 
 ## Project structure
 The engine lives package-by-package under `pro/` so no single module balloons:
 
 | Path | Purpose |
 |------|---------|
-| `pro/config.py` | Module constants + process-wide caches (datasets, fields, lat/lon, coast). |
-| `pro/data.py` | OPeNDAP access, cached field means, coastline, date resolution. |
+| `pro/config.py` | Module constants (PSL base URL, cache dir) + process-wide caches (datasets, fields, lat/lon, coast). |
+| `pro/data.py` | Downloads PSL netCDF files to `data_cache/`, reads them locally (`open_remote`), cached field means, coastline, date resolution. |
 | `pro/physics.py` | Pure spherical/physical operators (divergence, vorticity, Poisson, Eady, Takaya–Nakamura, stationary wavenumber). |
 | `pro/products.py` | `PRODUCTS` registry + sidebar grouping. |
 | `pro/compute.py` | Per-product computation (obs − climatology anomalies). |
@@ -45,7 +45,7 @@ Torque / Flow / Advanced / Surface / Hovmöller**. Examples:
 
 ## Run locally
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt   # netCDF4 replaces the former pydap dependency
 python app.py            # Flask dev server -> http://localhost:8000
 # or the production way:
 PORT=8000 gunicorn -b 0.0.0.0:$PORT app:app
@@ -77,7 +77,18 @@ PORT=8000 gunicorn -b 0.0.0.0:$PORT app:app
   daily fields); identical repeat requests hit an in-memory cache and are instant.
 - Mountain Torque is intentionally **not** offered — the dataset carries no
   orography, so only frictional torque is physically derivable. No fabricated maps.
-- Data source: `https://psl.noaa.gov/thredds/dodsC/Datasets/ncep/...`
+- Data source: `https://downloads.psl.noaa.gov/Datasets/ncep/` (NCEP/NCAR Reanalysis
+  netCDF files, e.g. `uwnd.2026.nc`, `uwnd.day.ltm.1991-2020.nc`). OISST SST comes from
+  `https://downloads.psl.noaa.gov/Datasets/noaa.oisst.v2.highres/`.
+- Files are downloaded on first use into `data_cache/` (git-ignored). Current-year
+  files are re-downloaded after 12 h because NOAA appends to them; if a refresh
+  fails, the cached copy is used. Override the sources with the `PSL_BASE_URL` and
+  `OISST_BASE_URL` environment variables (e.g. for a local mirror).
+- Storage: each full yearly file is roughly 50 MB; the OISST yearly file (used by
+  the SST products in `custom/sst.py`) is roughly 740 MB. Make sure the host has
+  enough disk space.
+- **Data end date:** NOAA states NCEP/NCAR Reanalysis 1 production stopped with a
+  last date of 17 March 2026, so "auto" mode ends at that date.
 
 ## Add your own maps (no core edits, no full re-upload)
 The `custom/` folder is a plugin slot. Drop a `.py` file (or a few) there and the

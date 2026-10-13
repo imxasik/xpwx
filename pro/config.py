@@ -10,14 +10,30 @@ SHP_PATH = os.path.join(SHP_DIR, "ne_110m_coastline.shp")
 
 SHP_URL = "https://naciscdn.org/naturalearth/110m/physical/ne_110m_coastline.zip"
 
-#PSL = "https://psl.noaa.gov/thredds/dodsC/Datasets/ncep"
-PSL = "https://downloads.psl.noaa.gov/Datasets/ncep/"
+# NOAA PSL NCEP/NCAR Reanalysis files, served as plain netCDF downloads
+# (https://downloads.psl.noaa.gov/Datasets/ncep/).  No trailing slash: the data
+# layer appends "/<file>.nc" itself.  Override with the PSL_BASE_URL env var
+# (e.g. to point at a local mirror).
+PSL = os.environ.get(
+    "PSL_BASE_URL", "https://downloads.psl.noaa.gov/Datasets/ncep"
+).rstrip("/")
+
+# NOAA OISST v2 high-resolution daily SST (used by custom/sst.py).
+OISST = os.environ.get(
+    "OISST_BASE_URL", "https://downloads.psl.noaa.gov/Datasets/noaa.oisst.v2.highres"
+).rstrip("/")
+
+# Downloaded netCDF files are kept here (git-ignored).  Files for the current
+# year are still being appended by NOAA, so they are re-downloaded once older
+# than CACHE_TTL_HOURS; every other file is kept as-is.
+CACHE_DIR = os.path.join(BASE_DIR, "data_cache")
+CACHE_TTL_HOURS = 12
 
 DEFAULT_N_DAYS = 3
 
 DEFAULT_PRODUCT = "vtp200"
 
-_DS_CACHE = {}       # url -> pydap dataset
+_DS_CACHE = {}       # url -> (local mtime, NCFile)
 
 _FIELD_CACHE = {}    # (var, level, dates, kind) -> mean field
 

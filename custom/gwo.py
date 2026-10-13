@@ -18,7 +18,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pydap.client import open_url
+from pro.data import open_remote
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -175,7 +175,7 @@ def _fetch_ltm_chunk(args):
     url, t0, t1, ltm_lev_idx, gc, attrs, chunk_id, total = args
     for attempt in range(1, LTM_RETRIES + 1):
         try:
-            ds_w     = open_url(url)
+            ds_w     = open_remote(url)
             uwnd_var = ds_w["uwnd"]
             raw      = uwnd_var.array[t0:t1, :, ::LAT_STRIDE, ::LON_STRIDE]
             chunk    = _unpack(raw, attrs)
@@ -212,7 +212,7 @@ def compute_ltm_aam_clim(live_lev):
             print("  Cache key mismatch (settings changed) — recomputing.")
 
     print("Opening LTM OPeNDAP dataset ...")
-    ds_ltm   = open_url(LTM_URL)
+    ds_ltm   = open_remote(LTM_URL)
     uwnd_var = ds_ltm["uwnd"]
     attrs    = uwnd_var.attributes
 
@@ -282,7 +282,7 @@ def decode_days_since_1800(days):
 def fetch_year(year, n_recent=None):
     url = BASE_URL.format(year=year)
     print(f"Connecting to {url} ...")
-    ds = open_url(url)
+    ds = open_remote(url)
 
     lev      = _to_numpy(ds["level"])
     lat      = _to_numpy(ds["lat"])[::LAT_STRIDE]
@@ -321,7 +321,7 @@ def fetch_recent_days(num_days, end_date=None):
     for year in years:
         url = BASE_URL.format(year=year)
         print(f"Connecting to {url} ...")
-        ds = open_url(url)
+        ds = open_remote(url)
         lev_y = _to_numpy(ds["level"])
         lat_y = _to_numpy(ds["lat"])[::LAT_STRIDE]
         lon_y = _to_numpy(ds["lon"])[::LON_STRIDE]

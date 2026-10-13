@@ -25,16 +25,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-from pydap.client import open_url
+from pro.data import open_remote
 
 from pro import config   # BASE_DIR, SHP_PATH, SHP_URL, coastline cache
 
-# ── OISST & NCEP OPeNDAP roots ──────────────────────────────────────────────
-OISST = "https://psl.noaa.gov/thredds/dodsC/Datasets/noaa.oisst.v2.highres"
+# ── OISST & NCEP data roots (NOAA PSL downloads, cached locally) ────────────
+OISST = config.OISST
 PSL   = config.PSL
 
 # ── module-level caches ──────────────────────────────────────────────────────
-_OISST_CACHE  = {}   # url  -> pydap dataset
+_OISST_CACHE  = {}   # url  -> NCFile
 _SFIELD_CACHE = {}   # key  -> cached field
 
 # ── climate-index box definitions ────────────────────────────────────────────
@@ -88,7 +88,7 @@ def _with_retry(func, *args, max_retries=6, base_delay=6, **kwargs):
 
 def _open_oisst(url):
     if url not in _OISST_CACHE:
-        _OISST_CACHE[url] = _with_retry(open_url, url)
+        _OISST_CACHE[url] = _with_retry(open_remote, url)
     return _OISST_CACHE[url]
 
 

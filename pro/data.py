@@ -1,8 +1,23 @@
-"""pro.data — OPeNDAP access, field means, coastline, date resolution."""
-import io, os, re, zipfile, datetime
+"""pro.data — NOAA PSL file access, field means, coastline, date resolution.
+
+Data are plain netCDF files on https://downloads.psl.noaa.gov.  Each file is
+downloaded once into ``config.CACHE_DIR`` and then read locally with
+``netCDF4`` (no raw values are rescaled here — ``_read_slice`` applies the
+packing attributes, exactly as before).
+
+``open_remote(url)`` is the single entry point.  It returns an ``NCFile`` that
+offers the small slice of the old pydap API the rest of the code uses:
+
+    ds["uwnd"][t, lv, :, :].data      -> numpy array
+    ds["uwnd"].array[t0:t1, ...]      -> lazily-read numpy-like slice
+    ds["uwnd"].attributes             -> dict of netCDF attributes
+    np.array(ds["lat"][:])            -> full coordinate array
+    "level" in ds                     -> variable exists
+"""
+import io, os, re, zipfile, datetime, threading, urllib.parse
 import numpy as np
 import shapefile, requests
-from pydap.client import open_url
+import netCDF4
 from . import config
 
 PSL = config.PSL
@@ -15,6 +30,181 @@ _FIELD_CACHE = config._FIELD_CACHE
 _LATLON_CACHE = config._LATLON_CACHE
 _COAST = config._COAST
 
+# ── local NetCDF access ──────────────────────────────────────────────────────
+# netCDF4/HDF5 is not thread-safe; every read goes through one lock.
+_NC_LOCK = threading.RLock()
+# Serialises downloads so two threads never fetch the same file twice.
+_DL_LOCK = threading.Lock()
+
+
+class _Arr:
+    """Result of an indexed read.  Wraps a numpy array, pydap-style."""
+
+    __slots__ = ("_a",)
+
+    def __init__(self, a):
+        self._a = np.ascontiguousarray(a)
+
+    @property
+    def data(self):
+        return self._a
+
+    @property
+    def shape(self):
+        return self._a.shape
+
+    @property
+    def ndim(self):
+        return self._a.ndim
+
+    def __len__(self):
+        return len(self._a)
+
+    def __getitem__(self, idx):
+        return self._a[idx]
+
+    def __array__(self, dtype=None, copy=None):
+        return np.asarray(self._a, dtype=dtype)
+
+
+class _Indexer:
+    """Lazy ``var.array[...]`` accessor (reads only the requested block)."""
+
+    __slots__ = ("_var",)
+
+    def __init__(self, var):
+        self._var = var
+
+    def __getitem__(self, idx):
+        return self._var[idx]
+
+
+class NCVar:
+    def __init__(self, nc_var):
+        self._v = nc_var
+
+    def __getitem__(self, idx):
+        with _NC_LOCK:
+            return _Arr(np.asarray(self._v[idx]))
+
+    def __len__(self):
+        return self._v.shape[0]
+
+    @property
+    def data(self):
+        """Whole variable as a numpy array."""
+        with _NC_LOCK:
+            return np.asarray(self._v[:])
+
+    @property
+    def array(self):
+        return _Indexer(self)
+
+    @property
+    def attributes(self):
+        return {k: self._v.getncattr(k) for k in self._v.ncattrs()}
+
+    @property
+    def shape(self):
+        return self._v.shape
+
+    @property
+    def dimensions(self):
+        return self._v.dimensions
+
+
+class NCFile:
+    """A locally cached netCDF file (opened read-only, raw packed values)."""
+
+    def __init__(self, path):
+        self.path = path
+        self._nc = netCDF4.Dataset(path, "r")
+        # Keep raw values: scale/offset/fill are applied by the callers, as before.
+        self._nc.set_auto_mask(False)
+        self._nc.set_auto_scale(False)
+
+    def __getitem__(self, name):
+        return NCVar(self._nc.variables[name])
+
+    def __contains__(self, name):
+        return name in self._nc.variables
+
+    def get(self, name, default=None):
+        return self[name] if name in self._nc.variables else default
+
+    def keys(self):
+        return list(self._nc.variables.keys())
+
+
+def _local_path(url):
+    """Map a URL to a stable path under CACHE_DIR, e.g. .../Datasets/ncep/uwnd.2026.nc."""
+    rel = urllib.parse.urlparse(url).path.lstrip("/")
+    return os.path.join(config.CACHE_DIR, rel)
+
+
+def _needs_download(local, url):
+    if not os.path.exists(local) or os.path.getsize(local) == 0:
+        return True
+    # Files for the current year grow daily on NOAA's side; refresh them.
+    year = str(datetime.date.today().year)
+    if f".{year}." in os.path.basename(url):
+        age = datetime.datetime.now().timestamp() - os.path.getmtime(local)
+        return age > config.CACHE_TTL_HOURS * 3600
+    return False
+
+
+def _ensure_local(url):
+    """Return a local path holding ``url``'s contents, downloading if needed."""
+    local = _local_path(url)
+    with _DL_LOCK:
+        if not _needs_download(local, url):
+            return local
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        tmp = local + ".part"
+        try:
+            with requests.get(url, stream=True, timeout=(20, 900)) as r:
+                r.raise_for_status()
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1 << 20):
+                        if chunk:
+                            f.write(chunk)
+            os.replace(tmp, local)
+            print(f"[data] downloaded {url} ({os.path.getsize(local) / 1e6:.1f} MB)",
+                  flush=True)
+        except Exception:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            if os.path.exists(local):
+                # A stale copy is better than failing the whole request.
+                print(f"[data] refresh failed for {url}; using cached copy", flush=True)
+                return local
+            raise
+    return local
+
+
+def open_remote(url):
+    """Download (once, cached) and open a PSL netCDF file.  Returns an NCFile."""
+    local = _ensure_local(url)
+    mtime = os.path.getmtime(local)
+    with _NC_LOCK:
+        entry = _DS_CACHE.get(url)
+        if entry is not None and entry[0] == mtime:
+            return entry[1]
+        try:
+            ds = NCFile(local)
+        except OSError as e:
+            # Not a netCDF file (e.g. an HTML error page saved with HTTP 200).
+            try:
+                os.remove(local)
+            except OSError:
+                pass
+            raise RuntimeError(f"{url} is not a readable netCDF file: {e}") from e
+        # The previous handle (if any) is intentionally left open: a caller may
+        # still be reading from it.  Refreshes are rare (once per CACHE_TTL_HOURS).
+        _DS_CACHE[url] = (mtime, ds)
+        return ds
+
+
 _PVAR = {"uwnd.sfc": "uwnd", "vwnd.sfc": "vwnd",
          "air.sfc": "air", "rhum.sfc": "rhum"}
 
@@ -26,9 +216,7 @@ def _open(varname, year=None):
         url = f"{PSL}/{varname}.day.ltm.1991-2020.nc"
     else:
         url = f"{PSL}/{varname}.{year}.nc"
-    if url not in _DS_CACHE:
-        _DS_CACHE[url] = open_url(url)
-    return _DS_CACHE[url]
+    return open_remote(url)
 
 def _latlon(var):
     if var not in _LATLON_CACHE:
@@ -198,10 +386,10 @@ def _resolve_dates(mode, manual_date, n_days):
     else:
         current_year = datetime.date.today().year
         try:
-            ds_temp = open_url(f"{PSL}/uwnd.{current_year}.nc")
+            ds_temp = open_remote(f"{PSL}/uwnd.{current_year}.nc")
         except Exception:
             current_year -= 1
-            ds_temp = open_url(f"{PSL}/uwnd.{current_year}.nc")
+            ds_temp = open_remote(f"{PSL}/uwnd.{current_year}.nc")
         raw_times = np.array(ds_temp["time"][:])
         units = ds_temp["time"].attributes.get("units", "hours since 1800-01-01")
         scale = 1.0 / 24.0 if "hours" in units else 1.0
