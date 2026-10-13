@@ -101,26 +101,18 @@ engine auto-discovers it — no `pro/` edit, and you only push that one file.
 See `custom/README.md` and `custom/_EXAMPLE.py`. Files starting with `_` are
 skipped (safe reference templates).
 
-## MJO phase diagram (`rmm/`)
+## MJO phase diagram (`rmm/`, sidebar product `mjo_rmm8`)
 
-Draws the RMM1/RMM2 MJO phase diagram for the last 40 days of the NCEP/NCAR
-Reanalysis record. The method is Wheeler & Hendon (2004), with OLR replaced by
-the 200-hPa velocity potential χ200. χ200 is computed from the data (rmm/velpot.py,
-exact flux-form inversion of the global 200-hPa wind, no smoothing).
+The RMM1/RMM2 phase diagram (last 40 days) uses the JMA MJO index (chi200 + u850 + u200):
 
-- Inputs: `uwnd.YEAR.nc` and `vwnd.YEAR.nc` from `downloads.psl.noaa.gov`.
-- Base period: 1991–2020 (seasonal cycle, scales and EOFs are fitted on it).
-- Not identical to the official NOAA RMM index, because OLR is replaced by χ200.
+    https://ds.data.jma.go.jp/tcc/tcc/products/clisys/mjo/figs/chi200-sst1_1991-2021/rmm8.csv
 
-```bash
-# 1. One-time: fit the EOFs on 1991–2020. Reads the full uwnd and vwnd files for
-#    those years. Writes rmm/rmm_eofs_ncep.npz (not committed).
-python -m rmm.ncep_rmm build
+- `rmm/rmm8.py` downloads the CSV (cached, refreshed every `CACHE_TTL_HOURS`) and
+  reads RMM1/RMM2 by header name. Set `RMM8_URL` to point to another copy.
+- `rmm/plot_mjo.py` draws the diagram. The design code is the original script's, unchanged.
+  `python -m rmm.plot_mjo [YYYY-MM-DD]` → `rmm/output/mjo_diagram.png`.
+- `custom/mjo_rmm8.py` adds the sidebar product (Hovmöller group). Its window ends on the
+  app's selected date, the same as the other products.
 
-# 2. Draw the diagram → rmm/output/mjo_diagram.png
-python -m rmm.plot_mjo
-```
-
-The window ends at the last day in the NCEP record. NCEP/NCAR Reanalysis 1 ends
-on 17 Mar 2026, so the diagram will not show current conditions until that
-dataset is extended.
+`rmm/ncep_rmm.py` and `rmm/velpot.py` (an NCEP-based index using a χ200 inversion) are kept
+but are not used by the diagram.
