@@ -34,8 +34,15 @@ def main():
     g = F.read_day(D)
     lev, lat, lon = g["lev"], g["lat"], g["lon"]
     w = g["w"]
-    print("1. top level omega:", float(np.nanmax(np.abs(w[0]))), "Pa/s  (expect 0)")
-    ok &= bool(np.nanmax(np.abs(w[0])) == 0.0)
+    # 1. boundary condition: omega = 0 at the first level of the integration (top of column)
+    rng = np.random.default_rng(0)
+    uu = rng.normal(size=(4, 9, 9)); vv = rng.normal(size=(4, 9, 9))
+    la = np.linspace(-10, 10, 9); lo = np.linspace(80, 90, 9)
+    om = core.omega_from_divergence(uu, vv, [10.0, 100.0, 300.0, 500.0], la, lo)
+    print("1. omega at the top of the integration:", float(np.nanmax(np.abs(om[0]))), "Pa/s  (expect 0)")
+    ok &= bool(np.nanmax(np.abs(om[0])) == 0.0)
+    print("   output levels:", lev.tolist(), "(expect 1000 to 100 hPa)")
+    ok &= bool(lev.min() >= 100.0 and lev.max() == 1000.0)
 
     print("2. omega vs analytic truth at the level centres (Pa/s)")
     for p in (200, 300, 500, 700, 850):
