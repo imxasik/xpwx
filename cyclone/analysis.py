@@ -68,8 +68,8 @@ def analyze(lat0, lon0, D):
 
     # --- deep-layer shear: max vector inside the +/- SHEAR_BOX_DEG box -------
     shear = core.deep_shear(g["u"], g["v"], lev, lat, lon, la_c, lo_c, box_deg=SHEAR_BOX_DEG)
-    # box mean about the INPUT point (lat0, lon0): the figure's B panel
-    shear_box = core.box_mean_shear(g["u"], g["v"], lev, lat, lon, lat0, lon0, half_deg=SHEAR_BOX_DEG)
+    # box mean on the centre the figures mark (la_c, lo_c): the figure's B panel
+    shear_box = core.box_mean_shear(g["u"], g["v"], lev, lat, lon, la_c, lo_c, half_deg=SHEAR_BOX_DEG)
 
     # --- sections through the centre --------------------------------------
     vt, y_tan = core.tangential_wind(g["u"], g["v"], lat, lon, la_c, lo_c)

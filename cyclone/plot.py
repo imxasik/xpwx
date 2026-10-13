@@ -90,7 +90,7 @@ def _outlines(ax, coast_segs, lon_lo, lon_hi, lat_lo, lat_hi):
                 continue
             if part[:, 1].max() < lat_lo or part[:, 1].min() > lat_hi:
                 continue
-            ax.plot(part[:, 0], part[:, 1], color="#2c2c2c", lw=0.7, zorder=6)
+            ax.plot(part[:, 0], part[:, 1], color=borders.LINE_COLOUR, lw=borders.LINE_WIDTH, zorder=6)
 
 
 def _map_axes(ax, lat, lon, title):

@@ -239,32 +239,30 @@ def deep_shear(u3d, v3d, lev, lat, lon, lat_c, lon_c, box_deg=2.5,
     }
 
 
-def box_mean_shear(u3d, v3d, lev, lat, lon, lat0, lon0, half_deg=2.5,
-                   lo_hPa=850.0, hi_hPa=200.0):
-    """Deep-layer shear from the box-mean winds in a square box around (lat0, lon0).
+def box_mean_shear(u3d, v3d, lev, lat, lon, lat_c, lon_c, half_deg=2.5,
+                   lo_hPa=850.0, hi_hPa=200.0, step_deg=0.25):
+    """Deep-layer shear from the box-mean winds in a square box centred on (lat_c, lon_c).
 
-    The box is +/- half_deg in latitude and longitude, inclusive. The mean is taken over
-    the native grid points inside it (on the 2.5-deg grid, +/-2.5 deg gives a 3 x 3 block),
-    and the shear is mean(V_hi) - mean(V_lo).
+    The box is exactly +/- half_deg about the centre. The winds are sampled at points
+    spaced step_deg inside that exact box (not snapped to the grid), averaged, and the
+    shear is mean(V_hi) - mean(V_lo).
     """
     kl = level_index(lev, lo_hPa)
     kh = level_index(lev, hi_hPa)
-    dlat = np.asarray(lat, dtype=float) - lat0
-    dlon = (np.asarray(lon, dtype=float) - lon0 + 180.0) % 360.0 - 180.0   # wrap across 0/360
-    ia = np.where(np.abs(dlat) <= half_deg + 1e-6)[0]
-    io = np.where(np.abs(dlon) <= half_deg + 1e-6)[0]
-    if ia.size == 0 or io.size == 0:
-        raise ValueError("shear box is outside the grid")
-    sl = np.ix_(ia, io)
-    du = float(np.nanmean(u3d[kh][sl]) - np.nanmean(u3d[kl][sl]))
-    dv = float(np.nanmean(v3d[kh][sl]) - np.nanmean(v3d[kl][sl]))
+    n = int(round(2.0 * half_deg / step_deg)) + 1
+    off = np.linspace(-half_deg, half_deg, n)
+    LA, LO = np.meshgrid(lat_c + off, lon_c + off, indexing="ij")
+    du = float(np.nanmean(make_sampler(u3d[kh], lat, lon)(LA, LO))
+               - np.nanmean(make_sampler(u3d[kl], lat, lon)(LA, LO)))
+    dv = float(np.nanmean(make_sampler(v3d[kh], lat, lon)(LA, LO))
+               - np.nanmean(make_sampler(v3d[kl], lat, lon)(LA, LO)))
     return {
         "u_ms": du, "v_ms": dv,
         "max_kt": float(np.hypot(du, dv) / KT),
         "dir_from_deg": float((np.degrees(np.arctan2(-du, -dv)) + 360.0) % 360.0),
         "box_deg": float(half_deg),
-        "lat_lo": float(lat0 - half_deg), "lat_hi": float(lat0 + half_deg),
-        "lon_lo": float(lon0 - half_deg), "lon_hi": float(lon0 + half_deg),
+        "lat_lo": float(lat_c - half_deg), "lat_hi": float(lat_c + half_deg),
+        "lon_lo": float(lon_c - half_deg), "lon_hi": float(lon_c + half_deg),
     }
 
 
