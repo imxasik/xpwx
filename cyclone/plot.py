@@ -1,15 +1,16 @@
 """cyclone/plot.py — the two tropical-cyclone figures.
 
-Figure 1 (2 x 2):  A  200-hPa divergence, outflow streamlines, heights
+Figure 1 "Dynamic Fig" (2 x 2):  A  200-hPa divergence, outflow streamlines, heights
                    B  deep-layer (850-200 hPa) shear magnitude and vectors; max-shear point
                    C  vortex tilt: centres at 850/700/500/300/200 hPa, 850-hPa vorticity,
                       850-hPa wind-speed contours, and the max-shear vector arrow
                    D  Hadley-type phi-p section through the centre
-Figure 2 (2 x 2):  A  tangential wind (contours) and theta' (shaded), N-S section
+Figure 2 "ThermoDynamic Fig" (2 x 2):  A  tangential wind (contours) and theta' (shaded), N-S section
                    B  zonal wind U (shaded) with secondary overturning (v, w)
                    C  hodograph (0-500 km mean), coloured by level, motion arrow
                    D  steering map: 850-200 hPa mean wind streamlines and the track
 
+Every map panel also shows country borders (cyclone/borders.py).
 Colour limits are taken from the data in each panel. Vertical arrows are scaled
 for display, and the factor is printed on the panel.
 """
@@ -22,7 +23,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker
 
-from cyclone import core
+from cyclone import borders, core
 
 KT = core.KT
 
@@ -55,7 +56,9 @@ def _cbar(fig, mappable, ax, label):
     return cb
 
 
-def _coast(ax, coast_segs, lon_lo, lon_hi, lat_lo, lat_hi):
+def _outlines(ax, coast_segs, lon_lo, lon_hi, lat_lo, lat_hi):
+    """Coastlines and country borders, both clipped to the map window."""
+    borders.draw(ax, lon_lo, lon_hi, lat_lo, lat_hi)
     for seg in coast_segs:
         lons = np.where(seg[:, 0] < 0, seg[:, 0] + 360.0, seg[:, 0])
         lats = seg[:, 1]
@@ -66,6 +69,15 @@ def _coast(ax, coast_segs, lon_lo, lon_hi, lat_lo, lat_hi):
             if part[:, 1].max() < lat_lo or part[:, 1].min() > lat_hi:
                 continue
             ax.plot(part[:, 0], part[:, 1], color="#2c2c2c", lw=0.7, zorder=6)
+
+
+def _centre_note(res):
+    """Title suffix for the centre; flags a search-box edge maximum."""
+    c = res["center"]
+    txt = f"centre {c['lat']:.2f}°N {c['lon']:.2f}°E"
+    if c.get("at_edge"):
+        txt += "  (centre on the search-box edge: check the input lat/lon)"
+    return txt
 
 
 def _map_axes(ax, lat, lon, title):
@@ -136,8 +148,8 @@ def figure1(res, coast_segs=()):
     lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
     sh = res["shear"]
     fig, axs = plt.subplots(2, 2, figsize=(14, 12), facecolor="white")
-    fig.suptitle(f"Tropical cyclone diagnostics — {res['storm']} · {res['date']}  ·  "
-                 f"centre {lat_c:.2f}°N {lon_c:.2f}°E", fontsize=13, y=0.995)
+    fig.suptitle(f"Dynamic Fig — tropical cyclone diagnostics · {res['date']}  ·  "
+                 f"{_centre_note(res)}", fontsize=13, y=0.995)
     LO, HI, LAL, LAH = lon[0], lon[-1], lat[0], lat[-1]
 
     # A: 200-hPa divergence, streamlines, heights
@@ -149,7 +161,7 @@ def figure1(res, coast_segs=()):
     ax.clabel(cs, fmt="%d", fontsize=6)
     ax.streamplot(lon, lat, m["u200"], m["v200"], color="#1f1f1f", density=1.1, linewidth=0.6, arrowsize=0.7)
     _mark_center(ax, lat_c, lon_c)
-    _coast(ax, coast_segs, LO, HI, LAL, LAH)
+    _outlines(ax, coast_segs, LO, HI, LAL, LAH)
     _map_axes(ax, lat, lon, "A  200-hPa divergence, outflow streamlines and heights (dam)")
 
     # B: deep-layer shear magnitude, vectors, max-shear point
@@ -165,7 +177,7 @@ def figure1(res, coast_segs=()):
     _box(ax, None, None,
          f"max shear {sh['max_kt']:.1f} kt at r = {sh['max_r_km']:.0f} km (square)\n"
          f"shear vector from {sh['dir_from_deg']:.0f}°")
-    _coast(ax, coast_segs, LO, HI, LAL, LAH)
+    _outlines(ax, coast_segs, LO, HI, LAL, LAH)
     _map_axes(ax, lat, lon, "B  Deep-layer shear 850–200 hPa (pointwise, 0–500 km)")
 
     # C: vortex tilt, 850-hPa vorticity, max-shear vector arrow
@@ -194,7 +206,7 @@ def figure1(res, coast_segs=()):
     _box(ax, None, None,
          f"arrow = max shear {sh['max_kt']:.1f} kt (r = {sh['max_r_km']:.0f} km)\n"
          f"arrow scale ×{sc * 1e3:.2f} km per m/s")
-    _coast(ax, coast_segs, to[0], to[-1], tl[0], tl[-1])
+    _outlines(ax, coast_segs, to[0], to[-1], tl[0], tl[-1])
     _map_axes(ax, tl, to, "C  Vortex tilt: 850 (centre) · 700 · 500 · 300 · 200 hPa centres")
     ax.set_xlim(to[0], to[-1])
     ax.set_ylim(tl[0], tl[-1])
@@ -230,8 +242,8 @@ def figure1(res, coast_segs=()):
 def figure2(res, coast_segs=()):
     lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
     fig, axs = plt.subplots(2, 2, figsize=(14, 12), facecolor="white")
-    fig.suptitle(f"Tropical cyclone structure — {res['storm']} · {res['date']}  ·  "
-                 f"centre {lat_c:.2f}°N {lon_c:.2f}°E", fontsize=13, y=0.995)
+    fig.suptitle(f"ThermoDynamic Fig — tropical cyclone structure · {res['date']}  ·  "
+                 f"{_centre_note(res)}", fontsize=13, y=0.995)
     lev = res["lev"]
 
     # A: tangential wind (contours) and theta' (shaded)
@@ -313,7 +325,7 @@ def figure2(res, coast_segs=()):
          f"steering (850–200 hPa mean, {st['r1_km']:.0f}–{st['r2_km']:.0f} km annulus) "
          f"{st['bearing_deg']:03.0f}° at {st['speed_kt']:.1f} kt\n"
          f"storm motion {mv_dir:03.0f}° at {mv_kt:.1f} kt (red track D−1 → D+1)")
-    _coast(ax, coast_segs, so[0], so[-1], sl[0], sl[-1])
+    _outlines(ax, coast_segs, so[0], so[-1], sl[0], sl[-1])
     _map_axes(ax, sl, so, "D  Steering map: 850–200 hPa mean wind and storm track")
 
     fig.tight_layout(rect=[0, 0.02, 1, 0.97])

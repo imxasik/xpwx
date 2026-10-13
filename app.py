@@ -69,6 +69,19 @@ def generate():
         return jsonify({"error": f"unknown product '{product_id}'",
                         "code": "unknown_product"}), 400
 
+    lat = lon = None
+    if metmap.PRODUCTS[product_id].get("needs_latlon"):
+        try:
+            lat = float(body.get("lat"))
+            lon = float(body.get("lon"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "enter a latitude and longitude",
+                            "code": "latlon_required"}), 400
+        if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lon <= 360.0):
+            return jsonify({"error": "latitude must be -90 to 90 and longitude -180 to 360",
+                            "code": "latlon_range"}), 400
+        lon = lon % 360.0
+
     if mode == "manual":
         if not manual_date:
             return jsonify({"error": "manual mode requires a date"}), 400
@@ -77,7 +90,7 @@ def generate():
         except ValueError:
             return jsonify({"error": "invalid date format, use YYYY-MM-DD"}), 400
 
-    key = json.dumps([product_id, mode, manual_date, n_days])
+    key = json.dumps([product_id, mode, manual_date, n_days, lat, lon])
     if key in _cache:
         return _serve_png(_cache[key])
 
@@ -85,7 +98,7 @@ def generate():
     try:
         buf, meta = metmap.generate(product_id=product_id, mode=mode,
                                     manual_date=manual_date, n_days=n_days,
-                                    log=log)
+                                    log=log, lat=lat, lon=lon)
     except Exception as exc:  # noqa: BLE001
         app.logger.exception("map generation failed")
         return jsonify({"error": str(exc), "code": "generation_failed",

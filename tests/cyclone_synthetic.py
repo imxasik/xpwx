@@ -1,8 +1,15 @@
 """Synthetic NCEP-format daily fields with a known tropical cyclone (TEST ONLY).
 
-A cyclonic Gaussian vortex (streamfunction), warm core, low-level height minimum,
-ascent, a known tilt with height, a known motion and a known environmental zonal
-wind. The truth is written to JSON so the diagnostics can be checked against it.
+A cyclonic Gaussian vortex (streamfunction), a warm core, a low-level height minimum,
+a known tilt with height, a known motion and a known environmental zonal wind.
+
+Vertical motion: NOAA PSL publishes no daily omega file, so the vertical velocity
+is diagnosed from the winds (core.omega_from_divergence). To test that step, the
+truth omega  w(r, p) = W0 * exp(-r^2 / 2 SIGMA^2) * f(p)  is built in, with f(10 hPa) = 0
+(omega = 0 at the top). Its divergence -dw/dp is then supplied by an axisymmetric
+radial wind (the solution of (1/r) d(r u_r)/dr = D). The truth omega is written to JSON.
+
+Only uwnd, vwnd, air and hgt are written, the same files NOAA publishes.
 
 Environment variables:
   OUT          output directory (default /tmp/psl_serve/Datasets/ncep)
@@ -32,10 +39,11 @@ LON = np.arange(0, 360, 2.5, dtype=np.float32)
 EPOCH = dt.date(1800, 1, 1)
 SIGMA = 400.0            # km, vortex radius scale (synthetic)
 A0 = 1.65e7              # m2 s-1 streamfunction amplitude; max wind ~25 m/s at r = SIGMA
+W0 = -0.08               # Pa s-1, truth omega amplitude (ascent)
+P_TOP = 10.0             # hPa, top level where omega = 0
 
 STORMS = {
-    2019: dict(name="fani", date=dt.date(2019, 5, 2), c0=(16.8, 84.6), bearing=350.0, speed_kt=8.0),
-    2020: dict(name="amphan", date=dt.date(2020, 5, 18), c0=(13.7, 86.5), bearing=25.0, speed_kt=10.0),
+    2019: dict(name="synthetic", date=dt.date(2019, 5, 2), c0=(16.5, 84.5), bearing=350.0, speed_kt=8.0),
 }
 
 
@@ -53,6 +61,17 @@ def tilt_km(p):
     return TILT_SCALE * -200.0 * f, TILT_SCALE * 120.0 * f     # (east, north) offset in km
 
 
+def omega_f(p):
+    """Vertical profile f(p) of the truth omega; f(P_TOP) = 0."""
+    g = lambda q: np.exp(-((q - 450.0) / 250.0) ** 2)
+    return g(p) - g(P_TOP)
+
+
+def omega_f_prime(p):
+    """df/dp with p in hPa."""
+    return np.exp(-((p - 450.0) / 250.0) ** 2) * (-2.0 * (p - 450.0) / 250.0 ** 2)
+
+
 def make_year(year, spec):
     days = (dt.date(year, 6, 1) - dt.date(year, 1, 1)).days
     d0 = (dt.date(year, 1, 1) - EPOCH).days
@@ -65,12 +84,13 @@ def make_year(year, spec):
     p = LEVELS[:, None, None].astype(float)
     shape = (days, LEVELS.size, LAT.size, LON.size)
     U = np.zeros(shape, np.float32); V = np.zeros(shape, np.float32)
-    T = np.zeros(shape, np.float32); Z = np.zeros(shape, np.float32); W = np.zeros(shape, np.float32)
-    truth = {"centers": {}, "levels": {}}
+    T = np.zeros(shape, np.float32); Z = np.zeros(shape, np.float32)
+    truth = {"centers": {}, "levels": {}, "omega_centre_Pa_s": {}}
     lat0, lon0 = spec["c0"]
     rng = np.random.default_rng(year)
     LA = np.deg2rad(LAT)[:, None]
     LO = np.deg2rad(LON)[None, :]
+    sig_m = SIGMA * 1000.0
     for k in range(days):
         date = dt.date(year, 1, 1) + dt.timedelta(days=k)
         dd = (date - D).days
@@ -83,6 +103,7 @@ def make_year(year, spec):
         if dd == 0:
             truth["centers"][date.isoformat()] = [float(clat0), float(clon0)]
             truth["levels"] = {int(pl): [float(lat_l[i]), float(lon_l[i])] for i, pl in enumerate(LEVELS)}
+            truth["omega_centre_Pa_s"] = {int(pl): float(W0 * omega_f(float(pl))) for pl in LEVELS}
         Xk = np.zeros((LEVELS.size, LAT.size, LON.size)); Yk = np.zeros_like(Xk)
         for i in range(LEVELS.size):
             la0 = np.deg2rad(lat_l[i]); lo0 = np.deg2rad(lon_l[i])
@@ -92,20 +113,26 @@ def make_year(year, spec):
         A = profile_A(p) * np.ones((1, LAT.size, LON.size))
         dgdx = -Xk / SIGMA ** 2 * g * 1e-3          # per metre (km -> m)
         dgdy = -Yk / SIGMA ** 2 * g * 1e-3
-        uu = A * dgdy + env_u(p) + rng.normal(0, 0.3, size=Xk.shape)   # u = -dpsi/dy, psi = -A g
-        vv = -A * dgdx + rng.normal(0, 0.3, size=Xk.shape)              # v =  dpsi/dx
+
+        # axisymmetric radial wind whose divergence is D = K(p) g(r), K = -W0 f'(p) / 100 (s-1)
+        K = (-W0 * omega_f_prime(p) / 100.0) * np.ones((1, LAT.size, LON.size))
+        xm, ym = Xk * 1000.0, Yk * 1000.0
+        r2 = np.maximum(xm ** 2 + ym ** 2, 1.0)
+        radial = K * sig_m ** 2 * (1.0 - g) / r2     # multiplies (x, y) to give (u, v)
+        u_rad, v_rad = radial * xm, radial * ym
+
+        uu = A * dgdy + env_u(p) + u_rad + rng.normal(0, 0.3, size=Xk.shape)   # u = -dpsi/dy, psi = -A g
+        vv = -A * dgdx + v_rad + rng.normal(0, 0.3, size=Xk.shape)              # v =  dpsi/dx
         U[k] = uu; V[k] = vv
         warm = 6.0 * g * np.exp(-((p - 350.0) / 150.0) ** 2)
         T[k] = 288.0 * (p / 1000.0) ** 0.19 + warm
         Z[k] = 8000.0 * np.log(1000.0 / p) - 120.0 * g * np.clip(1 - (p - 200.0) / 800.0, 0, 1)
-        W[k] = -0.08 * g * np.exp(-((p - 450.0) / 250.0) ** 2)
-    return times, U, V, T, Z, W, truth, days
+    return times, U, V, T, Z, truth, days
 
 
 def write(year, spec):
-    times, U, V, T, Z, W, truth, days = make_year(year, spec)
-    specs = {"uwnd": (0.01, U), "vwnd": (0.01, V), "air": (0.01, T),
-             "hgt": (1.0, Z), "omega": (1e-4, W)}
+    times, U, V, T, Z, truth, days = make_year(year, spec)
+    specs = {"uwnd": (0.01, U), "vwnd": (0.01, V), "air": (0.01, T), "hgt": (1.0, Z)}
     os.makedirs(OUT, exist_ok=True)
     for fname, (scale, arr) in specs.items():
         ds = netCDF4.Dataset(f"{OUT}/{fname}.{year}.nc", "w", format="NETCDF4_CLASSIC")

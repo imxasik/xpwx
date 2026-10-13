@@ -54,6 +54,25 @@ def divergence(u, v, lat, lon):
     return (du_dlam + dvc_dphi) / (EARTH_R * cb)
 
 
+def omega_from_divergence(u3d, v3d, lev, lat, lon):
+    """Vertical pressure velocity ω (Pa s-1) from mass continuity.
+
+    Continuity in pressure coordinates gives ∂ω/∂p = -∇·V. With ω = 0 at the
+    top level (the first level of ``lev``, ascending hPa), the trapezoid rule
+    integrates downward level by level. The surface value is not constrained,
+    so the result is accurate away from the lowest level.
+
+    Returns (nlev, nlat, nlon). Levels with no divergence data give NaN.
+    """
+    lev = np.asarray(lev, dtype=float)
+    div = divergence(u3d, v3d, lat, lon)                 # s-1
+    dp = np.diff(lev * 100.0)                            # Pa, positive downward
+    layer = -0.5 * (div[1:] + div[:-1]) * dp[:, None, None]
+    omega = np.zeros(div.shape, dtype=float)
+    omega[1:] = np.cumsum(layer, axis=0)
+    return omega
+
+
 # ---------------------------------------------------------------------------
 # sampling
 # ---------------------------------------------------------------------------

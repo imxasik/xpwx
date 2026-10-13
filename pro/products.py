@@ -388,7 +388,8 @@ GROUP_ORDER = ["Upper", "Mid", "Low", "Dynamics", "Thermo",
 def list_products():
     return [{"id": p["id"], "title": p["title"], "name": p["name"],
              "desc": p["desc"], "level": p["level"], "tag": p["tag"],
-             "kind": p["kind"]}
+             "kind": p["kind"],
+             "needs_latlon": bool(p.get("needs_latlon"))}
             for p in PRODUCTS.values()]
 
 def group_products():
@@ -403,5 +404,6 @@ def group_products():
         out.append({"tag": tag, "product_list": [
             {"id": p["id"], "title": p["title"], "name": p["name"],
              "desc": p["desc"], "level": p["level"], "tag": p["tag"],
-             "kind": p["kind"]} for p in by_tag[tag]]})
+             "kind": p["kind"],
+             "needs_latlon": bool(p.get("needs_latlon"))} for p in by_tag[tag]]})
     return out
