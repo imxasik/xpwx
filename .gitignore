@@ -9,3 +9,6 @@ venv/
 
 # Local secrets / env
 .env
+
+# Generated MJO diagrams
+rmm/output/
