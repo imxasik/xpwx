@@ -100,3 +100,19 @@ engine auto-discovers it — no `pro/` edit, and you only push that one file.
 
 See `custom/README.md` and `custom/_EXAMPLE.py`. Files starting with `_` are
 skipped (safe reference templates).
+
+## MJO phase diagram (`rmm/`, sidebar product `mjo_rmm8`)
+
+The RMM1/RMM2 phase diagram (last 40 days) uses the JMA MJO index (chi200 + u850 + u200):
+
+    https://ds.data.jma.go.jp/tcc/tcc/products/clisys/mjo/figs/chi200-sst1_1991-2021/rmm8.csv
+
+- `rmm/rmm8.py` downloads the CSV (cached, refreshed every `CACHE_TTL_HOURS`) and
+  reads RMM1/RMM2 by header name. Set `RMM8_URL` to point to another copy.
+- `rmm/plot_mjo.py` draws the diagram. The design code is the original script's, unchanged.
+  `python -m rmm.plot_mjo [YYYY-MM-DD]` → `rmm/output/mjo_diagram.png`.
+- `custom/mjo_rmm8.py` adds the sidebar product (Hovmöller group). Its window ends on the
+  app's selected date, the same as the other products.
+
+`rmm/ncep_rmm.py` and `rmm/velpot.py` (an NCEP-based index using a χ200 inversion) are kept
+but are not used by the diagram.
