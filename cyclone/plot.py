@@ -1,18 +1,26 @@
 """cyclone/plot.py — the two tropical-cyclone figures.
 
-Figure 1 "Dynamic Fig" (2 x 2):  A  200-hPa divergence, outflow streamlines, heights
-                   B  deep-layer (850-200 hPa) shear magnitude and vectors; max-shear point
-                   C  vortex tilt: centres at 850/700/500/300/200 hPa, 850-hPa vorticity,
-                      850-hPa wind-speed contours, and the max-shear vector arrow
-                   D  Hadley-type phi-p section through the centre
-Figure 2 "ThermoDynamic Fig" (2 x 2):  A  tangential wind (contours) and theta' (shaded), N-S section
-                   B  zonal wind U (shaded) with secondary overturning (v, w)
-                   C  hodograph (0-500 km mean), coloured by level, motion arrow
-                   D  steering map: 850-200 hPa mean wind streamlines and the track
+Vertical axis: log-pressure, 1000 hPa at the bottom to 100 hPa at the top (the
+figures stop at 100 hPa; see fields.OUT_TOP_HPA). Each level is placed at
+z = ln(1000 / p), so the spacing is even in log-pressure.
 
-Every map panel also shows country borders (cyclone/borders.py).
-Colour limits are taken from the data in each panel. Vertical arrows are scaled
-for display, and the factor is printed on the panel.
+Dynamic Fig (2 x 2):
+  A  200-hPa divergence · outflow streamlines · heights
+  B  850–200 hPa shear magnitude and vectors; max-shear point
+  C  vortex tilt: 850 hPa centre, 700/500/300/200 hPa centres, 850-hPa vorticity,
+     850-hPa wind-speed contours, and the 850→200 hPa shear arrow with up/downshear
+  D  Hadley-type φ–p section through the centre (ω shaded; arrows v and w)
+ThermoDynamic Fig (2 x 2):
+  A  tangential wind (contours) and θ′ (shaded), N–S section; arrows: in-plane v, w
+  B  zonal wind U (shaded) with the secondary circulation (arrows v, w)
+  C  hodograph (0–500 km mean), coloured by pressure, with the storm-motion vector
+  D  steering map: 850–200 hPa mean wind and the storm track; motion and steering
+     vectors, with upstream and downstream sides marked
+
+Section arrows: the horizontal and vertical components are scaled separately to
+the largest value on each panel, so vertical motion is visible. The scaling is
+stated on each panel. Arrow directions are drawn in the plot's own coordinates.
+Colour limits are taken from the data in each panel.
 """
 import io
 
@@ -21,11 +29,18 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import matplotlib.cm as mcm
+import matplotlib.patheffects as pe
 import matplotlib.ticker
+from matplotlib.patches import Circle, FancyArrowPatch
 
 from cyclone import borders, core
 
 KT = core.KT
+P_TICKS = (1000, 850, 700, 500, 300, 200, 100)
+HALO = [pe.withStroke(linewidth=3.0, foreground="white")]
+LEVEL_COLOURS = {850: "#111111", 700: "#2b6cb0", 500: "#2f855a", 300: "#b7791f", 200: "#c53030"}
 
 
 # ---------------------------------------------------------------------------
@@ -42,11 +57,6 @@ def _filled(ax, x, y, z, cmap, vmin, vmax):
     return ax.contourf(x, y, z, levels=levels, cmap=cmap, extend="both")
 
 
-def _quiver_scale(u, v):
-    """quiver scale so the longest arrow is about 1/12 of the axis width (data-derived)."""
-    return 12.0 * max(_symlim(u), _symlim(v))
-
-
 def _cbar(fig, mappable, ax, label):
     cb = fig.colorbar(mappable, ax=ax, fraction=0.046, pad=0.03)
     cb.set_label(label, fontsize=8)
@@ -54,6 +64,18 @@ def _cbar(fig, mappable, ax, label):
     cb.locator = matplotlib.ticker.MaxNLocator(7)
     cb.update_ticks()
     return cb
+
+
+def _pz(p):
+    """Log-pressure height z = ln(1000 / p), 1000 hPa at z = 0."""
+    return np.log(1000.0 / np.asarray(p, dtype=float))
+
+
+def _sort_by_pz(lev, *fields):
+    """z for the levels, sorted ascending, and the fields reordered to match (level = axis 0)."""
+    z = _pz(lev)
+    o = np.argsort(z)
+    return z[o], [np.asarray(f)[o] for f in fields]
 
 
 def _outlines(ax, coast_segs, lon_lo, lon_hi, lat_lo, lat_hi):
@@ -69,15 +91,6 @@ def _outlines(ax, coast_segs, lon_lo, lon_hi, lat_lo, lat_hi):
             if part[:, 1].max() < lat_lo or part[:, 1].min() > lat_hi:
                 continue
             ax.plot(part[:, 0], part[:, 1], color="#2c2c2c", lw=0.7, zorder=6)
-
-
-def _centre_note(res):
-    """Title suffix for the centre; flags a search-box edge maximum."""
-    c = res["center"]
-    txt = f"centre {c['lat']:.2f}°N {c['lon']:.2f}°E"
-    if c.get("at_edge"):
-        txt += "  (centre on the search-box edge: check the input lat/lon)"
-    return txt
 
 
 def _map_axes(ax, lat, lon, title):
@@ -97,17 +110,18 @@ def _mark_center(ax, lat_c, lon_c, label=None):
                 bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.85))
 
 
-def _box(ax, x, y, text, loc="upper"):
-    yy, va = (0.97, "top") if loc == "upper" else (0.03, "bottom")
-    ax.text(0.02, yy, text, transform=ax.transAxes, fontsize=8, va=va,
-            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#aaaaaa", alpha=0.9))
+def _box(ax, text, loc="upper left"):
+    ha, x = ("left", 0.02) if "left" in loc else ("right", 0.98)
+    yy, va = (0.97, "top") if "upper" in loc else (0.03, "bottom")
+    ax.text(x, yy, text, transform=ax.transAxes, fontsize=8, va=va, ha=ha,
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="#aaaaaa", alpha=0.92), zorder=12)
 
 
 def _pressure_axis(ax, lev):
-    ax.set_yscale("log")
-    ax.set_ylim(max(lev), min(lev))
-    ticks = [t for t in (1000, 850, 700, 500, 300, 200, 100, 50, 10) if min(lev) <= t <= max(lev)]
-    ax.set_yticks(ticks)
+    lev = np.asarray(lev, dtype=float)
+    ax.set_ylim(0.0, float(_pz(lev.min())))           # bottom 1000 hPa, top = top level
+    ticks = [t for t in P_TICKS if lev.min() <= t <= lev.max()]
+    ax.set_yticks([float(_pz(t)) for t in ticks])
     ax.set_yticklabels([str(t) for t in ticks])
     ax.minorticks_off()
     ax.set_ylabel("Pressure (hPa)", fontsize=8)
@@ -120,6 +134,38 @@ def _section_axes(ax, y_km, title):
     ax.set_title(title, fontsize=10, loc="left")
     ax.axvline(0, color="#888877", lw=0.6, ls=":")
     ax.tick_params(labelsize=8)
+
+
+def _section_arrows(ax, x, z, u, w, stride=None):
+    """In-plane flow arrows on a section: u along x, w upward along z.
+
+    Each component is scaled so that the largest value fills about 6 % of the
+    panel span. Arrows use angles='xy', so each one is drawn between its two
+    plotted endpoints and follows the flow as plotted. Upward w points up.
+    """
+    x = np.asarray(x, float)
+    z = np.asarray(z, float)
+    u = np.asarray(u, float)
+    w = np.asarray(w, float)
+    xs = abs(ax.get_xlim()[1] - ax.get_xlim()[0])
+    zs = abs(ax.get_ylim()[1] - ax.get_ylim()[0])
+    kx = 0.06 * xs / _symlim(u)
+    kz = 0.06 * zs / _symlim(w)
+    sx = stride[0] if stride else max(1, x.size // 16)
+    sz = stride[1] if stride else max(1, z.size // 12)
+    X, Z = np.meshgrid(x[::sx], z[::sz])
+    ax.quiver(X, Z, (u[::sz, ::sx] * kx), (w[::sz, ::sx] * kz),
+              angles="xy", scale_units="xy", scale=1.0,
+              width=0.0032, headwidth=4.0, headlength=4.4, headaxislength=4.0,
+              color="#111111", zorder=7)
+
+
+def _arrow(ax, x0, y0, x1, y1, color, lw=2.2, dashed=False, zorder=10):
+    style = "-|>,head_length=0.9,head_width=0.42"
+    p = FancyArrowPatch((x0, y0), (x1, y1), arrowstyle=style, mutation_scale=12,
+                        lw=lw, color=color, zorder=zorder, path_effects=HALO,
+                        linestyle="--" if dashed else "-")
+    ax.add_patch(p)
 
 
 def _png(fig):
@@ -138,22 +184,29 @@ def _watermark(fig, src):
 SRC = "NCEP/NCAR Reanalysis · PSL/NOAA · diagnostics: cyclone/"
 
 
+def _centre_note(res):
+    """Title suffix for the centre; flags a search-box edge maximum."""
+    c = res["center"]
+    txt = f"centre {c['lat']:.2f}°N {c['lon']:.2f}°E"
+    if c.get("at_edge"):
+        txt += "  (centre on the search-box edge: check the input lat/lon)"
+    return txt
+
+
+def _bearing_vec(bearing_deg):
+    """Unit (east, north) vector for a bearing (deg, toward)."""
+    b = np.deg2rad(bearing_deg)
+    return np.sin(b), np.cos(b)
+
+
 # ---------------------------------------------------------------------------
-# Figure 1
+# Dynamic Fig
 # ---------------------------------------------------------------------------
 
-def figure1(res, coast_segs=()):
+def _panel_A(ax, fig, res, coast_segs):
     m = res["map"]
     lat, lon = m["lat"], m["lon"]
     lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
-    sh = res["shear"]
-    fig, axs = plt.subplots(2, 2, figsize=(14, 12), facecolor="white")
-    fig.suptitle(f"Dynamic Fig — tropical cyclone diagnostics · {res['date']}  ·  "
-                 f"{_centre_note(res)}", fontsize=13, y=0.995)
-    LO, HI, LAL, LAH = lon[0], lon[-1], lat[0], lat[-1]
-
-    # A: 200-hPa divergence, streamlines, heights
-    ax = axs[0, 0]
     dv = m["div200"]
     pm = _filled(ax, lon, lat, dv, "RdBu_r", -_symlim(dv), _symlim(dv))
     _cbar(fig, pm, ax, "200-hPa divergence (10⁻⁵ s⁻¹)")
@@ -161,173 +214,252 @@ def figure1(res, coast_segs=()):
     ax.clabel(cs, fmt="%d", fontsize=6)
     ax.streamplot(lon, lat, m["u200"], m["v200"], color="#1f1f1f", density=1.1, linewidth=0.6, arrowsize=0.7)
     _mark_center(ax, lat_c, lon_c)
-    _outlines(ax, coast_segs, LO, HI, LAL, LAH)
+    _outlines(ax, coast_segs, lon[0], lon[-1], lat[0], lat[-1])
     _map_axes(ax, lat, lon, "A  200-hPa divergence, outflow streamlines and heights (dam)")
 
-    # B: deep-layer shear magnitude, vectors, max-shear point
-    ax = axs[0, 1]
+
+def _panel_B(ax, fig, res, coast_segs):
+    m = res["map"]
+    lat, lon = m["lat"], m["lon"]
+    lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
+    sh = res["shear"]
     sm = m["shear_mag"]
     pm = _filled(ax, lon, lat, sm, "YlOrRd", 0.0, float(np.nanmax(sm)))
     _cbar(fig, pm, ax, "850–200 hPa shear magnitude (kt)")
     step = max(1, lat.size // 14)
     ax.quiver(lon[::step], lat[::step], m["shear_u"][::step, ::step], m["shear_v"][::step, ::step],
-              color="#1f1f1f", scale=_quiver_scale(m["shear_u"], m["shear_v"]), width=0.003)
+              color="#1f1f1f", scale=12.0 * max(_symlim(m["shear_u"]), _symlim(m["shear_v"])), width=0.003)
     ax.plot(sh["max_lon"], sh["max_lat"], marker="s", ms=8, mfc="none", mec="#1f1f1f", mew=1.5, zorder=8)
     _mark_center(ax, lat_c, lon_c)
-    _box(ax, None, None,
-         f"max shear {sh['max_kt']:.1f} kt at r = {sh['max_r_km']:.0f} km (square)\n"
-         f"shear vector from {sh['dir_from_deg']:.0f}°")
-    _outlines(ax, coast_segs, LO, HI, LAL, LAH)
+    _box(ax, f"max shear {sh['max_kt']:.1f} kt at r = {sh['max_r_km']:.0f} km (square)\n"
+             f"shear vector from {sh['dir_from_deg']:.0f}°")
+    _outlines(ax, coast_segs, lon[0], lon[-1], lat[0], lat[-1])
     _map_axes(ax, lat, lon, "B  Deep-layer shear 850–200 hPa (pointwise, 0–500 km)")
 
-    # C: vortex tilt, 850-hPa vorticity, max-shear vector arrow
-    ax = axs[1, 0]
+
+def _panel_C_tilt(ax, fig, res, coast_segs):
+    """Vortex tilt: 850-hPa centre, upper-level centres, shear arrow, up/downshear."""
     t = res["tilt_map"]
     tl, to = t["lat"], t["lon"]
+    lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
     z = t["zeta850"]
-    pm = _filled(ax, to, tl, z, "RdBu_r", -_symlim(z), _symlim(z))
+    L = _symlim(z)
+    pm = _filled(ax, to, tl, z, "RdBu_r", -L, L)
     _cbar(fig, pm, ax, "850-hPa vorticity (10⁻⁵ s⁻¹)")
+
     spd = np.hypot(t["u850"], t["v850"]) / KT
-    cw = ax.contour(to, tl, spd, colors="#5a5a5a", linewidths=0.6, levels=8)
-    ax.clabel(cw, fmt="%d", fontsize=6)
-    colors = {850: "#111111", 700: "#2b6cb0", 500: "#2f855a", 300: "#b7791f", 200: "#c53030"}
-    for lv in res["tilt"]:
+    cw = ax.contour(to, tl, spd, colors="#4d4d4d", linewidths=0.6,
+                    levels=matplotlib.ticker.MaxNLocator(6).tick_values(0, float(np.nanmax(spd))))
+    ax.clabel(cw, fmt="%d kt", fontsize=6, inline=True)
+
+    # tilt: leader lines from the 850-hPa centre, labelled callouts
+    callout = {700: (-1.4, 1.0), 500: (-1.4, 0.3), 300: (-1.4, -0.4), 200: (-1.4, -1.1)}
+    for lv in res["tilt"][1:]:
         p = int(lv["hPa"])
-        ax.plot(lv["lon"], lv["lat"], marker="o", ms=6, mec="black", mfc=colors.get(p, "white"), zorder=8)
-        ax.text(lv["lon"] + 0.15, lv["lat"] + 0.15, f"{p}", fontsize=8, zorder=9,
-                color=colors.get(p, "black"), fontweight="bold")
-    # max-shear vector drawn from the 850-hPa centre; length scaled to a quarter of the window
+        dx, dy = callout.get(p, (0.8, 0.8))
+        ax.plot([lon_c, lv["lon"]], [lat_c, lv["lat"]], color="#6b6b6b", lw=0.7, zorder=7)
+        ax.plot(lv["lon"], lv["lat"], marker="o", ms=7.5, mfc=LEVEL_COLOURS.get(p, "white"),
+                mec="white", mew=1.0, zorder=9)
+        ax.text(lv["lon"] + dx, lv["lat"] + dy, f"{p} hPa", fontsize=8, fontweight="bold",
+                color=LEVEL_COLOURS.get(p, "black"), ha="center", va="center", zorder=10,
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=LEVEL_COLOURS.get(p, "#999"), lw=0.6))
+    ax.plot(lon_c, lat_c, marker="o", ms=8.5, mfc=LEVEL_COLOURS[850], mec="white", mew=1.2, zorder=10)
+    ax.text(lon_c + 0.9, lat_c - 0.9, "850 hPa centre", fontsize=8, fontweight="bold",
+            color=LEVEL_COLOURS[850], ha="center", va="center", zorder=10,
+            bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=LEVEL_COLOURS[850], lw=0.6))
+
+    # shear arrow (850 -> 200 hPa) from the centre, with downshear / upshear sides
+    sh = res["shear"]
+    mag = max(float(np.hypot(sh["u_ms"], sh["v_ms"])), 1e-9)
+    ux, vy = sh["u_ms"] / mag, sh["v_ms"] / mag
     half = 0.5 * (to[-1] - to[0])
-    mag = max(np.hypot(sh["u_ms"], sh["v_ms"]), 1e-12)
-    sc = 0.25 * half / mag
-    ax.annotate("", xy=(lon_c + sh["u_ms"] * sc, lat_c + sh["v_ms"] * sc), xytext=(lon_c, lat_c),
-                arrowprops=dict(arrowstyle="-|>", color="#111111", lw=2.2), zorder=10)
+    Lg = 0.32 * half
+    tip = (lon_c + ux * Lg, lat_c + vy * Lg)
+    tail = (lon_c - ux * 0.55 * Lg, lat_c - vy * 0.55 * Lg)
+    _arrow(ax, lon_c, lat_c, tip[0], tip[1], "#111111", lw=2.4, zorder=11)
+    ax.text(tip[0] + ux * 0.35, tip[1] + vy * 0.35, "downshear", fontsize=7.5, style="italic",
+            ha="center", va="center", color="#111111", zorder=12)
+    ax.text(tail[0] - ux * 0.45, tail[1] - vy * 0.45, "upshear", fontsize=7.5, style="italic",
+            ha="center", va="center", color="#111111", zorder=12)
     ax.plot(sh["max_lon"], sh["max_lat"], marker="s", ms=6, mfc="none", mec="#111111", mew=1.2, zorder=9)
-    _box(ax, None, None,
-         f"arrow = max shear {sh['max_kt']:.1f} kt (r = {sh['max_r_km']:.0f} km)\n"
-         f"arrow scale ×{sc * 1e3:.2f} km per m/s")
+
+    _box(ax, f"850→200 hPa shear arrow: {sh['max_kt']:.1f} kt\n"
+             f"(max inside {sh['rmax_km']:.0f} km; square = point of max shear)\n"
+             f"arrow points downshear; upshear is the opposite side",
+         loc="upper left")
     _outlines(ax, coast_segs, to[0], to[-1], tl[0], tl[-1])
-    _map_axes(ax, tl, to, "C  Vortex tilt: 850 (centre) · 700 · 500 · 300 · 200 hPa centres")
+    _map_axes(ax, tl, to, "C  Vortex tilt: 850-hPa centre, 700 · 500 · 300 · 200 hPa centres")
     ax.set_xlim(to[0], to[-1])
     ax.set_ylim(tl[0], tl[-1])
 
-    # D: Hadley-type phi-p section through the centre
-    ax = axs[1, 1]
+
+def _panel_D_hadley(ax, fig, res):
     h = res["hadley"]
-    hl, lev = h["lat"], h["lev"]
-    om = h["omega"] * 100.0                      # 10^-2 Pa s-1
+    hl = h["lat"]
+    lev = h["lev"]
+    z, (om, vs, wv) = _sort_by_pz(lev, h["omega"] * 100.0, h["v"], h["w"])
     vlim = _symlim(om)
-    pm = _filled(ax, hl, lev, om, "RdBu_r", -vlim, vlim)
+    pm = _filled(ax, hl, z, om, "RdBu_r", -vlim, vlim)
     _cbar(fig, pm, ax, "ω (10⁻² Pa s⁻¹)  — blue = ascent")
-    vs = h["v"]
-    wsc = _symlim(vs) / max(_symlim(h["w"]), 1e-12) * 0.5
-    ax.quiver(hl, lev, vs, -h["w"] * wsc, color="#1f1f1f",
-              scale=_quiver_scale(vs, h["w"] * wsc), width=0.003)
+    lat_c = res["center"]["lat"]
     ax.axvline(lat_c, color="#888877", lw=0.7, ls=":")
     _pressure_axis(ax, lev)
     ax.set_xlim(hl[0], hl[-1])
     ax.set_xlabel("Latitude (°N)", fontsize=8)
+    _section_arrows(ax, hl, z, vs, wv)
+    lon_c = res["center"]["lon"]
     ax.set_title(f"D  Hadley-type φ–p section at {lon_c:.1f}°E, ±500 km  "
-                 f"(arrows: v, w×{wsc:.0f} display scale)", fontsize=10, loc="left")
+                 f"(arrows: v, w; up = ascent)", fontsize=9, loc="left")
 
+
+def figure1(res, coast_segs=()):
+    lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
+    fig, axs = plt.subplots(2, 2, figsize=(14, 12), facecolor="white")
+    fig.suptitle(f"Dynamic Fig — tropical cyclone diagnostics · {res['date']}  ·  "
+                 f"{_centre_note(res)}", fontsize=13, y=0.995)
+    _panel_A(axs[0, 0], fig, res, coast_segs)
+    _panel_B(axs[0, 1], fig, res, coast_segs)
+    _panel_C_tilt(axs[1, 0], fig, res, coast_segs)
+    _panel_D_hadley(axs[1, 1], fig, res)
     fig.tight_layout(rect=[0, 0.02, 1, 0.97])
     _watermark(fig, SRC)
     return _png(fig)
 
 
 # ---------------------------------------------------------------------------
-# Figure 2
+# ThermoDynamic Fig
 # ---------------------------------------------------------------------------
 
-def figure2(res, coast_segs=()):
-    lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
-    fig, axs = plt.subplots(2, 2, figsize=(14, 12), facecolor="white")
-    fig.suptitle(f"ThermoDynamic Fig — tropical cyclone structure · {res['date']}  ·  "
-                 f"{_centre_note(res)}", fontsize=13, y=0.995)
-    lev = res["lev"]
-
-    # A: tangential wind (contours) and theta' (shaded)
-    ax = axs[0, 0]
+def _tw_panel_A(ax, fig, res):
     tw = res["tangential"]
     vt, yk = tw["vt"], tw["y_km"]
+    lev = res["lev"]
     th = res["theta"]["th"]
-    tlim = _symlim(th)
-    pm = _filled(ax, yk, lev, th, "RdBu_r", -tlim, tlim)
+    ov = res["overturn"]
+    z, (th_s, vt_s, v_s, w_s) = _sort_by_pz(lev, th, vt, ov["v"], ov["w"])
+    tlim = _symlim(th_s)
+    pm = _filled(ax, yk, z, th_s, "RdBu_r", -tlim, tlim)
     _cbar(fig, pm, ax, "θ′ (K)")
-    cs = ax.contour(yk, lev, vt, colors="#111111", linewidths=0.8, levels=np.arange(-40, 41, 5.0))
+    cs = ax.contour(yk, z, vt_s, colors="#111111", linewidths=0.8, levels=np.arange(-40, 41, 5.0))
     ax.clabel(cs, fmt="%d", fontsize=7)
     _pressure_axis(ax, lev)
     _section_axes(ax, yk, "A  Tangential wind (contours, m s⁻¹) and θ′ (shaded), N–S section")
-    ax.set_ylim(max(lev), min(lev))
+    _section_arrows(ax, yk, z, v_s, w_s)
 
-    # B: zonal wind with secondary overturning
-    ax = axs[0, 1]
+
+def _tw_panel_B(ax, fig, res):
     ov = res["overturn"]
-    uu = ov["u"]
+    lev = res["lev"]
+    z, (uu, v_s, w_s) = _sort_by_pz(lev, ov["u"], ov["v"], ov["w"])
     ulim = _symlim(uu)
-    pm = _filled(ax, ov["y_km"], lev, uu, "RdBu_r", -ulim, ulim)
+    pm = _filled(ax, ov["y_km"], z, uu, "RdBu_r", -ulim, ulim)
     _cbar(fig, pm, ax, "Zonal wind U (m s⁻¹)")
-    v_s, w_s = ov["v"], ov["w"]
-    wsc = _symlim(v_s) / max(_symlim(w_s), 1e-12) * 0.5
-    YY, PP = np.meshgrid(ov["y_km"], lev)
-    ax.quiver(YY[::2, ::2], PP[::2, ::2], v_s[::2, ::2], -w_s[::2, ::2] * wsc, color="#111111",
-              scale=_quiver_scale(v_s[::2, ::2], w_s[::2, ::2] * wsc), width=0.003)
     _pressure_axis(ax, lev)
-    _section_axes(ax, ov["y_km"], f"B  U with secondary overturning (v, w×{wsc:.0f} display scale)")
-    ax.set_ylim(max(lev), min(lev))
+    _section_axes(ax, ov["y_km"], "B  U (shaded) with secondary circulation (arrows: v, w)")
+    _section_arrows(ax, ov["y_km"], z, v_s, w_s)
 
-    # C: hodograph
-    ax = axs[1, 0]
+
+def _tw_panel_C_hodo(ax, fig, res):
     hd = res["hodo"]
     hu, hv, hl = hd["u"], hd["v"], hd["lev"]
-    order = np.argsort(-hl)
-    cmap = plt.get_cmap("viridis")
-    ax.plot(hu[order], hv[order], color="#888888", lw=1.0, zorder=2)
-    for i, k in enumerate(order):
-        ax.scatter(hu[k], hv[k], color=cmap(i / max(order.size - 1, 1)), s=40, zorder=3,
-                   edgecolor="black", lw=0.4)
-        ax.text(hu[k] + 0.4, hv[k] + 0.4, f"{int(hl[k])}", fontsize=7, zorder=4)
-    lim = max(_symlim(hu), _symlim(hv)) * 1.15
-    ax.axhline(0, color="#999999", lw=0.6)
-    ax.axvline(0, color="#999999", lw=0.6)
+    z = _pz(hl)
+    zmax = float(_pz(min(hl)))
+    norm = mcolors.Normalize(vmin=0.0, vmax=zmax)
+    cmap = plt.get_cmap("viridis_r")
+    order = np.argsort(z)
+    ax.plot(hu[order], hv[order], color="#7a7a7a", lw=1.3, zorder=2)
+    ax.scatter(hu, hv, c=z, cmap=cmap, norm=norm, s=52, edgecolor="black", lw=0.5, zorder=4)
+    for p in P_TICKS:
+        if min(hl) <= p <= max(hl):
+            k = int(np.argmin(np.abs(hl - p)))
+            ax.text(hu[k] + 0.35, hv[k] + 0.35, f"{p}", fontsize=7.5, zorder=6, path_effects=HALO)
     mv_dir, mv_kt = res["motion_dir"], res["motion_kt"]
     ms = mv_kt * KT
-    ax.annotate("", xy=(ms * np.sin(np.deg2rad(mv_dir)), ms * np.cos(np.deg2rad(mv_dir))), xytext=(0, 0),
-                arrowprops=dict(arrowstyle="-|>", color="#c53030", lw=2.0), zorder=5)
-    ax.text(0.02, 0.97, f"storm motion {mv_dir:03.0f}° at {mv_kt:.1f} kt (red arrow)",
-            transform=ax.transAxes, fontsize=8, va="top", color="#c53030",
-            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="none", alpha=0.85))
+    lim = max(float(np.max(np.abs(hu))), float(np.max(np.abs(hv))), ms) * 1.25 + 1.0
+    for r in np.arange(5.0, lim, 5.0):
+        ax.add_patch(Circle((0, 0), r, fill=False, ls=(0, (2, 3)), lw=0.6, ec="#9a9a9a", zorder=1))
+        ax.text(r * 0.707, r * 0.707, f"{r:.0f}", fontsize=6.5, color="#7a7a7a", zorder=1)
+    ax.axhline(0, color="#8a8a8a", lw=0.7, zorder=1)
+    ax.axvline(0, color="#8a8a8a", lw=0.7, zorder=1)
+    mx, my = _bearing_vec(mv_dir)
+    _arrow(ax, 0, 0, ms * mx, ms * my, "#c53030", lw=2.2, zorder=6)
+    ax.text(ms * mx * 1.08, ms * my * 1.08, f"motion {mv_dir:03.0f}°\n{mv_kt:.1f} kt",
+            fontsize=8, color="#c53030", ha="left", va="bottom", zorder=7, path_effects=HALO)
+    cb = _cbar(fig, mcm.ScalarMappable(norm=norm, cmap=cmap), ax, "Pressure (hPa)")
+    tk = [float(_pz(p)) for p in P_TICKS if min(hl) <= p <= max(hl)]
+    cb.locator = matplotlib.ticker.FixedLocator(tk)
+    cb.formatter = matplotlib.ticker.FuncFormatter(lambda z, pos: f"{1000.0 / np.exp(z):.0f}")
+    cb.update_ticks()
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-lim, lim)
     ax.set_aspect("equal")
     ax.set_xlabel("u (m s⁻¹)", fontsize=8)
     ax.set_ylabel("v (m s⁻¹)", fontsize=8)
-    ax.set_title("C  Hodograph: 0–500 km mean wind by level (1000 → 150 hPa)", fontsize=10, loc="left")
+    ax.set_title("C  Hodograph: 0–500 km mean wind, 1000 → 100 hPa", fontsize=10, loc="left")
     ax.tick_params(labelsize=8)
+    ax.grid(color="#e6e6e6", lw=0.5, zorder=0)
 
-    # D: steering map with streamlines and the track
-    ax = axs[1, 1]
+
+def _tw_panel_D_steer(ax, fig, res, coast_segs):
     sm = res["steer_map"]
     sl, so = sm["lat"], sm["lon"]
+    lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
     spd = np.hypot(sm["u"], sm["v"]) / KT
     pm = _filled(ax, so, sl, spd, "YlGnBu", 0.0, float(np.nanmax(spd)))
     _cbar(fig, pm, ax, "850–200 hPa mean wind speed (kt)")
     ax.streamplot(so, sl, sm["u"], sm["v"], color="#1f1f1f", density=1.2, linewidth=0.6, arrowsize=0.7)
+
     tr = sm["track"]
     tla = [p[0] for p in tr]
     tlo = [p[1] for p in tr]
-    ax.plot(tlo, tla, color="#c53030", lw=2.0, zorder=6, marker="o", ms=5)
-    ax.text(tlo[0] + 0.15, tla[0] + 0.15, "D−1", fontsize=8, color="#c53030", zorder=7)
-    ax.text(tlo[-1] + 0.15, tla[-1] + 0.15, "D+1", fontsize=8, color="#c53030", zorder=7)
-    st = res["steer_at_center"]
-    _mark_center(ax, lat_c, lon_c)
-    _box(ax, None, None,
-         f"steering (850–200 hPa mean, {st['r1_km']:.0f}–{st['r2_km']:.0f} km annulus) "
-         f"{st['bearing_deg']:03.0f}° at {st['speed_kt']:.1f} kt\n"
-         f"storm motion {mv_dir:03.0f}° at {mv_kt:.1f} kt (red track D−1 → D+1)")
-    _outlines(ax, coast_segs, so[0], so[-1], sl[0], sl[-1])
-    _map_axes(ax, sl, so, "D  Steering map: 850–200 hPa mean wind and storm track")
+    ax.plot(tlo, tla, color="#c53030", lw=1.6, zorder=6, ls=(0, (1, 1.2)))
+    ax.plot(tlo[0], tla[0], marker="o", ms=5, mfc="white", mec="#c53030", mew=1.4, zorder=7)
+    ax.plot(tlo[-1], tla[-1], marker="o", ms=5, mfc="#c53030", mec="#c53030", zorder=7)
+    ax.text(tlo[0] + 0.25, tla[0] - 0.4, "D−1", fontsize=8, color="#c53030", zorder=8, path_effects=HALO)
+    ax.text(tlo[-1] + 0.5, tla[-1] - 0.2, "D+1", fontsize=8, color="#c53030", zorder=8, path_effects=HALO)
 
+    half = 0.5 * (so[-1] - so[0])
+    Lg = 0.36 * half
+    mv_dir, mv_kt = res["motion_dir"], res["motion_kt"]
+    st = res["steer_at_center"]
+    st_dir, st_kt = st["bearing_deg"], st["speed_kt"]
+    kmax = max(mv_kt, st_kt, 1e-6)
+    mx, my = _bearing_vec(mv_dir)
+    Lm = Lg * mv_kt / kmax
+    tip_m = (lon_c + mx * Lm, lat_c + my * Lm)
+    _arrow(ax, lon_c, lat_c, tip_m[0], tip_m[1], "#c53030", lw=2.4, zorder=9)
+    # upstream (behind the storm, against the motion) and downstream (ahead, along the motion)
+    dn = (lon_c + mx * (Lm + 1.4), lat_c + my * (Lm + 1.4))
+    up = (lon_c - mx * 1.7, lat_c - my * 1.7)
+    ax.text(dn[0], dn[1], "downstream", fontsize=8, style="italic", ha="center", va="center",
+            zorder=10, color="#222222", path_effects=HALO)
+    ax.text(up[0], up[1], "upstream", fontsize=8, style="italic", ha="center", va="center",
+            zorder=10, color="#222222", path_effects=HALO)
+    ax.plot([up[0], dn[0]], [up[1], dn[1]], color="#444444", lw=0.6, ls=":", zorder=8)
+
+    sx, sy = _bearing_vec(st_dir)
+    Ls = Lg * st_kt / kmax
+    tip_s = (lon_c + sx * Ls, lat_c + sy * Ls)
+    _arrow(ax, lon_c, lat_c, tip_s[0], tip_s[1], "#1f4e8c", lw=1.8, dashed=True, zorder=9)
+
+    _mark_center(ax, lat_c, lon_c)
+    _box(ax, f"red: storm motion {mv_dir:03.0f}° at {mv_kt:.1f} kt (track D−1 → D+1)\n"
+             f"blue dashed: steering {st_dir:03.0f}° at {st_kt:.1f} kt "
+             f"({st['r1_km']:.0f}–{st['r2_km']:.0f} km annulus, 850–200 hPa mean)\n"
+             f"upstream = behind the storm; downstream = ahead, along the motion",
+         loc="upper left")
+    _outlines(ax, coast_segs, so[0], so[-1], sl[0], sl[-1])
+    _map_axes(ax, sl, so, "D  Steering map: 850–200 hPa mean wind, storm track and motion")
+
+
+def figure2(res, coast_segs=()):
+    fig, axs = plt.subplots(2, 2, figsize=(14, 12), facecolor="white")
+    fig.suptitle(f"ThermoDynamic Fig — tropical cyclone structure · {res['date']}  ·  "
+                 f"{_centre_note(res)}", fontsize=13, y=0.995)
+    _tw_panel_A(axs[0, 0], fig, res)
+    _tw_panel_B(axs[0, 1], fig, res)
+    _tw_panel_C_hodo(axs[1, 0], fig, res)
+    _tw_panel_D_steer(axs[1, 1], fig, res, coast_segs)
     fig.tight_layout(rect=[0, 0.02, 1, 0.97])
     _watermark(fig, SRC)
     return _png(fig)

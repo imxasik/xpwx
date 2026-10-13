@@ -27,7 +27,7 @@ STEER_R1_KM = 500.0      # steering = layer-mean wind averaged over this annulus
 STEER_R2_KM = 1000.0     # (keeps the vortex core out)
 HADLEY_BAND_KM = 500.0   # longitudes within this distance of the centre form the φ-p section
 MAP_HALF_DEG = 15.0      # half width of the regional maps
-TILT_MAP_HALF_DEG = 4.0  # half width of the tilt map
+TILT_MAP_HALF_DEG = 6.0  # half width of the tilt map
 
 
 def _window(lat, lon, la_rng, lo_rng):

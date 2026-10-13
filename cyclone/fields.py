@@ -21,6 +21,8 @@ from cyclone import core
 
 VARS = {"uwnd": "u", "vwnd": "v", "air": "T", "hgt": "z"}
 
+OUT_TOP_HPA = 100.0     # highest level kept for the figures
+
 _LOCK = threading.Lock()
 _DAY_CACHE = {}
 
@@ -62,7 +64,13 @@ def read_day(date):
         out["lev"] = lev[ol]
         out["lat"] = lat[oa]
         out["lon"] = lon
+        # omega is integrated from the top of the file (10 hPa); the outputs are then
+        # kept from 1000 to OUT_TOP_HPA only (the figures end at 100 hPa).
         out["w"] = core.omega_from_divergence(out["u"], out["v"], out["lev"],
                                               out["lat"], out["lon"])
+        keep = out["lev"] >= OUT_TOP_HPA - 1e-6
+        for k in ("u", "v", "T", "z", "w"):
+            out[k] = out[k][keep]
+        out["lev"] = out["lev"][keep]
         _DAY_CACHE[key] = out
         return out
