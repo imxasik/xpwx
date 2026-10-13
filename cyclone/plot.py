@@ -160,8 +160,9 @@ def _section_arrows(ax, x, z, u, w, stride=None):
               color="#111111", zorder=7)
 
 
-def _arrow(ax, x0, y0, x1, y1, color, lw=2.2, dashed=False, zorder=10):
-    style = "-|>,head_length=0.9,head_width=0.42"
+def _arrow(ax, x0, y0, x1, y1, color, lw=2.2, dashed=False, zorder=10,
+           head_length=0.9, head_width=0.42):
+    style = f"-|>,head_length={head_length},head_width={head_width}"
     p = FancyArrowPatch((x0, y0), (x1, y1), arrowstyle=style, mutation_scale=12,
                         lw=lw, color=color, zorder=zorder, path_effects=HALO,
                         linestyle="--" if dashed else "-")
@@ -238,13 +239,13 @@ def _panel_B(ax, fig, res, coast_segs):
 
 
 def _panel_C_tilt(ax, fig, res, coast_segs):
-    """Vortex tilt: 850-hPa centre, upper-level centres, shear arrow, up/downshear."""
+    """Vortex tilt: 850 -> 700 -> 500 -> 300 -> 200 hPa centres joined as one track."""
     t = res["tilt_map"]
     tl, to = t["lat"], t["lon"]
     lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
     z = t["zeta850"]
-    L = _symlim(z)
-    pm = _filled(ax, to, tl, z, "RdBu_r", -L, L)
+    # sequential colours so the whole window is filled (no pale empty band)
+    pm = _filled(ax, to, tl, z, "YlOrRd", float(np.nanmin(z)), float(np.nanmax(z)))
     _cbar(fig, pm, ax, "850-hPa vorticity (10⁻⁵ s⁻¹)")
 
     spd = np.hypot(t["u850"], t["v850"]) / KT
@@ -252,23 +253,31 @@ def _panel_C_tilt(ax, fig, res, coast_segs):
                     levels=matplotlib.ticker.MaxNLocator(6).tick_values(0, float(np.nanmax(spd))))
     ax.clabel(cw, fmt="%d kt", fontsize=6, inline=True)
 
-    # tilt: leader lines from the 850-hPa centre, labelled callouts
-    callout = {700: (-1.4, 1.0), 500: (-1.4, 0.3), 300: (-1.4, -0.4), 200: (-1.4, -1.1)}
-    for lv in res["tilt"][1:]:
+    # one track through the levels, in order 850 -> 700 -> 500 -> 300 -> 200 hPa
+    tilt = res["tilt"]
+    ax.plot([lv["lon"] for lv in tilt], [lv["lat"] for lv in tilt],
+            color="#2b2b2b", lw=1.5, zorder=7)
+    for lv in tilt:
         p = int(lv["hPa"])
-        dx, dy = callout.get(p, (0.8, 0.8))
-        ax.plot([lon_c, lv["lon"]], [lat_c, lv["lat"]], color="#6b6b6b", lw=0.7, zorder=7)
-        ax.plot(lv["lon"], lv["lat"], marker="o", ms=7.5, mfc=LEVEL_COLOURS.get(p, "white"),
-                mec="white", mew=1.0, zorder=9)
-        ax.text(lv["lon"] + dx, lv["lat"] + dy, f"{p} hPa", fontsize=8, fontweight="bold",
-                color=LEVEL_COLOURS.get(p, "black"), ha="center", va="center", zorder=10,
+        ax.plot(lv["lon"], lv["lat"], marker="o", ms=6.5, mfc=LEVEL_COLOURS.get(p, "white"),
+                mec="white", mew=0.9, zorder=8)
+
+    # labels stacked in a column to the west, each joined to its marker by a thin leader
+    col_x = lon_c - 2.7
+    rows = {200: lat_c + 1.6, 300: lat_c + 0.8, 500: lat_c + 0.0, 700: lat_c - 0.8}
+    for lv in tilt[1:]:
+        p = int(lv["hPa"])
+        yy = rows.get(p, lat_c)
+        ax.plot([lv["lon"], col_x + 0.05], [lv["lat"], yy], color="#555555", lw=0.6, ls=":", zorder=7)
+        ax.text(col_x, yy, f"{p} hPa", fontsize=8, fontweight="bold", ha="left", va="center",
+                color=LEVEL_COLOURS.get(p, "black"), zorder=10,
                 bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=LEVEL_COLOURS.get(p, "#999"), lw=0.6))
     ax.plot(lon_c, lat_c, marker="o", ms=8.5, mfc=LEVEL_COLOURS[850], mec="white", mew=1.2, zorder=10)
     ax.text(lon_c + 0.9, lat_c - 0.9, "850 hPa centre", fontsize=8, fontweight="bold",
             color=LEVEL_COLOURS[850], ha="center", va="center", zorder=10,
             bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=LEVEL_COLOURS[850], lw=0.6))
 
-    # shear arrow (850 -> 200 hPa) from the centre, with downshear / upshear sides
+    # 850 -> 200 hPa shear arrow from the centre, with the downshear / upshear sides
     sh = res["shear"]
     mag = max(float(np.hypot(sh["u_ms"], sh["v_ms"])), 1e-9)
     ux, vy = sh["u_ms"] / mag, sh["v_ms"] / mag
@@ -281,7 +290,6 @@ def _panel_C_tilt(ax, fig, res, coast_segs):
             ha="center", va="center", color="#111111", zorder=12)
     ax.text(tail[0] - ux * 0.45, tail[1] - vy * 0.45, "upshear", fontsize=7.5, style="italic",
             ha="center", va="center", color="#111111", zorder=12)
-    ax.plot(sh["max_lon"], sh["max_lat"], marker="s", ms=6, mfc="none", mec="#111111", mew=1.2, zorder=9)
 
     _box(ax, f"850→200 hPa shear arrow: {sh['max_kt']:.1f} kt\n"
              f"(max inside {sh['rmax_km']:.0f} km; square = point of max shear)\n"
@@ -360,6 +368,7 @@ def _tw_panel_B(ax, fig, res):
 
 
 def _tw_panel_C_hodo(ax, fig, res):
+    """Hodograph: zoomed to the data, small markers, labels only at 850, 500 and 200 hPa."""
     hd = res["hodo"]
     hu, hv, hl = hd["u"], hd["v"], hd["lev"]
     z = _pz(hl)
@@ -367,40 +376,50 @@ def _tw_panel_C_hodo(ax, fig, res):
     norm = mcolors.Normalize(vmin=0.0, vmax=zmax)
     cmap = plt.get_cmap("viridis_r")
     order = np.argsort(z)
-    ax.plot(hu[order], hv[order], color="#7a7a7a", lw=1.3, zorder=2)
-    ax.scatter(hu, hv, c=z, cmap=cmap, norm=norm, s=52, edgecolor="black", lw=0.5, zorder=4)
-    for p in P_TICKS:
-        if min(hl) <= p <= max(hl):
-            k = int(np.argmin(np.abs(hl - p)))
-            ax.text(hu[k] + 0.35, hv[k] + 0.35, f"{p}", fontsize=7.5, zorder=6, path_effects=HALO)
     mv_dir, mv_kt = res["motion_dir"], res["motion_kt"]
     ms = mv_kt * KT
-    lim = max(float(np.max(np.abs(hu))), float(np.max(np.abs(hv))), ms) * 1.25 + 1.0
-    for r in np.arange(5.0, lim, 5.0):
-        ax.add_patch(Circle((0, 0), r, fill=False, ls=(0, (2, 3)), lw=0.6, ec="#9a9a9a", zorder=1))
-        ax.text(r * 0.707, r * 0.707, f"{r:.0f}", fontsize=6.5, color="#7a7a7a", zorder=1)
+    mx, my = _bearing_vec(mv_dir)
+
+    # zoom to the data (origin and the motion arrow included)
+    xs_ = np.concatenate([hu, [0.0, ms * mx]])
+    ys_ = np.concatenate([hv, [0.0, ms * my]])
+    x0, x1 = float(xs_.min()), float(xs_.max())
+    y0, y1 = float(ys_.min()), float(ys_.max())
+    span = max(x1 - x0, y1 - y0, 2.0)
+    half = 0.5 * span * 1.2
+    cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+
+    for r in np.arange(5.0, 1.6 * half, 5.0):
+        ax.add_patch(Circle((0, 0), r, fill=False, ls=(0, (2, 3)), lw=0.6, ec="#b8b8b8", zorder=1))
     ax.axhline(0, color="#8a8a8a", lw=0.7, zorder=1)
     ax.axvline(0, color="#8a8a8a", lw=0.7, zorder=1)
-    mx, my = _bearing_vec(mv_dir)
-    _arrow(ax, 0, 0, ms * mx, ms * my, "#c53030", lw=2.2, zorder=6)
-    ax.text(ms * mx * 1.08, ms * my * 1.08, f"motion {mv_dir:03.0f}°\n{mv_kt:.1f} kt",
-            fontsize=8, color="#c53030", ha="left", va="bottom", zorder=7, path_effects=HALO)
+    ax.plot(hu[order], hv[order], color="#7a7a7a", lw=1.0, zorder=2)
+    ax.scatter(hu, hv, c=z, cmap=cmap, norm=norm, s=20, edgecolor="black", lw=0.35, zorder=4)
+    off = 0.03 * 2 * half
+    for p in (850, 500, 200):
+        if min(hl) <= p <= max(hl):
+            k = int(np.argmin(np.abs(hl - p)))
+            ax.text(hu[k] + off, hv[k] + off, f"{p}", fontsize=8, fontweight="bold", zorder=6)
+
+    _arrow(ax, 0, 0, ms * mx, ms * my, "#c53030", lw=1.6, zorder=6, head_length=0.6, head_width=0.22)
+
     cb = _cbar(fig, mcm.ScalarMappable(norm=norm, cmap=cmap), ax, "Pressure (hPa)")
     tk = [float(_pz(p)) for p in P_TICKS if min(hl) <= p <= max(hl)]
     cb.locator = matplotlib.ticker.FixedLocator(tk)
-    cb.formatter = matplotlib.ticker.FuncFormatter(lambda z, pos: f"{1000.0 / np.exp(z):.0f}")
+    cb.formatter = matplotlib.ticker.FuncFormatter(lambda zz, pos: f"{1000.0 / np.exp(zz):.0f}")
     cb.update_ticks()
-    ax.set_xlim(-lim, lim)
-    ax.set_ylim(-lim, lim)
+    ax.set_xlim(cx - half, cx + half)
+    ax.set_ylim(cy - half, cy + half)
     ax.set_aspect("equal")
     ax.set_xlabel("u (m s⁻¹)", fontsize=8)
     ax.set_ylabel("v (m s⁻¹)", fontsize=8)
     ax.set_title("C  Hodograph: 0–500 km mean wind, 1000 → 100 hPa", fontsize=10, loc="left")
     ax.tick_params(labelsize=8)
-    ax.grid(color="#e6e6e6", lw=0.5, zorder=0)
+    ax.grid(color="#ececec", lw=0.5, zorder=0)
 
 
 def _tw_panel_D_steer(ax, fig, res, coast_segs):
+    """Steering map: storm track, motion and steering arrows, short plain legend."""
     sm = res["steer_map"]
     sl, so = sm["lat"], sm["lon"]
     lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
@@ -415,8 +434,8 @@ def _tw_panel_D_steer(ax, fig, res, coast_segs):
     ax.plot(tlo, tla, color="#c53030", lw=1.6, zorder=6, ls=(0, (1, 1.2)))
     ax.plot(tlo[0], tla[0], marker="o", ms=5, mfc="white", mec="#c53030", mew=1.4, zorder=7)
     ax.plot(tlo[-1], tla[-1], marker="o", ms=5, mfc="#c53030", mec="#c53030", zorder=7)
-    ax.text(tlo[0] + 0.25, tla[0] - 0.4, "D−1", fontsize=8, color="#c53030", zorder=8, path_effects=HALO)
-    ax.text(tlo[-1] + 0.5, tla[-1] - 0.2, "D+1", fontsize=8, color="#c53030", zorder=8, path_effects=HALO)
+    ax.text(tlo[0] + 0.4, tla[0] - 0.3, "D−1", fontsize=8, color="#c53030", zorder=8, path_effects=HALO)
+    ax.text(tlo[-1] + 0.4, tla[-1] + 0.2, "D+1", fontsize=8, color="#c53030", zorder=8, path_effects=HALO)
 
     half = 0.5 * (so[-1] - so[0])
     Lg = 0.36 * half
@@ -426,27 +445,15 @@ def _tw_panel_D_steer(ax, fig, res, coast_segs):
     kmax = max(mv_kt, st_kt, 1e-6)
     mx, my = _bearing_vec(mv_dir)
     Lm = Lg * mv_kt / kmax
-    tip_m = (lon_c + mx * Lm, lat_c + my * Lm)
-    _arrow(ax, lon_c, lat_c, tip_m[0], tip_m[1], "#c53030", lw=2.4, zorder=9)
-    # upstream (behind the storm, against the motion) and downstream (ahead, along the motion)
-    dn = (lon_c + mx * (Lm + 1.4), lat_c + my * (Lm + 1.4))
-    up = (lon_c - mx * 1.7, lat_c - my * 1.7)
-    ax.text(dn[0], dn[1], "downstream", fontsize=8, style="italic", ha="center", va="center",
-            zorder=10, color="#222222", path_effects=HALO)
-    ax.text(up[0], up[1], "upstream", fontsize=8, style="italic", ha="center", va="center",
-            zorder=10, color="#222222", path_effects=HALO)
-    ax.plot([up[0], dn[0]], [up[1], dn[1]], color="#444444", lw=0.6, ls=":", zorder=8)
-
+    _arrow(ax, lon_c, lat_c, lon_c + mx * Lm, lat_c + my * Lm, "#c53030", lw=2.4, zorder=9)
     sx, sy = _bearing_vec(st_dir)
     Ls = Lg * st_kt / kmax
-    tip_s = (lon_c + sx * Ls, lat_c + sy * Ls)
-    _arrow(ax, lon_c, lat_c, tip_s[0], tip_s[1], "#1f4e8c", lw=1.8, dashed=True, zorder=9)
+    _arrow(ax, lon_c, lat_c, lon_c + sx * Ls, lat_c + sy * Ls, "#1f4e8c", lw=1.8, dashed=True, zorder=9)
 
     _mark_center(ax, lat_c, lon_c)
-    _box(ax, f"red: storm motion {mv_dir:03.0f}° at {mv_kt:.1f} kt (track D−1 → D+1)\n"
-             f"blue dashed: steering {st_dir:03.0f}° at {st_kt:.1f} kt "
-             f"({st['r1_km']:.0f}–{st['r2_km']:.0f} km annulus, 850–200 hPa mean)\n"
-             f"upstream = behind the storm; downstream = ahead, along the motion",
+    _box(ax, f"Red arrow: storm motion {mv_dir:03.0f}°, {mv_kt:.1f} kt\n"
+             f"Blue dashed arrow: steering flow {st_dir:03.0f}°, {st_kt:.1f} kt\n"
+             f"Dotted line: storm track, D−1 to D+1",
          loc="upper left")
     _outlines(ax, coast_segs, so[0], so[-1], sl[0], sl[-1])
     _map_axes(ax, sl, so, "D  Steering map: 850–200 hPa mean wind, storm track and motion")
