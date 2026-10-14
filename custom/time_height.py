@@ -163,6 +163,22 @@ def _levels_for_file(lev_file):
     return np.unique(np.concatenate([base, extra]))
 
 
+def _fill_missing(lev, vals):
+    """Fill levels with no value (NaN) inside the file's range by linear interpolation in
+    ln(p) between the nearest levels that have values. Levels outside that range stay NaN."""
+    lev = np.asarray(lev, dtype=float)
+    vals = np.asarray(vals, dtype=float)
+    o = np.argsort(lev)
+    lev, vals = lev[o], vals[o]
+    ok = np.isfinite(vals)
+    if not ok.any() or ok.all():
+        return vals
+    out = vals.copy()
+    inside = (~ok) & (lev > lev[ok].min()) & (lev < lev[ok].max())
+    out[inside] = np.interp(np.log(lev[inside]), np.log(lev[ok]), vals[ok])
+    return out
+
+
 def _compute(pkg, dates):
     lat0 = float(pkg["lat"])
     lon0 = float(pkg["lon"]) % 360.0
@@ -178,8 +194,8 @@ def _compute(pkg, dates):
             if lev is None:
                 lev = _levels_for_file(prof["u"][0])
                 npts = prof["npts"]
-            u = _at_levels(prof["u"][0], prof["u"][1], lev)
-            v = _at_levels(prof["v"][0], prof["v"][1], lev)
+            u = _at_levels(prof["u"][0], _fill_missing(prof["u"][0], prof["u"][1]), lev)
+            v = _at_levels(prof["v"][0], _fill_missing(prof["v"][0], prof["v"][1]), lev)
             if not (np.isfinite(u).any() and np.isfinite(v).any()):
                 raise ValueError("PSL file has no values for this date yet")
         except ValueError as e:
@@ -345,6 +361,11 @@ def _plot(data, pkg, coast_segs):
                  f"Box ±{BOX_LAT:g}° lat × ±{BOX_LON:g}° lon ({n} grid points) · "
                  f"{nt} day{'s' if nt != 1 else ''} = {24 * nt} h",
                  loc="left", fontsize=11, fontweight="bold", pad=12)
+    fig.text(0.975, 0.945, f"Date Range: {days[0]:%d %b %Y} – {days[-1]:%d %b %Y}",
+             ha="right", va="bottom", fontsize=10.5, fontweight="bold", color="#222222")
+    ax.text(0.985, 0.016, "@XPWEATHER", transform=ax.transAxes, fontsize=11, va="bottom",
+            ha="right", color="#222211", fontweight="bold", zorder=10,
+            bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="#ccccbb", alpha=0.92, lw=0.9))
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, facecolor="white")
     plt.close(fig)
