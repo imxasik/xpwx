@@ -1,19 +1,21 @@
-"""custom/time_height.py — time–height (pressure) section at a point, from PSL data.
+"""custom/time_height.py — time–height (pressure) section, box-averaged, from PSL daily fields.
 
 Drop-in addon: no core file is changed. Data come from the project's NOAA PSL
-NCEP/NCAR files (``pro.config.PSL``), read with ``pro.data.open_remote``, the same
-way as the other products.
+NCEP/NCAR files (``pro.config.PSL``), read with ``pro.data.open_remote`` like the
+other products.
+
+Box: the average over the grid points within ±2.5° latitude and ±5° longitude of the
+given centre (lat, lon). The inset map at the top right shows that box.
 
 Layout (time on x, pressure on y, 1000 hPa at the bottom, 100 hPa at the top):
-  * shading  : relative humidity (%)            from rhum
-  * barbs    : wind (kt)                        from uwnd, vwnd
-  * contours : stability  -dθe/dp  (K/mb)      from air, rhum (θe by Bolton 1980)
+  * shading  : wind speed (kt), box mean         from uwnd, vwnd
+  * barbs    : wind (kt), every 3 h, every level from uwnd, vwnd
+  * contours : stability  −dθe/dp  (K/mb)      from air, rhum (θe by Bolton 1980)
 
 Window: the selected number of days, ending on the app's selected end date, so
-n_days = 1 gives 24 h and n_days = 3 gives 72 h. PSL NCEP/NCAR files hold one
-record per day, so the time axis is daily: one column per day, centred on the
-day, with a 24-h cell per record. The point is the PSL grid point nearest the
-given lat/lon.
+n_days = 1 gives 24 h and n_days = 3 gives 72 h. PSL NCEP/NCAR files hold one record
+per day: the record is taken as the day's value (centred on 12 UTC), and shading,
+contours and barbs are interpolated linearly in time between those records.
 
 Sidebar group: Hovmöller
 """
@@ -21,12 +23,13 @@ import io
 import sys
 import threading
 import datetime
+import warnings
 
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-import matplotlib.colors as mcolors  # noqa: E402
+import matplotlib.transforms as mtransforms  # noqa: E402
 
 from pro import config
 from pro import data as pdata
@@ -35,16 +38,27 @@ _ROOT = config.BASE_DIR
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+try:                                   # country borders for the inset (same as the cyclone maps)
+    from cyclone import borders as _borders
+except Exception:                      # pragma: no cover - the inset still works without them
+    _borders = None
+
 _LOCK = threading.Lock()     # matplotlib's pyplot state is global
-_PROFILE_CACHE = {}          # (PSL root, date, lat, lon) -> profiles at one grid point
+_PROFILE_CACHE = {}          # (PSL root, date, lat, lon) -> box-mean profiles
 
 VARS = {"uwnd": "u", "vwnd": "v", "air": "T", "rhum": "rh"}
-P_TICKS = [1000, 850, 700, 500, 300, 200, 100]
-RH_LEVELS = np.arange(0, 101, 5)
+BOX_LAT = 2.5                # half-width of the averaging box, degrees latitude
+BOX_LON = 5.0                # half-width of the averaging box, degrees longitude
+INSET_LAT = 12.0             # half-size of the inset map, degrees
+INSET_LON = 20.0
+P_TICKS = [1000, 850, 700, 500, 400, 300, 250, 200, 150, 100]
+SPEED_LEVELS = np.arange(0.0, 75.0, 5.0)   # wind-speed shading bins, kt
+BARB_EVERY_H = 3.0           # barb spacing in time, hours
+BARB_LENGTH = 7.0            # barb shaft length, points
 STAB_LEVELS = [0.025, 0.05, 0.1, 0.2]
-BARB_LEVELS = [1000, 850, 700, 500, 300, 200, 100]
 MS_TO_KT = 1.9438444924
 OUT_TOP_HPA = 100.0
+COAST_COLOUR = "#2c2c2c"
 
 
 def _unpack(ds, name, t):
@@ -60,11 +74,24 @@ def _unpack(ds, name, t):
     return f
 
 
+def _box_mean(raw, lat, lon, lat0, lon0):
+    """Mean over the grid points inside the box about (lat0, lon0). Returns (nlev,), npts."""
+    ii = np.where(np.abs(lat - lat0) <= BOX_LAT + 1e-6)[0]
+    jj = np.where(np.abs(((lon - lon0 + 180.0) % 360.0) - 180.0) <= BOX_LON + 1e-6)[0]
+    if ii.size == 0 or jj.size == 0:
+        raise ValueError("the averaging box lies outside the PSL grid")
+    sub = raw[:, ii][:, :, jj]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        mean = np.nanmean(sub.reshape(sub.shape[0], -1), axis=1)
+    return mean, int(ii.size * jj.size)
+
+
 def _profile(date, lat0, lon0):
-    """Each variable at the grid point nearest (lat0, lon0) on ``date``.
+    """Box-mean profile of each variable on ``date``.
 
     Every variable is read with its own time, level and lat/lon coordinates, so the
-    files are never mixed by position. Returns {"u": (lev, values, (lat, lon)), ...},
+    files are never mixed by position. Returns {"u": (lev, values), ..., "npts": n},
     or raises ValueError with the reason if the date is not in the record.
     """
     key = (config.PSL, date.isoformat(), round(lat0, 4), round(lon0, 4))
@@ -74,22 +101,24 @@ def _profile(date, lat0, lon0):
             if isinstance(out, str):
                 raise ValueError(out)
             return out
+        name = "?"
         try:
             out = {}
+            npts = None
             for name, short in VARS.items():
                 ds = pdata.open_remote(f"{config.PSL}/{name}.{date.year}.nc")
                 t = pdata._time_idx(ds, date)
                 lev = np.asarray(ds["level"].data, dtype=float)
                 lat = np.asarray(ds["lat"].data, dtype=float)
                 lon = np.asarray(ds["lon"].data, dtype=float)
-                i = int(np.argmin(np.abs(lat - lat0)))
-                j = int(np.argmin(np.abs((lon - lon0 + 180.0) % 360.0 - 180.0)))
-                raw = _unpack(ds, name, t)
-                out[short] = (lev, raw[:, i, j], (float(lat[i]), float(lon[j])))
+                mean, n = _box_mean(_unpack(ds, name, t), lat, lon, lat0, lon0)
+                out[short] = (lev, mean)
+                npts = n if npts is None else npts
+            out["npts"] = npts
         except ValueError as e:
             _PROFILE_CACHE[key] = str(e)
             raise
-        except Exception as e:                       # pragma: no cover - reported to the user
+        except Exception as e:                       # reported to the user with the file name
             msg = f"{name}.{date.year}: {type(e).__name__}: {e}"
             _PROFILE_CACHE[key] = msg
             raise ValueError(msg) from e
@@ -100,15 +129,28 @@ def _profile(date, lat0, lon0):
 def _at_levels(lev, values, target):
     """One variable at the target pressures.
 
-    Each file may carry its own set of pressure levels (e.g. PSL's rhum has fewer levels
-    than uwnd). The values are interpolated linearly in ln(p) to the target levels; a
-    target outside the file's range stays NaN. Exact matches return the file value.
+    Each file may carry its own set of pressure levels (PSL's rhum has fewer levels than
+    uwnd). The values are interpolated linearly in ln(p) to the target levels; a target
+    outside the file's range stays NaN. Exact matches return the file value.
     """
     lev = np.asarray(lev, dtype=float)
     values = np.asarray(values, dtype=float)
     o = np.argsort(lev)
     return np.interp(np.log(np.asarray(target, dtype=float)), np.log(lev[o]), values[o],
                      left=np.nan, right=np.nan)
+
+
+def _latest_with_values(end, lat0, lon0, max_back=60):
+    """Most recent date on or before ``end`` whose PSL fields have values in the box."""
+    for k in range(max_back):
+        d = end - datetime.timedelta(days=k)
+        try:
+            prof = _profile(d, lat0, lon0)
+        except ValueError:
+            continue
+        if all(np.isfinite(prof[n][1]).any() for n in ("u", "v", "T", "rh")):
+            return d
+    return None
 
 
 def _theta_e(T, rh, p):
@@ -125,21 +167,8 @@ def _theta_e(T, rh, p):
 
 
 def _stability(theta_e, p):
-    """-dθe/dp along the level axis (axis 0), K per hPa (= K/mb)."""
+    """−dθe/dp along the level axis (axis 0), K per hPa (= K/mb)."""
     return -np.gradient(theta_e, p, axis=0)
-
-
-def _latest_with_values(end, lat0, lon0, max_back=60):
-    """Most recent date on or before ``end`` whose PSL fields have values at the point."""
-    for k in range(max_back):
-        d = end - datetime.timedelta(days=k)
-        try:
-            prof = _profile(d, lat0, lon0)
-        except ValueError:
-            continue
-        if all(np.isfinite(prof[n][1]).any() for n in ("u", "v", "T", "rh")):
-            return d
-    return None
 
 
 def _compute(pkg, dates):
@@ -150,7 +179,7 @@ def _compute(pkg, dates):
     rows = {"rh": [], "u": [], "v": [], "stab": []}
     valid, reasons = [], []
     lev = None
-    point = None
+    npts = None
     rh_levels = None
     for d in days:
         try:
@@ -158,7 +187,7 @@ def _compute(pkg, dates):
             if lev is None:
                 lev_u = prof["u"][0]
                 lev = np.sort(lev_u[lev_u >= OUT_TOP_HPA - 1e-6])          # ascending, 100 … 1000
-                point = prof["u"][2]
+                npts = prof["npts"]
                 rh_levels = np.sort(prof["rh"][0])
             u = _at_levels(prof["u"][0], prof["u"][1], lev)
             v = _at_levels(prof["v"][0], prof["v"][1], lev)
@@ -192,6 +221,7 @@ def _compute(pkg, dates):
         hint = (f" The latest date with PSL values is {latest:%d %b %Y}; "
                 f"choose it as the end date (Manual Date).") if latest else ""
         raise ValueError("the end date has no PSL values yet." + hint)
+
     nl = lev.size
     nan = np.full(nl, np.nan)
     stack = {k: np.stack([r if r is not None else nan for r in v]) for k, v in rows.items()}
@@ -199,92 +229,165 @@ def _compute(pkg, dates):
         "main": np.zeros((1, 1)),
         "dates": days, "valid": np.array(valid),
         "lev": lev, "rh": stack["rh"], "u": stack["u"], "v": stack["v"], "stab": stack["stab"],
-        "point": point, "req": (lat0, lon0), "reasons": reasons, "rh_levels": rh_levels,
+        "centre": (lat0, lon0), "npts": npts, "reasons": reasons, "rh_levels": rh_levels,
     }
     return np.zeros(1), np.zeros(1), data
 
 
-def _edges_log(v):
-    """Cell edges for pressure centres v (ascending), in log space."""
-    lv = np.log(v)
-    mid = 0.5 * (lv[:-1] + lv[1:])
-    first = lv[0] - (mid[0] - lv[0])
-    last = lv[-1] + (lv[-1] - mid[-1])
-    return np.exp(np.concatenate([[first], mid, [last]]))
+# ---------------------------------------------------------------------------
+# drawing
+# ---------------------------------------------------------------------------
+
+def _wind_cmap():
+    """Sequential palette for wind speed: pale blue (calm) → green → yellow → red (strong)."""
+    from matplotlib.colors import LinearSegmentedColormap
+    colours = ["#f2f8ff", "#c6e2ff", "#7fb8e6", "#3f8fd2", "#2a9d8f", "#8ac926",
+               "#e9c46a", "#f4a261", "#e76f51", "#c1121f", "#6a040f"]
+    cmap = LinearSegmentedColormap.from_list("wind_kt", colours, N=len(SPEED_LEVELS) - 1)
+    cmap.set_over(colours[-1])
+    return cmap
 
 
-def _plot(data, pkg):
+def _series_interp(x, y, tg):
+    """Linear interpolation of one series to tg. Gaps of more than one day stay NaN."""
+    ok = np.isfinite(y)
+    xv, yv = x[ok], y[ok]
+    if xv.size == 0:
+        return np.full(tg.shape, np.nan)
+    out = np.interp(tg, xv, yv)               # flat beyond the first and last record
+    for i in range(xv.size - 1):
+        if xv[i + 1] - xv[i] > 24.0 + 1e-6:
+            out[(tg > xv[i]) & (tg < xv[i + 1])] = np.nan
+    return out
+
+
+def _interp_matrix(x, mat, tg):
+    """Interpolate a (nt, nl) matrix column by column to the times tg. Returns (ntg, nl)."""
+    out = np.empty((tg.size, mat.shape[1]))
+    for k in range(mat.shape[1]):
+        out[:, k] = _series_interp(x, mat[:, k], tg)
+    return out
+
+
+def _draw_coast(ax, segs, lon_lo, lon_hi, lat_lo, lat_hi, lw=0.6):
+    for seg in segs:
+        lons = np.where(seg[:, 0] < 0, seg[:, 0] + 360.0, seg[:, 0])
+        lats = seg[:, 1]
+        breaks = np.where(np.abs(np.diff(lons)) > 180)[0] + 1
+        for part in np.split(np.column_stack([lons, lats]), breaks):
+            if part[:, 0].max() < lon_lo or part[:, 0].min() > lon_hi:
+                continue
+            if part[:, 1].max() < lat_lo or part[:, 1].min() > lat_hi:
+                continue
+            ax.plot(part[:, 0], part[:, 1], color=COAST_COLOUR, lw=lw, zorder=5)
+
+
+def _inset(ax_parent, lat0, lon0, coast_segs):
+    """Small map at the top right: the averaging box and the centre, as on the reference chart."""
+    ax = ax_parent.inset_axes([0.745, 0.63, 0.245, 0.315])
+    lo, hi = lon0 - INSET_LON, lon0 + INSET_LON
+    la, lb = lat0 - INSET_LAT, lat0 + INSET_LAT
+    ax.set_facecolor("#e9f1f8")
+    if _borders is not None:
+        try:
+            _borders.draw(ax, lo, hi, la, lb)
+        except Exception:                 # pragma: no cover - borders are optional
+            pass
+    _draw_coast(ax, coast_segs, lo, hi, la, lb)
+    ax.add_patch(plt.Rectangle((lon0 - BOX_LON, lat0 - BOX_LAT), 2 * BOX_LON, 2 * BOX_LAT,
+                               fill=False, ec="#c0392b", lw=1.6, zorder=8))
+    ax.plot(lon0, lat0, marker="o", ms=4, color="#c0392b", zorder=9)
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(la, lb)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for s in ax.spines.values():
+        s.set_linewidth(0.8)
+        s.set_edgecolor("#444444")
+    ax.set_title("Box: ±%g° lat, ±%g° lon" % (BOX_LAT, BOX_LON), fontsize=7, pad=3)
+    return ax
+
+
+def _plot(data, pkg, coast_segs):
     days = data["dates"]
     nt = len(days)
-    lev = data["lev"]                                  # ascending, 100 … 1000 hPa
+    lev = data["lev"]                                   # ascending, 100 … 1000 hPa
     ok = data["valid"]
-    x0 = datetime.datetime.combine(days[0], datetime.time(0))
-    x_edges = np.arange(0, 24.0 * (nt + 1), 24.0)      # one 24-h cell per record
-    x_mid = x_edges[:-1] + 12.0                        # barbs and contours at day centres
+    lat0, lon0 = data["centre"]
+    x_rec = 24.0 * np.arange(nt) + 12.0                  # daily records, centred on 12 UTC
+    tg = np.linspace(0.0, 24.0 * nt, 24 * nt * 2 + 1)    # 30-minute grid
+    yl = np.log(lev)                                    # pressure axis in ln p
 
-    fig, ax = plt.subplots(figsize=(14, 8), facecolor="white")
-    rh = np.where(ok[:, None], data["rh"], np.nan)
-    cf = ax.pcolormesh(x_edges, _edges_log(lev), rh.T, cmap=_rh_cmap(), vmin=0, vmax=100,
-                       shading="flat")
-    cb = fig.colorbar(cf, ax=ax, pad=0.012, fraction=0.035, aspect=40,
-                      ticks=list(range(0, 101, 10)))
-    cb.set_label("Relative humidity (%)", fontsize=10)
+    uu = _interp_matrix(x_rec, data["u"], tg) * MS_TO_KT     # wind speed (kt) from the box means
+    vv = _interp_matrix(x_rec, data["v"], tg) * MS_TO_KT
+    spd = np.hypot(uu, vv)
+    stab = _interp_matrix(x_rec, data["stab"], tg)
 
-    stab = np.where(ok[:, None], data["stab"], np.nan)
-    if nt >= 2 and np.isfinite(stab).sum() > 4:
-        cs = ax.contour(x_mid, lev, stab.T, levels=STAB_LEVELS, colors="#1aa7b8", linewidths=1.2)
+    fig = plt.figure(figsize=(14, 8.6), facecolor="white")
+    ax = fig.add_axes([0.075, 0.17, 0.80, 0.72])
+    levels = SPEED_LEVELS
+    cmap = _wind_cmap()
+    cf = ax.contourf(tg, yl, spd.T, levels=levels, cmap=cmap, extend="max")
+    cax = fig.add_axes([0.895, 0.17, 0.012, 0.72])
+    cb = fig.colorbar(cf, cax=cax, ticks=list(range(0, int(SPEED_LEVELS[-1]) + 1, 10)))
+    cb.set_label("Wind speed (kt)", fontsize=10)
+
+    if np.isfinite(stab).sum() > 4 and np.nanmax(stab) >= STAB_LEVELS[0]:
+        cs = ax.contour(tg, yl, stab.T, levels=STAB_LEVELS, colors="#1aa7b8", linewidths=1.3)
         ax.clabel(cs, fmt="%g", fontsize=8, inline=True, inline_spacing=6)
 
-    # wind barbs in knots, at each day centre and on the chosen levels
-    bl = [p for p in BARB_LEVELS if lev.min() - 1e-6 <= p <= lev.max() + 1e-6]
-    li = [int(np.argmin(np.abs(lev - p))) for p in bl]
-    u_kt = np.where(ok[:, None], data["u"], np.nan)[:, li] * MS_TO_KT
-    v_kt = np.where(ok[:, None], data["v"], np.nan)[:, li] * MS_TO_KT
-    X, Y = np.meshgrid(x_mid, lev[li], indexing="ij")
-    ax.barbs(X, Y, u_kt, v_kt, length=6.2, linewidth=0.7, color="#111111", pivot="tip",
-             sizes=dict(spacing=0.15, height=0.45))
+    # wind barbs in knots: every 3 h (interpolated) on every wind level of the file
+    tb = np.arange(0.0, 24.0 * nt + 1e-6, BARB_EVERY_H)
+    u_b = _interp_matrix(x_rec, data["u"], tb) * MS_TO_KT
+    v_b = _interp_matrix(x_rec, data["v"], tb) * MS_TO_KT
+    X, Y = np.meshgrid(tb, np.log(lev), indexing="ij")
+    ax.barbs(X, Y, u_b, v_b, length=BARB_LENGTH, linewidth=0.9, color="#111111", pivot="middle",
+             sizes=dict(emptybarb=0.12, spacing=0.14, height=0.45), zorder=6)
 
-    ax.set_yscale("log")
-    ax.set_ylim(float(lev.max()), float(lev.min()))
-    ax.set_yticks([p for p in P_TICKS if lev.min() <= p <= lev.max()])
+    ax.set_ylim(np.log(lev.max()), np.log(lev.min()))
+    ax.set_yticks(np.log([p for p in P_TICKS if lev.min() <= p <= lev.max()]))
     ax.set_yticklabels([str(p) for p in P_TICKS if lev.min() <= p <= lev.max()])
     ax.minorticks_off()
     ax.set_ylabel("Pressure (hPa)", fontsize=10)
 
-    ax.set_xlim(0, 24.0 * nt)
-    ax.set_xticks(x_edges)
-    ax.set_xticklabels([(x0 + datetime.timedelta(hours=float(h))).strftime("%d %b\n%H") + "Z"
-                        for h in x_edges], fontsize=8)
-    ax.set_xlabel("Date (UTC) · one record per day, 24 h apart", fontsize=10)
-    ax.grid(True, axis="x", color="#dddddd", lw=0.5)
+    ax.set_xlim(0.0, 24.0 * nt)
+    x0 = datetime.datetime.combine(days[0], datetime.time(0))
+    ticks = np.arange(0.0, 24.0 * nt + 1e-6, 12.0)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([f"{int(t % 24):02d}" for t in ticks], fontsize=8)
+    ax.set_xlabel("Forecast hour (UTC from the first day 00Z)", fontsize=10)
+    trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
+    for d in range(nt):
+        when = x0 + datetime.timedelta(hours=24 * d)
+        ax.text(24.0 * d + 12.0, -0.085, when.strftime("%a %d %b"), transform=trans,
+                ha="center", va="top", fontsize=9, color="#222222")
+        if d > 0:
+            ax.axvline(24.0 * d, color="#666666", lw=0.8, ls=":", zorder=4)
+    ax.grid(False)
 
-    plat, plon = data["point"]
-    rlat, rlon = data["req"]
-    ax.set_title(f"Time–Height Section · PSL NCEP/NCAR daily fields\n"
-                 f"Point {rlat:.2f}°N {rlon:.2f}°E (PSL grid {plat:g}°N {plon:g}°E) · "
+    _inset(ax, lat0, lon0, coast_segs)
+
+    wl_note = ", ".join(f"{p:g}" for p in lev[::-1])
+    n = data["npts"]
+    ax.set_title(f"Time–Height Section · box average about {lat0:.2f}°N {lon0:.2f}°E\n"
+                 f"Box ±{BOX_LAT:g}° lat × ±{BOX_LON:g}° lon ({n} grid points) · "
                  f"{nt} day{'s' if nt != 1 else ''} = {24 * nt} h",
-                 loc="left", fontsize=11, fontweight="bold", pad=10)
-    rhl = data.get("rh_levels")
-    rh_note = (f" · RH levels in file: {', '.join(f'{p:g}' for p in rhl[::-1])} hPa"
-               if rhl is not None else "")
-    fig.text(0.01, 0.01, "Shading: RH (%) · barbs: wind (kt) · contours: −dθe/dp (K/mb)" + rh_note,
-             fontsize=8, color="#555555")
-    fig.tight_layout(rect=[0, 0.02, 1, 1])
+                 loc="left", fontsize=11, fontweight="bold", pad=12)
+    fig.text(0.075, 0.012,
+             "Shading: wind speed (kt) · barbs: wind (kt) · contours: −dθe/dp (K/mb)\n"
+             f"Daily PSL NCEP/NCAR records; shading, contours and barbs interpolated in time. "
+             f"Wind levels in file: {wl_note} hPa",
+             fontsize=8, color="#444444", va="bottom")
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=200, facecolor="white", bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=200, facecolor="white")
     plt.close(fig)
     buf.seek(0)
     return buf
 
 
-def _rh_cmap():
-    cols = ["#7a4a12", "#b07d3a", "#dcc38f", "#f2ead6", "#c9e8c4", "#7fc27a", "#2f8f3f", "#1a5f2a"]
-    return mcolors.LinearSegmentedColormap.from_list("rh_tw", cols, N=20)
-
-
 def _render(lat, lon, data, pkg, coast_segs, dates, **_kw):
     with _LOCK:
-        return _plot(data, pkg)
+        return _plot(data, pkg, coast_segs)
 
 
 PRODUCTS = {
@@ -293,14 +396,14 @@ PRODUCTS = {
         "title": "Time–Height Section — RH, wind and stability (PSL)",
         "name": "Time–Height",
         "tag": "Hovmöller",
-        "desc": "Pressure–time section at a lat/lon: relative humidity, wind barbs and "
-                "−dθe/dp from NOAA PSL NCEP/NCAR daily fields, for the selected days "
-                "(n days = n × 24 h).",
+        "desc": "Pressure–time section for a box (±2.5° lat, ±5° lon) about a lat/lon, from "
+                "NOAA PSL NCEP/NCAR daily fields: wind speed shading, wind barbs and "
+                "−dθe/dp for the selected days (n days = n × 24 h).",
         "kind": "time_height",
         "level": None,
         "needs_latlon": True,
         "uses_days": True,          # the day count box sets the window length
-        "cb_label": "Relative humidity (%)",
+        "cb_label": "Wind speed (kt)",
     },
 }
 
