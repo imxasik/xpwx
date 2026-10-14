@@ -361,7 +361,7 @@ def _plot(data, pkg, coast_segs):
                  f"Box ±{BOX_LAT:g}° lat × ±{BOX_LON:g}° lon ({n} grid points) · "
                  f"{nt} day{'s' if nt != 1 else ''} = {24 * nt} h",
                  loc="left", fontsize=11, fontweight="bold", pad=12)
-    fig.text(0.975, 0.945, f"Date Range: {days[0]:%d %b %Y} – {days[-1]:%d %b %Y}",
+    fig.text(0.90, 0.90, f"Date: {days[0]:%d %b %Y} – {days[-1]:%d %b %Y}",
              ha="right", va="bottom", fontsize=10.5, fontweight="bold", color="#222222")
     ax.text(0.985, 0.016, "@XPWEATHER", transform=ax.transAxes, fontsize=11, va="bottom",
             ha="right", color="#222211", fontweight="bold", zorder=10,
