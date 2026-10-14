@@ -98,14 +98,17 @@ def _profile(date, lat0, lon0):
 
 
 def _at_levels(lev, values, target):
-    """Values of one variable at the target pressures (matched by value, not by position)."""
-    idx = []
-    for p in target:
-        k = int(np.argmin(np.abs(lev - p)))
-        if abs(lev[k] - p) > 0.5:
-            raise ValueError(f"level {p:g} hPa is not in the file")
-        idx.append(k)
-    return values[idx]
+    """One variable at the target pressures.
+
+    Each file may carry its own set of pressure levels (e.g. PSL's rhum has fewer levels
+    than uwnd). The values are interpolated linearly in ln(p) to the target levels; a
+    target outside the file's range stays NaN. Exact matches return the file value.
+    """
+    lev = np.asarray(lev, dtype=float)
+    values = np.asarray(values, dtype=float)
+    o = np.argsort(lev)
+    return np.interp(np.log(np.asarray(target, dtype=float)), np.log(lev[o]), values[o],
+                     left=np.nan, right=np.nan)
 
 
 def _theta_e(T, rh, p):
@@ -126,6 +129,19 @@ def _stability(theta_e, p):
     return -np.gradient(theta_e, p, axis=0)
 
 
+def _latest_with_values(end, lat0, lon0, max_back=60):
+    """Most recent date on or before ``end`` whose PSL fields have values at the point."""
+    for k in range(max_back):
+        d = end - datetime.timedelta(days=k)
+        try:
+            prof = _profile(d, lat0, lon0)
+        except ValueError:
+            continue
+        if all(np.isfinite(prof[n][1]).any() for n in ("u", "v", "T", "rh")):
+            return d
+    return None
+
+
 def _compute(pkg, dates):
     lat0 = float(pkg["lat"])
     lon0 = float(pkg["lon"]) % 360.0
@@ -135,6 +151,7 @@ def _compute(pkg, dates):
     valid, reasons = [], []
     lev = None
     point = None
+    rh_levels = None
     for d in days:
         try:
             prof = _profile(d, lat0, lon0)
@@ -142,10 +159,15 @@ def _compute(pkg, dates):
                 lev_u = prof["u"][0]
                 lev = np.sort(lev_u[lev_u >= OUT_TOP_HPA - 1e-6])          # ascending, 100 … 1000
                 point = prof["u"][2]
+                rh_levels = np.sort(prof["rh"][0])
             u = _at_levels(prof["u"][0], prof["u"][1], lev)
             v = _at_levels(prof["v"][0], prof["v"][1], lev)
             T = _at_levels(prof["T"][0], prof["T"][1], lev)
             rh = _at_levels(prof["rh"][0], prof["rh"][1], lev)
+            empty = [n for n, a in (("u", u), ("v", v), ("T", T), ("rh", rh))
+                     if not np.isfinite(a).any()]
+            if empty:
+                raise ValueError("PSL file has no values for this date yet")
         except ValueError as e:
             valid.append(False)
             reasons.append(f"{d.isoformat()}: {e}")
@@ -159,8 +181,17 @@ def _compute(pkg, dates):
         rows["stab"].append(_stability(te, lev))
         valid.append(True)
 
-    if lev is None:
-        raise ValueError("no PSL record for the selected days (" + "; ".join(reasons[:2]) + ")")
+    if lev is None or not any(valid):
+        latest = _latest_with_values(days[-1], lat0, lon0)
+        hint = (f" The latest date with PSL values is {latest:%d %b %Y}; "
+                f"choose it as the end date (Manual Date).") if latest else ""
+        raise ValueError("no PSL values for the selected days." + hint +
+                         " (" + "; ".join(reasons[:2]) + ")")
+    if not valid[-1]:
+        latest = _latest_with_values(days[-1], lat0, lon0)
+        hint = (f" The latest date with PSL values is {latest:%d %b %Y}; "
+                f"choose it as the end date (Manual Date).") if latest else ""
+        raise ValueError("the end date has no PSL values yet." + hint)
     nl = lev.size
     nan = np.full(nl, np.nan)
     stack = {k: np.stack([r if r is not None else nan for r in v]) for k, v in rows.items()}
@@ -168,7 +199,7 @@ def _compute(pkg, dates):
         "main": np.zeros((1, 1)),
         "dates": days, "valid": np.array(valid),
         "lev": lev, "rh": stack["rh"], "u": stack["u"], "v": stack["v"], "stab": stack["stab"],
-        "point": point, "req": (lat0, lon0), "reasons": reasons,
+        "point": point, "req": (lat0, lon0), "reasons": reasons, "rh_levels": rh_levels,
     }
     return np.zeros(1), np.zeros(1), data
 
@@ -233,7 +264,10 @@ def _plot(data, pkg):
                  f"Point {rlat:.2f}°N {rlon:.2f}°E (PSL grid {plat:g}°N {plon:g}°E) · "
                  f"{nt} day{'s' if nt != 1 else ''} = {24 * nt} h",
                  loc="left", fontsize=11, fontweight="bold", pad=10)
-    fig.text(0.01, 0.01, "Shading: RH (%) · barbs: wind (kt) · contours: −dθe/dp (K/mb)",
+    rhl = data.get("rh_levels")
+    rh_note = (f" · RH levels in file: {', '.join(f'{p:g}' for p in rhl[::-1])} hPa"
+               if rhl is not None else "")
+    fig.text(0.01, 0.01, "Shading: RH (%) · barbs: wind (kt) · contours: −dθe/dp (K/mb)" + rh_note,
              fontsize=8, color="#555555")
     fig.tight_layout(rect=[0, 0.02, 1, 1])
     buf = io.BytesIO()
