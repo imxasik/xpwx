@@ -107,8 +107,9 @@ def analyze(lat0, lon0, D):
                      (lo_c - MAP_HALF_DEG, lo_c + MAP_HALF_DEG))
     u200, v200 = g["u"][k200], g["v"][k200]
     div200 = core.divergence(u200, v200, lat, lon)
-    du_all, dv_all = core.max_layer_shear_field(g["u"], g["v"], lev)   # pointwise max layer
-    du_map, dv_map = du_all, dv_all
+    # the map shows the layer that is the max shear in the box (shear_box)
+    du_map, dv_map = core.layer_shear_field(g["u"], g["v"], lev,
+                                            shear_box["top_hPa"], shear_box["bottom_hPa"])
     res["map"] = {
         "lat": lat[ia], "lon": lon[io],
         "div200": div200[np.ix_(ia, io)] * 1e5,                # 1e-5 s-1

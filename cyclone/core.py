@@ -203,31 +203,14 @@ def tilt(zeta3d, lev, lat, lon, lat_c, lon_c, levels_hPa, box_deg=3.0):
 # shear
 # ---------------------------------------------------------------------------
 
-def max_layer_shear_field(u3d, v3d, lev, top_hPa=200.0, bottom_hPa=850.0):
-    """Pointwise max-layer shear on the grid.
+def layer_shear_field(u3d, v3d, lev, top_hPa, bottom_hPa):
+    """Pointwise shear of one layer: V(top_hPa) - V(bottom_hPa) on the grid.
 
-    For every grid point, every pair of levels between top_hPa and bottom_hPa is tried;
-    the layer shear is V_top - V_bottom. The pair with the largest magnitude is kept.
     Returns (du, dv) in m/s, each (nlat, nlon).
     """
-    lev = np.asarray(lev, dtype=float)
-    sel = np.where((lev >= top_hPa - 1e-6) & (lev <= bottom_hPa + 1e-6))[0]
-    best_m2 = bu = bv = None
-    for i in sel:                                    # i: bottom (higher pressure)
-        for j in sel:                                # j: top (lower pressure)
-            if lev[j] >= lev[i]:
-                continue
-            du = u3d[j] - u3d[i]
-            dv = v3d[j] - v3d[i]
-            m2 = du * du + dv * dv
-            if best_m2 is None:
-                best_m2, bu, bv = m2, du, dv
-            else:
-                better = m2 > best_m2                # NaN compares False: keeps the earlier pair
-                best_m2 = np.where(better, m2, best_m2)
-                bu = np.where(better, du, bu)
-                bv = np.where(better, dv, bv)
-    return bu, bv
+    kt = level_index(lev, top_hPa)
+    kb = level_index(lev, bottom_hPa)
+    return u3d[kt] - u3d[kb], v3d[kt] - v3d[kb]
 
 
 def box_mean_shear(u3d, v3d, lev, lat, lon, lat_c, lon_c, half_deg=2.5,
