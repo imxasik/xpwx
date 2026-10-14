@@ -204,7 +204,7 @@ def tilt(zeta3d, lev, lat, lon, lat_c, lon_c, levels_hPa, box_deg=3.0):
 # ---------------------------------------------------------------------------
 
 def max_layer_shear_field(u3d, v3d, lev, top_hPa=200.0, bottom_hPa=850.0):
-    """Pointwise max-layer shear on the grid.
+    """Pointwise max shear on the grid.
 
     For every grid point, every pair of levels between top_hPa and bottom_hPa is tried;
     the layer shear is V_top - V_bottom. The pair with the largest magnitude is kept.
@@ -230,39 +230,24 @@ def max_layer_shear_field(u3d, v3d, lev, top_hPa=200.0, bottom_hPa=850.0):
     return bu, bv
 
 
-def box_mean_shear(u3d, v3d, lev, lat, lon, lat_c, lon_c, half_deg=2.5,
-                   top_hPa=200.0, bottom_hPa=850.0, step_deg=0.25):
-    """Maximum layer shear from box-mean winds in a square box centred on (lat_c, lon_c).
+def box_average_shear(du, dv, lat, lon, lat_c, lon_c, half_deg=2.5, step_deg=0.25):
+    """Box average of the pointwise max shear in a square box centred on (lat_c, lon_c).
 
-    The box is exactly +/- half_deg about the centre. The winds at every level between
-    top_hPa and bottom_hPa are averaged over points spaced step_deg inside that box (not
-    snapped to the grid). For every pair of levels inside the window the layer shear is
-    mean(V_top) - mean(V_bottom). The layer with the largest magnitude is the max shear.
+    The box is exactly +/- half_deg about the centre; the pointwise shear is sampled at
+    points spaced step_deg inside it. The speed is the mean of the sampled magnitudes;
+    the vector (and so the arrow direction) is the mean of the sampled vectors.
     """
-    lev = np.asarray(lev, dtype=float)
     n = int(round(2.0 * half_deg / step_deg)) + 1
     off = np.linspace(-half_deg, half_deg, n)
     LA, LO = np.meshgrid(lat_c + off, lon_c + off, indexing="ij")
-    sel = np.where((lev >= top_hPa - 1e-6) & (lev <= bottom_hPa + 1e-6))[0]
-    ub, vb = {}, {}
-    for k in sel:
-        ub[k] = float(np.nanmean(make_sampler(u3d[k], lat, lon)(LA, LO)))
-        vb[k] = float(np.nanmean(make_sampler(v3d[k], lat, lon)(LA, LO)))
-    best = None
-    for i in sel:                                   # i: bottom (higher pressure)
-        for j in sel:                               # j: top (lower pressure)
-            if lev[j] >= lev[i]:
-                continue
-            du, dv = ub[j] - ub[i], vb[j] - vb[i]
-            mag = float(np.hypot(du, dv))
-            if best is None or mag > best["mag"]:
-                best = {"mag": mag, "u_ms": du, "v_ms": dv,
-                        "top_hPa": float(lev[j]), "bottom_hPa": float(lev[i])}
+    us = make_sampler(du, lat, lon)(LA, LO)
+    vs = make_sampler(dv, lat, lon)(LA, LO)
+    u_m, v_m = float(np.nanmean(us)), float(np.nanmean(vs))
+    toward = float((np.degrees(np.arctan2(u_m, v_m)) + 360.0) % 360.0)
     return {
-        "u_ms": best["u_ms"], "v_ms": best["v_ms"],
-        "max_kt": best["mag"] / KT,
-        "top_hPa": best["top_hPa"], "bottom_hPa": best["bottom_hPa"],
-        "dir_from_deg": float((np.degrees(np.arctan2(-best["u_ms"], -best["v_ms"])) + 360.0) % 360.0),
+        "u_ms": u_m, "v_ms": v_m,
+        "max_kt": float(np.nanmean(np.hypot(us, vs)) / KT),     # box average of max shear
+        "toward_deg": toward,
         "box_deg": float(half_deg),
         "lat_lo": float(lat_c - half_deg), "lat_hi": float(lat_c + half_deg),
         "lon_lo": float(lon_c - half_deg), "lon_hi": float(lon_c + half_deg),
