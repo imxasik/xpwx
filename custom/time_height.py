@@ -8,8 +8,8 @@ Box: the average over the grid points within ±2.5° latitude and ±5° longitud
 given centre (lat, lon). The inset map at the top right shows that box.
 
 Layout (time on x, pressure on y, 1000 hPa at the bottom, 100 hPa at the top):
-  * shading  : relative humidity (%)            from rhum
-  * barbs    : wind (kt)                        from uwnd, vwnd
+  * shading  : wind speed (kt), box mean         from uwnd, vwnd
+  * barbs    : wind (kt), every 3 h, every level from uwnd, vwnd
   * contours : stability  −dθe/dp  (K/mb)      from air, rhum (θe by Bolton 1980)
 
 Window: the selected number of days, ending on the app's selected end date, so
@@ -52,7 +52,9 @@ BOX_LON = 5.0                # half-width of the averaging box, degrees longitud
 INSET_LAT = 12.0             # half-size of the inset map, degrees
 INSET_LON = 20.0
 P_TICKS = [1000, 850, 700, 500, 400, 300, 250, 200, 150, 100]
-BARB_LEVELS = [1000, 850, 700, 500, 400, 300, 250, 200, 150, 100]
+SPEED_LEVELS = np.arange(0.0, 75.0, 5.0)   # wind-speed shading bins, kt
+BARB_EVERY_H = 3.0           # barb spacing in time, hours
+BARB_LENGTH = 7.0            # barb shaft length, points
 STAB_LEVELS = [0.025, 0.05, 0.1, 0.2]
 MS_TO_KT = 1.9438444924
 OUT_TOP_HPA = 100.0
@@ -236,8 +238,14 @@ def _compute(pkg, dates):
 # drawing
 # ---------------------------------------------------------------------------
 
-def _rh_cmap():
-    return plt.get_cmap("BrBG", 20)          # brown (dry) → green (moist), reference palette
+def _wind_cmap():
+    """Sequential palette for wind speed: pale blue (calm) → green → yellow → red (strong)."""
+    from matplotlib.colors import LinearSegmentedColormap
+    colours = ["#f2f8ff", "#c6e2ff", "#7fb8e6", "#3f8fd2", "#2a9d8f", "#8ac926",
+               "#e9c46a", "#f4a261", "#e76f51", "#c1121f", "#6a040f"]
+    cmap = LinearSegmentedColormap.from_list("wind_kt", colours, N=len(SPEED_LEVELS) - 1)
+    cmap.set_over(colours[-1])
+    return cmap
 
 
 def _series_interp(x, y, tg):
@@ -310,38 +318,31 @@ def _plot(data, pkg, coast_segs):
     tg = np.linspace(0.0, 24.0 * nt, 24 * nt * 2 + 1)    # 30-minute grid
     yl = np.log(lev)                                    # pressure axis in ln p
 
-    rh = _interp_matrix(x_rec, data["rh"], tg)
+    uu = _interp_matrix(x_rec, data["u"], tg) * MS_TO_KT     # wind speed (kt) from the box means
+    vv = _interp_matrix(x_rec, data["v"], tg) * MS_TO_KT
+    spd = np.hypot(uu, vv)
     stab = _interp_matrix(x_rec, data["stab"], tg)
 
     fig = plt.figure(figsize=(14, 8.6), facecolor="white")
     ax = fig.add_axes([0.075, 0.17, 0.80, 0.72])
-    levels = np.arange(0, 101, 5)
-    cf = ax.contourf(tg, yl, rh.T, levels=levels, cmap=_rh_cmap(), extend="neither")
+    levels = SPEED_LEVELS
+    cmap = _wind_cmap()
+    cf = ax.contourf(tg, yl, spd.T, levels=levels, cmap=cmap, extend="max")
     cax = fig.add_axes([0.895, 0.17, 0.012, 0.72])
-    cb = fig.colorbar(cf, cax=cax, ticks=list(range(0, 101, 10)))
-    cb.set_label("Relative humidity (%)", fontsize=10)
+    cb = fig.colorbar(cf, cax=cax, ticks=list(range(0, int(SPEED_LEVELS[-1]) + 1, 10)))
+    cb.set_label("Wind speed (kt)", fontsize=10)
 
     if np.isfinite(stab).sum() > 4 and np.nanmax(stab) >= STAB_LEVELS[0]:
         cs = ax.contour(tg, yl, stab.T, levels=STAB_LEVELS, colors="#1aa7b8", linewidths=1.3)
         ax.clabel(cs, fmt="%g", fontsize=8, inline=True, inline_spacing=6)
 
-    # wind barbs in knots, every 6 h (interpolated), on the standard levels
-    tb = np.arange(0.0, 24.0 * nt + 1e-6, 6.0)
-    bl = [p for p in BARB_LEVELS if lev.min() - 1e-6 <= p <= lev.max() + 1e-6]
-    li = [int(np.argmin(np.abs(lev - p))) for p in bl]
-    u_b = _interp_matrix(x_rec, data["u"][:, li], tb) * MS_TO_KT
-    v_b = _interp_matrix(x_rec, data["v"][:, li], tb) * MS_TO_KT
-    X, Y = np.meshgrid(tb, np.log(lev[li]), indexing="ij")
-    ax.barbs(X, Y, u_b, v_b, length=6.0, linewidth=0.7, color="#111111", pivot="middle",
-             sizes=dict(spacing=0.14, height=0.42), zorder=6)
-
-    # RH is only in the file down to its top level; say so where the shading stops
-    rh_top = float(data["rh_levels"].min()) if data["rh_levels"] is not None else lev.min()
-    if rh_top > lev.min() + 1e-6:
-        ax.text(0.5 * 24.0 * nt, np.log(0.5 * (rh_top + lev.min())),
-                f"no RH above {rh_top:g} hPa in the PSL file", ha="center", va="center",
-                fontsize=8, color="#555555", style="italic", zorder=12,
-                bbox=dict(fc="white", ec="none", alpha=0.9, pad=1.5))
+    # wind barbs in knots: every 3 h (interpolated) on every wind level of the file
+    tb = np.arange(0.0, 24.0 * nt + 1e-6, BARB_EVERY_H)
+    u_b = _interp_matrix(x_rec, data["u"], tb) * MS_TO_KT
+    v_b = _interp_matrix(x_rec, data["v"], tb) * MS_TO_KT
+    X, Y = np.meshgrid(tb, np.log(lev), indexing="ij")
+    ax.barbs(X, Y, u_b, v_b, length=BARB_LENGTH, linewidth=0.9, color="#111111", pivot="middle",
+             sizes=dict(emptybarb=0.12, spacing=0.14, height=0.45), zorder=6)
 
     ax.set_ylim(np.log(lev.max()), np.log(lev.min()))
     ax.set_yticks(np.log([p for p in P_TICKS if lev.min() <= p <= lev.max()]))
@@ -366,17 +367,16 @@ def _plot(data, pkg, coast_segs):
 
     _inset(ax, lat0, lon0, coast_segs)
 
-    rhl = data["rh_levels"]
-    rh_note = (", ".join(f"{p:g}" for p in rhl[::-1]) if rhl is not None else "—")
+    wl_note = ", ".join(f"{p:g}" for p in lev[::-1])
     n = data["npts"]
     ax.set_title(f"Time–Height Section · box average about {lat0:.2f}°N {lon0:.2f}°E\n"
                  f"Box ±{BOX_LAT:g}° lat × ±{BOX_LON:g}° lon ({n} grid points) · "
                  f"{nt} day{'s' if nt != 1 else ''} = {24 * nt} h",
                  loc="left", fontsize=11, fontweight="bold", pad=12)
     fig.text(0.075, 0.012,
-             "Shading: RH (%) · barbs: wind (kt) · contours: −dθe/dp (K/mb)\n"
+             "Shading: wind speed (kt) · barbs: wind (kt) · contours: −dθe/dp (K/mb)\n"
              f"Daily PSL NCEP/NCAR records; shading, contours and barbs interpolated in time. "
-             f"RH levels in file: {rh_note} hPa",
+             f"Wind levels in file: {wl_note} hPa",
              fontsize=8, color="#444444", va="bottom")
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, facecolor="white")
@@ -397,13 +397,13 @@ PRODUCTS = {
         "name": "Time–Height",
         "tag": "Hovmöller",
         "desc": "Pressure–time section for a box (±2.5° lat, ±5° lon) about a lat/lon, from "
-                "NOAA PSL NCEP/NCAR daily fields: relative humidity, wind barbs and "
+                "NOAA PSL NCEP/NCAR daily fields: wind speed shading, wind barbs and "
                 "−dθe/dp for the selected days (n days = n × 24 h).",
         "kind": "time_height",
         "level": None,
         "needs_latlon": True,
         "uses_days": True,          # the day count box sets the window length
-        "cb_label": "Relative humidity (%)",
+        "cb_label": "Wind speed (kt)",
     },
 }
 
