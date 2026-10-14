@@ -36,7 +36,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 _LOCK = threading.Lock()     # matplotlib's pyplot state is global
-_DAY_CACHE = {}              # (PSL root, date) -> per-day fields on all levels
+_PROFILE_CACHE = {}          # (PSL root, date, lat, lon) -> profiles at one grid point
 
 VARS = {"uwnd": "u", "vwnd": "v", "air": "T", "rhum": "rh"}
 P_TICKS = [1000, 850, 700, 500, 300, 200, 100]
@@ -60,37 +60,52 @@ def _unpack(ds, name, t):
     return f
 
 
-def _day(date):
-    """Fields for one date on the levels >= OUT_TOP_HPA, ascending pressure.
+def _profile(date, lat0, lon0):
+    """Each variable at the grid point nearest (lat0, lon0) on ``date``.
 
-    Returns dict with lev, lat, lon, u, v, T, rh (nlev, nlat, nlon), or None if the date
-    is not in the PSL record.
+    Every variable is read with its own time, level and lat/lon coordinates, so the
+    files are never mixed by position. Returns {"u": (lev, values, (lat, lon)), ...},
+    or raises ValueError with the reason if the date is not in the record.
     """
-    key = (config.PSL, date.isoformat())
+    key = (config.PSL, date.isoformat(), round(lat0, 4), round(lon0, 4))
     with _LOCK:
-        if key in _DAY_CACHE:
-            return _DAY_CACHE[key]
-        out = None
+        if key in _PROFILE_CACHE:
+            out = _PROFILE_CACHE[key]
+            if isinstance(out, str):
+                raise ValueError(out)
+            return out
         try:
-            fields, lev = {}, None
+            out = {}
             for name, short in VARS.items():
                 ds = pdata.open_remote(f"{config.PSL}/{name}.{date.year}.nc")
                 t = pdata._time_idx(ds, date)
-                if lev is None:
-                    lev = np.asarray(ds["level"].data, dtype=float)
-                    lat = np.asarray(ds["lat"].data, dtype=float)
-                    lon = np.asarray(ds["lon"].data, dtype=float)
-                fields[short] = _unpack(ds, name, t)
-            ol = np.argsort(lev)
-            oa = np.argsort(lat)
-            keep = lev[ol] >= OUT_TOP_HPA - 1e-6
-            out = {"lev": lev[ol][keep], "lat": lat[oa], "lon": lon}
-            for k in fields:
-                out[k] = fields[k][ol][keep][:, oa, :]
-        except ValueError:
-            out = None                     # date not present in the record
-        _DAY_CACHE[key] = out
+                lev = np.asarray(ds["level"].data, dtype=float)
+                lat = np.asarray(ds["lat"].data, dtype=float)
+                lon = np.asarray(ds["lon"].data, dtype=float)
+                i = int(np.argmin(np.abs(lat - lat0)))
+                j = int(np.argmin(np.abs((lon - lon0 + 180.0) % 360.0 - 180.0)))
+                raw = _unpack(ds, name, t)
+                out[short] = (lev, raw[:, i, j], (float(lat[i]), float(lon[j])))
+        except ValueError as e:
+            _PROFILE_CACHE[key] = str(e)
+            raise
+        except Exception as e:                       # pragma: no cover - reported to the user
+            msg = f"{name}.{date.year}: {type(e).__name__}: {e}"
+            _PROFILE_CACHE[key] = msg
+            raise ValueError(msg) from e
+        _PROFILE_CACHE[key] = out
         return out
+
+
+def _at_levels(lev, values, target):
+    """Values of one variable at the target pressures (matched by value, not by position)."""
+    idx = []
+    for p in target:
+        k = int(np.argmin(np.abs(lev - p)))
+        if abs(lev[k] - p) > 0.5:
+            raise ValueError(f"level {p:g} hPa is not in the file")
+        idx.append(k)
+    return values[idx]
 
 
 def _theta_e(T, rh, p):
@@ -117,32 +132,35 @@ def _compute(pkg, dates):
     days = list(dates)                       # the selected window, n_days long
 
     rows = {"rh": [], "u": [], "v": [], "stab": []}
-    valid = []
-    lev = lat = lon = None
-    ilat = jlon = None
+    valid, reasons = [], []
+    lev = None
+    point = None
     for d in days:
-        f = _day(d)
-        if f is None:
+        try:
+            prof = _profile(d, lat0, lon0)
+            if lev is None:
+                lev_u = prof["u"][0]
+                lev = np.sort(lev_u[lev_u >= OUT_TOP_HPA - 1e-6])          # ascending, 100 … 1000
+                point = prof["u"][2]
+            u = _at_levels(prof["u"][0], prof["u"][1], lev)
+            v = _at_levels(prof["v"][0], prof["v"][1], lev)
+            T = _at_levels(prof["T"][0], prof["T"][1], lev)
+            rh = _at_levels(prof["rh"][0], prof["rh"][1], lev)
+        except ValueError as e:
             valid.append(False)
+            reasons.append(f"{d.isoformat()}: {e}")
             for k in rows:
                 rows[k].append(None)
             continue
-        if lev is None:
-            lev, lat, lon = f["lev"], f["lat"], f["lon"]
-            ilat = int(np.argmin(np.abs(lat - lat0)))
-            dl = np.abs((lon - lon0 + 180.0) % 360.0 - 180.0)
-            jlon = int(np.argmin(dl))
-        T = f["T"][:, ilat, jlon]
-        rh = f["rh"][:, ilat, jlon]
         te = _theta_e(T, rh, lev)
         rows["rh"].append(rh)
-        rows["u"].append(f["u"][:, ilat, jlon])
-        rows["v"].append(f["v"][:, ilat, jlon])
+        rows["u"].append(u)
+        rows["v"].append(v)
         rows["stab"].append(_stability(te, lev))
         valid.append(True)
 
     if lev is None:
-        raise ValueError("no PSL record for the selected days")
+        raise ValueError("no PSL record for the selected days (" + "; ".join(reasons[:2]) + ")")
     nl = lev.size
     nan = np.full(nl, np.nan)
     stack = {k: np.stack([r if r is not None else nan for r in v]) for k, v in rows.items()}
@@ -150,7 +168,7 @@ def _compute(pkg, dates):
         "main": np.zeros((1, 1)),
         "dates": days, "valid": np.array(valid),
         "lev": lev, "rh": stack["rh"], "u": stack["u"], "v": stack["v"], "stab": stack["stab"],
-        "point": (float(lat[ilat]), float(lon[jlon])), "req": (lat0, lon0),
+        "point": point, "req": (lat0, lon0), "reasons": reasons,
     }
     return np.zeros(1), np.zeros(1), data
 
@@ -247,6 +265,7 @@ PRODUCTS = {
         "kind": "time_height",
         "level": None,
         "needs_latlon": True,
+        "uses_days": True,          # the day count box sets the window length
         "cb_label": "Relative humidity (%)",
     },
 }

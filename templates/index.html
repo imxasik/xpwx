@@ -489,15 +489,17 @@
     DL.setAttribute("download", id + ".png");
     closeMenu();
     const p = P(id);
-    setLatLonVisible(!!(p && p.needs_latlon));
+    setLatLonVisible(!!(p && p.needs_latlon), p);
     if (p && p.needs_latlon) { askLatLon(p); return; }
     run();
   }
 
   // Products that need a location: show the lat/lon fields and wait for "Map".
-  function setLatLonVisible(on){
+  function setLatLonVisible(on, p){
     document.getElementById("latlon-row").style.display = on ? "flex" : "none";
-    document.getElementById("ndays-field").style.display = on ? "none" : "";
+    // the day-count box is hidden for lat/lon products unless the product uses the window length
+    const showDays = !on || !!(p && p.uses_days);
+    document.getElementById("ndays-field").style.display = showDays ? "" : "none";
   }
   function askLatLon(p){
     IMG.style.display = "none"; DL.style.display = "none"; PH.style.display = "none";
