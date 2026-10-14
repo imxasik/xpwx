@@ -219,35 +219,45 @@ def _panel_A(ax, fig, res, coast_segs):
     _map_axes(ax, lat, lon, "A  200-hPa divergence, outflow streamlines and heights (dam)")
 
 
+def _layer_txt(sb):
+    """Dynamic max-shear layer of the box, e.g. '300–500 hPa'."""
+    return f"{sb['top_hPa']:g}–{sb['bottom_hPa']:g} hPa"
+
+
 def _panel_B(ax, fig, res, coast_segs):
     m = res["map"]
     lat, lon = m["lat"], m["lon"]
     lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
-    sb = res["shear_box"]                                # box average of the max shear
-    sm = m["shear_mag"]                                  # pointwise max shear over the data
+    sb = res["shear_box"]                                # max layer of the box-mean shear
+    layer = _layer_txt(sb)
+    sm = m["shear_mag"]                                  # shear magnitude over the map, in that layer
     pm = _filled(ax, lon, lat, sm, "YlOrRd", 0.0, float(np.nanmax(sm)))
-    cb = _cbar(fig, pm, ax, "max shear magnitude, 200–850 hPa (kt)")
+    cb = _cbar(fig, pm, ax, f"max-layer shear magnitude, {layer} (kt)")
     step = max(1, lat.size // 14)
     ax.quiver(lon[::step], lat[::step], m["shear_u"][::step, ::step], m["shear_v"][::step, ::step],
               color="#1f1f1f", scale=12.0 * max(_symlim(m["shear_u"]), _symlim(m["shear_v"])), width=0.003)
     h = sb["box_deg"]
     ax.add_patch(Rectangle((sb["lon_lo"], sb["lat_lo"]), 2 * h, 2 * h, fill=False,
                            ec="#1f1f1f", lw=1.5, ls="--", zorder=8))
-    # box-average max shear: arrow from the centre along the mean vector, speed beside its tip
+    # box-mean max-layer shear: arrow from the centre along the mean vector
     mag = max(float(np.hypot(sb["u_ms"], sb["v_ms"])), 1e-9)
     ux, vy = sb["u_ms"] / mag, sb["v_ms"] / mag
     L = 0.8 * h
     tx, ty = lon_c + ux * L, lat_c + vy * L
     _arrow(ax, lon_c, lat_c, tx, ty, "#111111", lw=1.8, zorder=7, head_length=0.55, head_width=0.22)
-    ax.text(tx + 0.25, ty + 0.25, f"{sb['max_kt']:.1f} kt", fontsize=8, fontweight="bold",
-            color="#111111", zorder=12,
+    # speed label set just beyond the arrow head, on the side away from the shaft, so it
+    # does not sit on top of the arrow
+    ha = "left" if ux > 0.3 else ("right" if ux < -0.3 else "center")
+    va = "bottom" if vy > 0.3 else ("top" if vy < -0.3 else "center")
+    ax.text(tx + 0.3 * ux, ty + 0.3 * vy, f"{sb['max_kt']:.1f} kt", fontsize=8, fontweight="bold",
+            color="#111111", zorder=12, ha=ha, va=va,
             bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#666666", lw=0.6))
     _mark_center(ax, lat_c, lon_c)
-    _box(ax, f"box-average max shear: {sb['max_kt']:.1f} kt\n"
+    _box(ax, f"Box-Mean Shear ({layer}): {sb['max_kt']:.1f} kt\n"
              f"box {sb['lat_lo']:g}–{sb['lat_hi']:g}°N, {sb['lon_lo']:g}–{sb['lon_hi']:g}°E (±{h:g}°)\n"
              f"arrow: shear toward {sb['toward_deg']:.0f}°")
     _outlines(ax, coast_segs, lon[0], lon[-1], lat[0], lat[-1])
-    _map_axes(ax, lat, lon, f"B  Max shear, 200–850 hPa (pointwise; box average ±{h:g}°)")
+    _map_axes(ax, lat, lon, f"B  Max-Layer Shear, {layer}  (layer from box ±{h:g}° mean)")
     return cb
 
 
@@ -291,7 +301,7 @@ def _panel_C_tilt(ax, fig, res, coast_segs):
             bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=LEVEL_COLOURS[850], lw=0.6))
 
     # 850 -> 200 hPa shear arrow from the centre, with the downshear / upshear sides
-    sh = res["shear_box"]                                 # max-layer shear, box mean about the centre
+    sh = res["shear_box"]                                 # max-layer shear of the box mean about the centre
     mag = max(float(np.hypot(sh["u_ms"], sh["v_ms"])), 1e-9)
     ux, vy = sh["u_ms"] / mag, sh["v_ms"] / mag
     half = 0.5 * (to[-1] - to[0])
@@ -300,7 +310,7 @@ def _panel_C_tilt(ax, fig, res, coast_segs):
     tail = (lon_c - ux * 0.55 * Lg, lat_c - vy * 0.55 * Lg)
     _arrow(ax, lon_c, lat_c, tip[0], tip[1], "#111111", lw=1.8, zorder=9,
            head_length=0.55, head_width=0.22)                # under the centre dot
-    _box(ax, f"box-average max shear: {sh['max_kt']:.1f} kt\n"
+    _box(ax, f"Box-Mean Shear ({_layer_txt(sh)}): {sh['max_kt']:.1f} kt\n"
              f"(box ±{sh['box_deg']:g}° about the centre)",
          loc="upper left")
     _outlines(ax, coast_segs, to[0], to[-1], tl[0], tl[-1])

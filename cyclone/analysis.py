@@ -5,8 +5,10 @@ cyclonic vorticity maximum within CENTER_BOX_DEG of the nominal centre on D. The
 centres on D-1 and D+1 are searched within TRACK_BOX_DEG of the D centre. Motion
 is the displacement between them over two days.
 
-Shear: the max-layer shear (the level pair between 200 and 850 hPa with the largest
-magnitude), pointwise on the maps and averaged in a box about the centre (core.box_average_shear).
+Shear: the max-layer shear is the level pair between 200 and 850 hPa whose box-mean shear
+over the box about the centre is largest (core.box_max_layer). That layer is then used
+for the whole map: its wind shear vector is drawn and its magnitude shaded (core.layer_shear_field).
+The box arrow and value are the box-mean vector of the same layer.
 
 Search boxes, radii and the annulus widths are analysis parameters declared
 below. Physical constants live in core.py.
@@ -66,9 +68,10 @@ def analyze(lat0, lon0, D):
     tilt = [{"hPa": 850.0, "lat": la_c, "lon": lo_c, "at_edge": edge}]
     tilt += core.tilt(zeta3d, lev, lat, lon, la_c, lo_c, TILT_LEVELS, box_deg=TILT_BOX_DEG)
 
-    # pointwise max shear over the data, and its average in the box on the centre (la_c, lo_c)
-    du_all, dv_all = core.max_layer_shear_field(g["u"], g["v"], lev)
-    shear_box = core.box_average_shear(du_all, dv_all, lat, lon, la_c, lo_c, half_deg=SHEAR_BOX_DEG)
+    # max layer: the level pair whose box-mean shear about the centre (la_c, lo_c) is largest
+    shear_box = core.box_max_layer(g["u"], g["v"], lat, lon, lev, la_c, lo_c, half_deg=SHEAR_BOX_DEG)
+    # the same layer over the whole map
+    du_map, dv_map = core.layer_shear_field(g["u"], g["v"], lev, shear_box["top_hPa"], shear_box["bottom_hPa"])
 
     # --- sections through the centre --------------------------------------
     vt, y_tan = core.tangential_wind(g["u"], g["v"], lat, lon, la_c, lo_c)
@@ -108,7 +111,6 @@ def analyze(lat0, lon0, D):
                      (lo_c - MAP_HALF_DEG, lo_c + MAP_HALF_DEG))
     u200, v200 = g["u"][k200], g["v"][k200]
     div200 = core.divergence(u200, v200, lat, lon)
-    du_map, dv_map = du_all, dv_all                      # map: pointwise max shear
     res["map"] = {
         "lat": lat[ia], "lon": lon[io],
         "div200": div200[np.ix_(ia, io)] * 1e5,                # 1e-5 s-1
