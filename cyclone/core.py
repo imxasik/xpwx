@@ -203,63 +203,66 @@ def tilt(zeta3d, lev, lat, lon, lat_c, lon_c, levels_hPa, box_deg=3.0):
 # shear
 # ---------------------------------------------------------------------------
 
-def deep_shear(u3d, v3d, lev, lat, lon, lat_c, lon_c, box_deg=2.5,
-               lo_hPa=850.0, hi_hPa=200.0, step_deg=0.25):
-    """Deep-layer shear (hi minus lo) inside a square box around the centre.
+def max_layer_shear_field(u3d, v3d, lev, top_hPa=200.0, bottom_hPa=850.0):
+    """Pointwise max-layer shear on the grid.
 
-    The box runs +/- box_deg in latitude and longitude from (lat_c, lon_c). The
-    arrow used for the figures is the shear vector at the point of largest
-    |V_hi - V_lo| inside the box (not a fixed-level or annulus-mean difference).
+    For every grid point, every pair of levels between top_hPa and bottom_hPa is tried;
+    the layer shear is V_top - V_bottom. The pair with the largest magnitude is kept.
+    Returns (du, dv) in m/s, each (nlat, nlon).
     """
-    kl = level_index(lev, lo_hPa)
-    kh = level_index(lev, hi_hPa)
-    n = int(round(2.0 * box_deg / step_deg)) + 1
-    off = np.linspace(-box_deg, box_deg, n)
-    pla, plo = np.meshgrid(lat_c + off, lon_c + off, indexing="ij")
-    ul = make_sampler(u3d[kl], lat, lon)(pla, plo)
-    vl = make_sampler(v3d[kl], lat, lon)(pla, plo)
-    uh = make_sampler(u3d[kh], lat, lon)(pla, plo)
-    vh = make_sampler(v3d[kh], lat, lon)(pla, plo)
-    du, dv = uh - ul, vh - vl
-    pt = np.hypot(du, dv)
-    x, y = latlon_to_km(lat_c, lon_c, pla, plo)
-    R = np.hypot(x, y)
-    masked = np.where(np.isfinite(pt), pt, -np.inf)
-    i, j = np.unravel_index(np.argmax(masked), masked.shape)
-    mu, mv = float(du[i, j]), float(dv[i, j])
-    return {
-        "u_ms": mu, "v_ms": mv,                              # max-shear vector (m/s)
-        "mag_kt": float(np.hypot(mu, mv) / KT),
-        "dir_from_deg": float((np.degrees(np.arctan2(-mu, -mv)) + 360.0) % 360.0),
-        "max_kt": float(np.hypot(mu, mv) / KT),
-        "max_r_km": float(R[i, j]),
-        "max_lat": float(pla[i, j]), "max_lon": float(plo[i, j]),
-        "box_deg": float(box_deg),
-        "point_mag_kt": pt / KT, "R_km": R, "x_km": x, "y_km": y,
-    }
+    lev = np.asarray(lev, dtype=float)
+    sel = np.where((lev >= top_hPa - 1e-6) & (lev <= bottom_hPa + 1e-6))[0]
+    best_m2 = bu = bv = None
+    for i in sel:                                    # i: bottom (higher pressure)
+        for j in sel:                                # j: top (lower pressure)
+            if lev[j] >= lev[i]:
+                continue
+            du = u3d[j] - u3d[i]
+            dv = v3d[j] - v3d[i]
+            m2 = du * du + dv * dv
+            if best_m2 is None:
+                best_m2, bu, bv = m2, du, dv
+            else:
+                better = m2 > best_m2                # NaN compares False: keeps the earlier pair
+                best_m2 = np.where(better, m2, best_m2)
+                bu = np.where(better, du, bu)
+                bv = np.where(better, dv, bv)
+    return bu, bv
 
 
 def box_mean_shear(u3d, v3d, lev, lat, lon, lat_c, lon_c, half_deg=2.5,
-                   lo_hPa=850.0, hi_hPa=200.0, step_deg=0.25):
-    """Deep-layer shear from the box-mean winds in a square box centred on (lat_c, lon_c).
+                   top_hPa=200.0, bottom_hPa=850.0, step_deg=0.25):
+    """Maximum layer shear from box-mean winds in a square box centred on (lat_c, lon_c).
 
-    The box is exactly +/- half_deg about the centre. The winds are sampled at points
-    spaced step_deg inside that exact box (not snapped to the grid), averaged, and the
-    shear is mean(V_hi) - mean(V_lo).
+    The box is exactly +/- half_deg about the centre. The winds at every level between
+    top_hPa and bottom_hPa are averaged over points spaced step_deg inside that box (not
+    snapped to the grid). For every pair of levels inside the window the layer shear is
+    mean(V_top) - mean(V_bottom). The layer with the largest magnitude is the max shear.
     """
-    kl = level_index(lev, lo_hPa)
-    kh = level_index(lev, hi_hPa)
+    lev = np.asarray(lev, dtype=float)
     n = int(round(2.0 * half_deg / step_deg)) + 1
     off = np.linspace(-half_deg, half_deg, n)
     LA, LO = np.meshgrid(lat_c + off, lon_c + off, indexing="ij")
-    du = float(np.nanmean(make_sampler(u3d[kh], lat, lon)(LA, LO))
-               - np.nanmean(make_sampler(u3d[kl], lat, lon)(LA, LO)))
-    dv = float(np.nanmean(make_sampler(v3d[kh], lat, lon)(LA, LO))
-               - np.nanmean(make_sampler(v3d[kl], lat, lon)(LA, LO)))
+    sel = np.where((lev >= top_hPa - 1e-6) & (lev <= bottom_hPa + 1e-6))[0]
+    ub, vb = {}, {}
+    for k in sel:
+        ub[k] = float(np.nanmean(make_sampler(u3d[k], lat, lon)(LA, LO)))
+        vb[k] = float(np.nanmean(make_sampler(v3d[k], lat, lon)(LA, LO)))
+    best = None
+    for i in sel:                                   # i: bottom (higher pressure)
+        for j in sel:                               # j: top (lower pressure)
+            if lev[j] >= lev[i]:
+                continue
+            du, dv = ub[j] - ub[i], vb[j] - vb[i]
+            mag = float(np.hypot(du, dv))
+            if best is None or mag > best["mag"]:
+                best = {"mag": mag, "u_ms": du, "v_ms": dv,
+                        "top_hPa": float(lev[j]), "bottom_hPa": float(lev[i])}
     return {
-        "u_ms": du, "v_ms": dv,
-        "max_kt": float(np.hypot(du, dv) / KT),
-        "dir_from_deg": float((np.degrees(np.arctan2(-du, -dv)) + 360.0) % 360.0),
+        "u_ms": best["u_ms"], "v_ms": best["v_ms"],
+        "max_kt": best["mag"] / KT,
+        "top_hPa": best["top_hPa"], "bottom_hPa": best["bottom_hPa"],
+        "dir_from_deg": float((np.degrees(np.arctan2(-best["u_ms"], -best["v_ms"])) + 360.0) % 360.0),
         "box_deg": float(half_deg),
         "lat_lo": float(lat_c - half_deg), "lat_hi": float(lat_c + half_deg),
         "lon_lo": float(lon_c - half_deg), "lon_hi": float(lon_c + half_deg),

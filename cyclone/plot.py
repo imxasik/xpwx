@@ -226,19 +226,25 @@ def _panel_B(ax, fig, res, coast_segs):
     sb = res["shear_box"]                                # box mean about the input point
     sm = m["shear_mag"]
     pm = _filled(ax, lon, lat, sm, "YlOrRd", 0.0, float(np.nanmax(sm)))
-    cb = _cbar(fig, pm, ax, "850–200 hPa shear magnitude (kt)")
+    cb = _cbar(fig, pm, ax, "max-layer shear magnitude, 200–850 hPa (kt)")
     step = max(1, lat.size // 14)
     ax.quiver(lon[::step], lat[::step], m["shear_u"][::step, ::step], m["shear_v"][::step, ::step],
               color="#1f1f1f", scale=12.0 * max(_symlim(m["shear_u"]), _symlim(m["shear_v"])), width=0.003)
     h = sb["box_deg"]
     ax.add_patch(Rectangle((sb["lon_lo"], sb["lat_lo"]), 2 * h, 2 * h, fill=False,
                            ec="#1f1f1f", lw=1.5, ls="--", zorder=8))
+    # direction of the box-mean shear vector, drawn from the centre (points downshear)
+    mag = max(float(np.hypot(sb["u_ms"], sb["v_ms"])), 1e-9)
+    ux, vy = sb["u_ms"] / mag, sb["v_ms"] / mag
+    toward = (np.degrees(np.arctan2(sb["u_ms"], sb["v_ms"])) + 360.0) % 360.0
+    L = 0.8 * h
+    _arrow(ax, lon_c, lat_c, lon_c + ux * L, lat_c + vy * L, "#111111", lw=2.4, zorder=11)
     _mark_center(ax, lat_c, lon_c)
-    _box(ax, f"box-mean 850–200 hPa shear: {sb['max_kt']:.1f} kt\n"
+    _box(ax, f"box-mean max shear {sb['top_hPa']:.0f}–{sb['bottom_hPa']:.0f} hPa: {sb['max_kt']:.1f} kt\n"
              f"box {sb['lat_lo']:g}–{sb['lat_hi']:g}°N, {sb['lon_lo']:g}–{sb['lon_hi']:g}°E (±{h:g}°)\n"
-             f"shear vector from {sb['dir_from_deg']:.0f}°")
+             f"arrow: shear toward {toward:.0f}°")
     _outlines(ax, coast_segs, lon[0], lon[-1], lat[0], lat[-1])
-    _map_axes(ax, lat, lon, f"B  Deep-layer shear 850–200 hPa (box mean, ±{h:g}°)")
+    _map_axes(ax, lat, lon, f"B  Max-layer shear, 200–850 hPa (box mean ±{h:g}°)")
     return cb
 
 
@@ -282,7 +288,7 @@ def _panel_C_tilt(ax, fig, res, coast_segs):
             bbox=dict(boxstyle="round,pad=0.2", fc="white", ec=LEVEL_COLOURS[850], lw=0.6))
 
     # 850 -> 200 hPa shear arrow from the centre, with the downshear / upshear sides
-    sh = res["shear"]
+    sh = res["shear_box"]                                 # max-layer shear, box mean about the centre
     mag = max(float(np.hypot(sh["u_ms"], sh["v_ms"])), 1e-9)
     ux, vy = sh["u_ms"] / mag, sh["v_ms"] / mag
     half = 0.5 * (to[-1] - to[0])
@@ -290,8 +296,8 @@ def _panel_C_tilt(ax, fig, res, coast_segs):
     tip = (lon_c + ux * Lg, lat_c + vy * Lg)
     tail = (lon_c - ux * 0.55 * Lg, lat_c - vy * 0.55 * Lg)
     _arrow(ax, lon_c, lat_c, tip[0], tip[1], "#111111", lw=2.4, zorder=11)
-    _box(ax, f"850→200 hPa shear arrow: {sh['max_kt']:.1f} kt\n"
-             f"(max inside ±{sh['box_deg']:g}° box; square = point of max shear)",
+    _box(ax, f"max-layer shear {sh['top_hPa']:.0f}–{sh['bottom_hPa']:.0f} hPa: {sh['max_kt']:.1f} kt\n"
+             f"(box mean, ±{sh['box_deg']:g}° about the centre)",
          loc="upper left")
     _outlines(ax, coast_segs, to[0], to[-1], tl[0], tl[-1])
     _map_axes(ax, tl, to, "C  Vortex tilt: 850-hPa centre, 700 · 500 · 300 · 200 hPa centres")
