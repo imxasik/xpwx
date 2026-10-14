@@ -240,11 +240,11 @@ def _panel_B(ax, fig, res, coast_segs):
     L = 0.8 * h
     _arrow(ax, lon_c, lat_c, lon_c + ux * L, lat_c + vy * L, "#111111", lw=2.4, zorder=11)
     _mark_center(ax, lat_c, lon_c)
-    _box(ax, f"box-mean 850–200 hPa shear: {sb['max_kt']:.1f} kt\n"
+    _box(ax, f"box-mean max shear {sb['top_hPa']:.0f}–{sb['bottom_hPa']:.0f} hPa: {sb['max_kt']:.1f} kt\n"
              f"box {sb['lat_lo']:g}–{sb['lat_hi']:g}°N, {sb['lon_lo']:g}–{sb['lon_hi']:g}°E (±{h:g}°)\n"
              f"arrow: shear toward {toward:.0f}°")
     _outlines(ax, coast_segs, lon[0], lon[-1], lat[0], lat[-1])
-    _map_axes(ax, lat, lon, f"B  Deep-layer shear 850–200 hPa (box mean, ±{h:g}°)")
+    _map_axes(ax, lat, lon, f"B  Deep-layer max shear, 200–850 hPa (box mean, ±{h:g}°)")
     return cb
 
 
