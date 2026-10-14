@@ -4,7 +4,7 @@ Drop-in addon: no core file is changed. Data come from the project's NOAA PSL
 NCEP/NCAR files (``pro.config.PSL``), read with ``pro.data.open_remote`` like the
 other products.
 
-Box: the average over the grid points within ±2.5° latitude and ±5° longitude of the
+Box: the average over the grid points within ±5° latitude and ±10° longitude of the
 given centre (lat, lon). The inset map at the top right shows that box.
 
 Layout (time on x, pressure on y, 1000 hPa at the bottom, 100 hPa at the top):
@@ -46,8 +46,8 @@ _LOCK = threading.Lock()     # matplotlib's pyplot state is global
 _PROFILE_CACHE = {}          # (PSL root, date, lat, lon) -> box-mean profiles
 
 VARS = {"uwnd": "u", "vwnd": "v"}
-BOX_LAT = 2.5                # half-width of the averaging box, degrees latitude
-BOX_LON = 5.0                # half-width of the averaging box, degrees longitude
+BOX_LAT = 5.0                # half-width of the averaging box, degrees latitude
+BOX_LON = 10.0               # half-width of the averaging box, degrees longitude
 INSET_LAT = 12.0             # half-size of the inset map, degrees
 INSET_LON = 20.0
 P_TICKS = [1000, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]     # Y-axis labels
@@ -163,6 +163,22 @@ def _levels_for_file(lev_file):
     return np.unique(np.concatenate([base, extra]))
 
 
+def _fill_missing(lev, vals):
+    """Fill levels with no value (NaN) inside the file's range by linear interpolation in
+    ln(p) between the nearest levels that have values. Levels outside that range stay NaN."""
+    lev = np.asarray(lev, dtype=float)
+    vals = np.asarray(vals, dtype=float)
+    o = np.argsort(lev)
+    lev, vals = lev[o], vals[o]
+    ok = np.isfinite(vals)
+    if not ok.any() or ok.all():
+        return vals
+    out = vals.copy()
+    inside = (~ok) & (lev > lev[ok].min()) & (lev < lev[ok].max())
+    out[inside] = np.interp(np.log(lev[inside]), np.log(lev[ok]), vals[ok])
+    return out
+
+
 def _compute(pkg, dates):
     lat0 = float(pkg["lat"])
     lon0 = float(pkg["lon"]) % 360.0
@@ -178,8 +194,8 @@ def _compute(pkg, dates):
             if lev is None:
                 lev = _levels_for_file(prof["u"][0])
                 npts = prof["npts"]
-            u = _at_levels(prof["u"][0], prof["u"][1], lev)
-            v = _at_levels(prof["v"][0], prof["v"][1], lev)
+            u = _at_levels(prof["u"][0], _fill_missing(prof["u"][0], prof["u"][1]), lev)
+            v = _at_levels(prof["v"][0], _fill_missing(prof["v"][0], prof["v"][1]), lev)
             if not (np.isfinite(u).any() and np.isfinite(v).any()):
                 raise ValueError("PSL file has no values for this date yet")
         except ValueError as e:
@@ -345,6 +361,11 @@ def _plot(data, pkg, coast_segs):
                  f"Box ±{BOX_LAT:g}° lat × ±{BOX_LON:g}° lon ({n} grid points) · "
                  f"{nt} day{'s' if nt != 1 else ''} = {24 * nt} h",
                  loc="left", fontsize=11, fontweight="bold", pad=12)
+    fig.text(0.975, 0.945, f"Date Range: {days[0]:%d %b %Y} – {days[-1]:%d %b %Y}",
+             ha="right", va="bottom", fontsize=10.5, fontweight="bold", color="#222222")
+    ax.text(0.985, 0.016, "@XPWEATHER", transform=ax.transAxes, fontsize=11, va="bottom",
+            ha="right", color="#222211", fontweight="bold", zorder=10,
+            bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="#ccccbb", alpha=0.92, lw=0.9))
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, facecolor="white")
     plt.close(fig)
@@ -363,7 +384,7 @@ PRODUCTS = {
         "title": "Time–Height Section — wind speed and barbs (PSL)",
         "name": "Time–Height",
         "tag": "Hovmöller",
-        "desc": "Pressure–time section for a box (±2.5° lat, ±5° lon) about a lat/lon, from "
+        "desc": "Pressure–time section for a box (±5° lat, ±10° lon) about a lat/lon, from "
                 "NOAA PSL NCEP/NCAR daily wind fields: wind-speed shading and barbs for the "
                 "selected days (n days = n × 24 h).",
         "kind": "time_height",
