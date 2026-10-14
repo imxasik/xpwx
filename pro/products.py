@@ -389,7 +389,8 @@ def list_products():
     return [{"id": p["id"], "title": p["title"], "name": p["name"],
              "desc": p["desc"], "level": p["level"], "tag": p["tag"],
              "kind": p["kind"],
-             "needs_latlon": bool(p.get("needs_latlon"))}
+             "needs_latlon": bool(p.get("needs_latlon")),
+             "uses_days": bool(p.get("uses_days"))}
             for p in PRODUCTS.values()]
 
 def group_products():
@@ -405,5 +406,6 @@ def group_products():
             {"id": p["id"], "title": p["title"], "name": p["name"],
              "desc": p["desc"], "level": p["level"], "tag": p["tag"],
              "kind": p["kind"],
-             "needs_latlon": bool(p.get("needs_latlon"))} for p in by_tag[tag]]})
+             "needs_latlon": bool(p.get("needs_latlon")),
+             "uses_days": bool(p.get("uses_days"))} for p in by_tag[tag]]})
     return out
