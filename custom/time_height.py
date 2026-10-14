@@ -4,7 +4,7 @@ Drop-in addon: no core file is changed. Data come from the project's NOAA PSL
 NCEP/NCAR files (``pro.config.PSL``), read with ``pro.data.open_remote`` like the
 other products.
 
-Box: the average over the grid points within ±2.5° latitude and ±5° longitude of the
+Box: the average over the grid points within ±5° latitude and ±10° longitude of the
 given centre (lat, lon). The inset map at the top right shows that box.
 
 Layout (time on x, pressure on y, 1000 hPa at the bottom, 100 hPa at the top):
@@ -46,8 +46,8 @@ _LOCK = threading.Lock()     # matplotlib's pyplot state is global
 _PROFILE_CACHE = {}          # (PSL root, date, lat, lon) -> box-mean profiles
 
 VARS = {"uwnd": "u", "vwnd": "v"}
-BOX_LAT = 2.5                # half-width of the averaging box, degrees latitude
-BOX_LON = 5.0                # half-width of the averaging box, degrees longitude
+BOX_LAT = 5.0                # half-width of the averaging box, degrees latitude
+BOX_LON = 10.0               # half-width of the averaging box, degrees longitude
 INSET_LAT = 12.0             # half-size of the inset map, degrees
 INSET_LON = 20.0
 P_TICKS = [1000, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]     # Y-axis labels
@@ -384,7 +384,7 @@ PRODUCTS = {
         "title": "Time–Height Section — wind speed and barbs (PSL)",
         "name": "Time–Height",
         "tag": "Hovmöller",
-        "desc": "Pressure–time section for a box (±2.5° lat, ±5° lon) about a lat/lon, from "
+        "desc": "Pressure–time section for a box (±5° lat, ±10° lon) about a lat/lon, from "
                 "NOAA PSL NCEP/NCAR daily wind fields: wind-speed shading and barbs for the "
                 "selected days (n days = n × 24 h).",
         "kind": "time_height",
