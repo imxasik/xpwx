@@ -5,8 +5,8 @@ cyclonic vorticity maximum within CENTER_BOX_DEG of the nominal centre on D. The
 centres on D-1 and D+1 are searched within TRACK_BOX_DEG of the D centre. Motion
 is the displacement between them over two days.
 
-Shear arrow: the 850->200 hPa shear vector at the point of largest magnitude
-inside a square box of +/- SHEAR_BOX_DEG around the centre (core.deep_shear).
+Shear: the max-layer shear (the level pair between 200 and 850 hPa with the largest
+magnitude), pointwise on the maps and as a box mean about the centre (core.box_mean_shear).
 
 Search boxes, radii and the annulus widths are analysis parameters declared
 below. Physical constants live in core.py.
@@ -66,8 +66,6 @@ def analyze(lat0, lon0, D):
     tilt = [{"hPa": 850.0, "lat": la_c, "lon": lo_c, "at_edge": edge}]
     tilt += core.tilt(zeta3d, lev, lat, lon, la_c, lo_c, TILT_LEVELS, box_deg=TILT_BOX_DEG)
 
-    # --- deep-layer shear: max vector inside the +/- SHEAR_BOX_DEG box -------
-    shear = core.deep_shear(g["u"], g["v"], lev, lat, lon, la_c, lo_c, box_deg=SHEAR_BOX_DEG)
     # box mean on the centre the figures mark (la_c, lo_c): the figure's B panel
     shear_box = core.box_mean_shear(g["u"], g["v"], lev, lat, lon, la_c, lo_c, half_deg=SHEAR_BOX_DEG)
 
@@ -95,7 +93,7 @@ def analyze(lat0, lon0, D):
         "center": {"lat": la_c, "lon": lo_c, "at_edge": edge},
         "centers": centers, "motion": motion,
         "motion_kt": motion["speed_kt"], "motion_dir": motion["bearing_deg"],
-        "tilt": tilt, "shear": shear, "shear_box": shear_box,
+        "tilt": tilt, "shear_box": shear_box,
         "tangential": {"vt": vt, "y_km": y_tan},
         "theta": {"th": th_p, "y_km": y_th},
         "overturn": {"v": v_s, "w": w_s, "y_km": y_ov, "u": u_s},
@@ -109,8 +107,8 @@ def analyze(lat0, lon0, D):
                      (lo_c - MAP_HALF_DEG, lo_c + MAP_HALF_DEG))
     u200, v200 = g["u"][k200], g["v"][k200]
     div200 = core.divergence(u200, v200, lat, lon)
-    du_map = u200 - g["u"][k850]
-    dv_map = v200 - g["v"][k850]
+    du_all, dv_all = core.max_layer_shear_field(g["u"], g["v"], lev)   # pointwise max layer
+    du_map, dv_map = du_all, dv_all
     res["map"] = {
         "lat": lat[ia], "lon": lon[io],
         "div200": div200[np.ix_(ia, io)] * 1e5,                # 1e-5 s-1
