@@ -8,14 +8,13 @@ Box: the average over the grid points within ±2.5° latitude and ±5° longitud
 given centre (lat, lon). The inset map at the top right shows that box.
 
 Layout (time on x, pressure on y, 1000 hPa at the bottom, 100 hPa at the top):
-  * shading  : wind speed (kt), box mean         from uwnd, vwnd
-  * barbs    : wind (kt), every 3 h, every level from uwnd, vwnd
-  * contours : stability  −dθe/dp  (K/mb)      from air, rhum (θe by Bolton 1980)
+  * shading  : box-mean wind speed (kt)          from uwnd, vwnd
+  * barbs    : box-mean wind (kt), every 3 h     from uwnd, vwnd
 
 Window: the selected number of days, ending on the app's selected end date, so
 n_days = 1 gives 24 h and n_days = 3 gives 72 h. PSL NCEP/NCAR files hold one record
-per day: the record is taken as the day's value (centred on 12 UTC), and shading,
-contours and barbs are interpolated linearly in time between those records.
+per day: the record is taken as the day's value (centred on 12 UTC), and shading and
+barbs are interpolated linearly in time between those records.
 
 Sidebar group: Hovmöller
 """
@@ -46,16 +45,18 @@ except Exception:                      # pragma: no cover - the inset still work
 _LOCK = threading.Lock()     # matplotlib's pyplot state is global
 _PROFILE_CACHE = {}          # (PSL root, date, lat, lon) -> box-mean profiles
 
-VARS = {"uwnd": "u", "vwnd": "v", "air": "T", "rhum": "rh"}
+VARS = {"uwnd": "u", "vwnd": "v"}
 BOX_LAT = 2.5                # half-width of the averaging box, degrees latitude
 BOX_LON = 5.0                # half-width of the averaging box, degrees longitude
 INSET_LAT = 12.0             # half-size of the inset map, degrees
 INSET_LON = 20.0
-P_TICKS = [1000, 850, 700, 500, 400, 300, 250, 200, 150, 100]
+P_TICKS = [1000, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]     # Y-axis labels
+# extra levels for shading and barbs only (not labelled). PSL daily files do not hold
+# these, so they are interpolated in ln(p) between the file's own levels.
+EXTRA_LEVELS_HPA = [950, 900, 800, 750, 650, 550, 450, 350, 175, 125]
 SPEED_LEVELS = np.arange(0.0, 75.0, 5.0)   # wind-speed shading bins, kt
 BARB_EVERY_H = 3.0           # barb spacing in time, hours
-BARB_LENGTH = 7.0            # barb shaft length, points
-STAB_LEVELS = [0.025, 0.05, 0.1, 0.2]
+BARB_LENGTH = 6.5            # barb shaft length, points
 MS_TO_KT = 1.9438444924
 OUT_TOP_HPA = 100.0
 COAST_COLOUR = "#2c2c2c"
@@ -148,27 +149,18 @@ def _latest_with_values(end, lat0, lon0, max_back=60):
             prof = _profile(d, lat0, lon0)
         except ValueError:
             continue
-        if all(np.isfinite(prof[n][1]).any() for n in ("u", "v", "T", "rh")):
+        if all(np.isfinite(prof[n][1]).any() for n in ("u", "v")):
             return d
     return None
 
 
-def _theta_e(T, rh, p):
-    """Equivalent potential temperature (K) on a column. T in K, rh in %, p in hPa (Bolton 1980)."""
-    Tc = T - 273.15
-    es = 6.112 * np.exp(17.67 * Tc / (Tc + 243.5))
-    e = np.clip(rh, 0.1, 100.0) / 100.0 * es
-    e = np.minimum(e, 0.5 * p)
-    r = 0.622 * e / (p - e)                                   # kg/kg
-    td = 243.5 * np.log(e / 6.112) / (17.67 - np.log(e / 6.112)) + 273.15
-    tl = 56.0 + 1.0 / (1.0 / (td - 56.0) + np.log(T / td) / 800.0)
-    return T * (1000.0 / p) ** (0.2854 * (1.0 - 0.28 * r)) * \
-        np.exp((3376.0 / tl - 2.54) * r * (1.0 + 0.81 * r))
-
-
-def _stability(theta_e, p):
-    """−dθe/dp along the level axis (axis 0), K per hPa (= K/mb)."""
-    return -np.gradient(theta_e, p, axis=0)
+def _levels_for_file(lev_file):
+    """Pressure levels of the section: the file's levels from 100 hPa down, plus the extra
+    levels that lie inside that range. Ascending."""
+    base = np.asarray(lev_file, dtype=float)
+    base = base[base >= OUT_TOP_HPA - 1e-6]
+    extra = [p for p in EXTRA_LEVELS_HPA if base.min() - 1e-6 <= p <= base.max() + 1e-6]
+    return np.unique(np.concatenate([base, extra]))
 
 
 def _compute(pkg, dates):
@@ -176,26 +168,19 @@ def _compute(pkg, dates):
     lon0 = float(pkg["lon"]) % 360.0
     days = list(dates)                       # the selected window, n_days long
 
-    rows = {"rh": [], "u": [], "v": [], "stab": []}
+    rows = {"u": [], "v": []}
     valid, reasons = [], []
     lev = None
     npts = None
-    rh_levels = None
     for d in days:
         try:
             prof = _profile(d, lat0, lon0)
             if lev is None:
-                lev_u = prof["u"][0]
-                lev = np.sort(lev_u[lev_u >= OUT_TOP_HPA - 1e-6])          # ascending, 100 … 1000
+                lev = _levels_for_file(prof["u"][0])
                 npts = prof["npts"]
-                rh_levels = np.sort(prof["rh"][0])
             u = _at_levels(prof["u"][0], prof["u"][1], lev)
             v = _at_levels(prof["v"][0], prof["v"][1], lev)
-            T = _at_levels(prof["T"][0], prof["T"][1], lev)
-            rh = _at_levels(prof["rh"][0], prof["rh"][1], lev)
-            empty = [n for n, a in (("u", u), ("v", v), ("T", T), ("rh", rh))
-                     if not np.isfinite(a).any()]
-            if empty:
+            if not (np.isfinite(u).any() and np.isfinite(v).any()):
                 raise ValueError("PSL file has no values for this date yet")
         except ValueError as e:
             valid.append(False)
@@ -203,11 +188,8 @@ def _compute(pkg, dates):
             for k in rows:
                 rows[k].append(None)
             continue
-        te = _theta_e(T, rh, lev)
-        rows["rh"].append(rh)
         rows["u"].append(u)
         rows["v"].append(v)
-        rows["stab"].append(_stability(te, lev))
         valid.append(True)
 
     if lev is None or not any(valid):
@@ -228,8 +210,8 @@ def _compute(pkg, dates):
     data = {
         "main": np.zeros((1, 1)),
         "dates": days, "valid": np.array(valid),
-        "lev": lev, "rh": stack["rh"], "u": stack["u"], "v": stack["v"], "stab": stack["stab"],
-        "centre": (lat0, lon0), "npts": npts, "reasons": reasons, "rh_levels": rh_levels,
+        "lev": lev, "u": stack["u"], "v": stack["v"],
+        "centre": (lat0, lon0), "npts": npts, "reasons": reasons,
     }
     return np.zeros(1), np.zeros(1), data
 
@@ -284,7 +266,7 @@ def _draw_coast(ax, segs, lon_lo, lon_hi, lat_lo, lat_hi, lw=0.6):
 
 def _inset(ax_parent, lat0, lon0, coast_segs):
     """Small map at the top right: the averaging box and the centre, as on the reference chart."""
-    ax = ax_parent.inset_axes([0.745, 0.63, 0.245, 0.315])
+    ax = ax_parent.inset_axes([0.80, 0.77, 0.18, 0.194])
     lo, hi = lon0 - INSET_LON, lon0 + INSET_LON
     la, lb = lat0 - INSET_LAT, lat0 + INSET_LAT
     ax.set_facecolor("#e9f1f8")
@@ -304,7 +286,6 @@ def _inset(ax_parent, lat0, lon0, coast_segs):
     for s in ax.spines.values():
         s.set_linewidth(0.8)
         s.set_edgecolor("#444444")
-    ax.set_title("Box: ±%g° lat, ±%g° lon" % (BOX_LAT, BOX_LON), fontsize=7, pad=3)
     return ax
 
 
@@ -312,50 +293,42 @@ def _plot(data, pkg, coast_segs):
     days = data["dates"]
     nt = len(days)
     lev = data["lev"]                                   # ascending, 100 … 1000 hPa
-    ok = data["valid"]
     lat0, lon0 = data["centre"]
     x_rec = 24.0 * np.arange(nt) + 12.0                  # daily records, centred on 12 UTC
     tg = np.linspace(0.0, 24.0 * nt, 24 * nt * 2 + 1)    # 30-minute grid
     yl = np.log(lev)                                    # pressure axis in ln p
 
-    uu = _interp_matrix(x_rec, data["u"], tg) * MS_TO_KT     # wind speed (kt) from the box means
+    uu = _interp_matrix(x_rec, data["u"], tg) * MS_TO_KT   # box-mean wind, kt
     vv = _interp_matrix(x_rec, data["v"], tg) * MS_TO_KT
     spd = np.hypot(uu, vv)
-    stab = _interp_matrix(x_rec, data["stab"], tg)
 
     fig = plt.figure(figsize=(14, 8.6), facecolor="white")
-    ax = fig.add_axes([0.075, 0.17, 0.80, 0.72])
-    levels = SPEED_LEVELS
-    cmap = _wind_cmap()
-    cf = ax.contourf(tg, yl, spd.T, levels=levels, cmap=cmap, extend="max")
-    cax = fig.add_axes([0.895, 0.17, 0.012, 0.72])
+    ax = fig.add_axes([0.075, 0.13, 0.80, 0.76])
+    cf = ax.contourf(tg, yl, spd.T, levels=SPEED_LEVELS, cmap=_wind_cmap(), extend="max")
+    cax = fig.add_axes([0.895, 0.13, 0.012, 0.76])
     cb = fig.colorbar(cf, cax=cax, ticks=list(range(0, int(SPEED_LEVELS[-1]) + 1, 10)))
     cb.set_label("Wind speed (kt)", fontsize=10)
 
-    if np.isfinite(stab).sum() > 4 and np.nanmax(stab) >= STAB_LEVELS[0]:
-        cs = ax.contour(tg, yl, stab.T, levels=STAB_LEVELS, colors="#1aa7b8", linewidths=1.3)
-        ax.clabel(cs, fmt="%g", fontsize=8, inline=True, inline_spacing=6)
-
-    # wind barbs in knots: every 3 h (interpolated) on every wind level of the file
+    # wind barbs in knots: every 3 h (interpolated), on every level listed above
     tb = np.arange(0.0, 24.0 * nt + 1e-6, BARB_EVERY_H)
     u_b = _interp_matrix(x_rec, data["u"], tb) * MS_TO_KT
     v_b = _interp_matrix(x_rec, data["v"], tb) * MS_TO_KT
-    X, Y = np.meshgrid(tb, np.log(lev), indexing="ij")
+    X, Y = np.meshgrid(tb, yl, indexing="ij")
     ax.barbs(X, Y, u_b, v_b, length=BARB_LENGTH, linewidth=0.9, color="#111111", pivot="middle",
              sizes=dict(emptybarb=0.12, spacing=0.14, height=0.45), zorder=6)
 
     ax.set_ylim(np.log(lev.max()), np.log(lev.min()))
-    ax.set_yticks(np.log([p for p in P_TICKS if lev.min() <= p <= lev.max()]))
-    ax.set_yticklabels([str(p) for p in P_TICKS if lev.min() <= p <= lev.max()])
+    ticks = [p for p in P_TICKS if lev.min() <= p <= lev.max()]
+    ax.set_yticks(np.log(ticks))
+    ax.set_yticklabels([str(p) for p in ticks])
     ax.minorticks_off()
     ax.set_ylabel("Pressure (hPa)", fontsize=10)
 
     ax.set_xlim(0.0, 24.0 * nt)
     x0 = datetime.datetime.combine(days[0], datetime.time(0))
-    ticks = np.arange(0.0, 24.0 * nt + 1e-6, 12.0)
-    ax.set_xticks(ticks)
-    ax.set_xticklabels([f"{int(t % 24):02d}" for t in ticks], fontsize=8)
-    ax.set_xlabel("Forecast hour (UTC from the first day 00Z)", fontsize=10)
+    xt = np.arange(0.0, 24.0 * nt + 1e-6, 12.0)
+    ax.set_xticks(xt)
+    ax.set_xticklabels([f"{int(t % 24):02d}" for t in xt], fontsize=8)
     trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
     for d in range(nt):
         when = x0 + datetime.timedelta(hours=24 * d)
@@ -367,17 +340,11 @@ def _plot(data, pkg, coast_segs):
 
     _inset(ax, lat0, lon0, coast_segs)
 
-    wl_note = ", ".join(f"{p:g}" for p in lev[::-1])
     n = data["npts"]
     ax.set_title(f"Time–Height Section · box average about {lat0:.2f}°N {lon0:.2f}°E\n"
                  f"Box ±{BOX_LAT:g}° lat × ±{BOX_LON:g}° lon ({n} grid points) · "
                  f"{nt} day{'s' if nt != 1 else ''} = {24 * nt} h",
                  loc="left", fontsize=11, fontweight="bold", pad=12)
-    fig.text(0.075, 0.012,
-             "Shading: wind speed (kt) · barbs: wind (kt) · contours: −dθe/dp (K/mb)\n"
-             f"Daily PSL NCEP/NCAR records; shading, contours and barbs interpolated in time. "
-             f"Wind levels in file: {wl_note} hPa",
-             fontsize=8, color="#444444", va="bottom")
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, facecolor="white")
     plt.close(fig)
@@ -393,12 +360,12 @@ def _render(lat, lon, data, pkg, coast_segs, dates, **_kw):
 PRODUCTS = {
     "time_height_psl": {
         "id": "time_height_psl",
-        "title": "Time–Height Section — RH, wind and stability (PSL)",
+        "title": "Time–Height Section — wind speed and barbs (PSL)",
         "name": "Time–Height",
         "tag": "Hovmöller",
         "desc": "Pressure–time section for a box (±2.5° lat, ±5° lon) about a lat/lon, from "
-                "NOAA PSL NCEP/NCAR daily fields: wind speed shading, wind barbs and "
-                "−dθe/dp for the selected days (n days = n × 24 h).",
+                "NOAA PSL NCEP/NCAR daily wind fields: wind-speed shading and barbs for the "
+                "selected days (n days = n × 24 h).",
         "kind": "time_height",
         "level": None,
         "needs_latlon": True,
@@ -412,6 +379,6 @@ KINDS = {
         "compute": _compute,
         "render": _render,
         "tag": "Hovmöller",
-        "title": "Time–Height Section — RH, wind and stability (PSL)",
+        "title": "Time–Height Section — wind speed and barbs (PSL)",
     },
 }
