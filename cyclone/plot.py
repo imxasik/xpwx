@@ -230,7 +230,7 @@ def _panel_B(ax, fig, res, coast_segs):
     lat_c, lon_c = res["center"]["lat"], res["center"]["lon"]
     sb = res["shear_box"]                                # max layer of the box-mean shear
     layer = _layer_txt(sb)
-    sm = m["shear_mag"]                                  # pointwise max shear over the data
+    sm = m["shear_mag"]                                  # shear magnitude over the map, in that layer
     pm = _filled(ax, lon, lat, sm, "YlOrRd", 0.0, float(np.nanmax(sm)))
     cb = _cbar(fig, pm, ax, f"max-layer shear magnitude, {layer} (kt)")
     step = max(1, lat.size // 14)
@@ -257,7 +257,7 @@ def _panel_B(ax, fig, res, coast_segs):
              f"box {sb['lat_lo']:g}–{sb['lat_hi']:g}°N, {sb['lon_lo']:g}–{sb['lon_hi']:g}°E (±{h:g}°)\n"
              f"arrow: shear toward {sb['toward_deg']:.0f}°")
     _outlines(ax, coast_segs, lon[0], lon[-1], lat[0], lat[-1])
-    _map_axes(ax, lat, lon, f"B  Max-Layer Shear, {layer} (map: pointwise max; box ±{h:g}° mean)")
+    _map_axes(ax, lat, lon, f"B  Max-Layer Shear, {layer}  (layer from box ±{h:g}° mean)")
     return cb
 
 
