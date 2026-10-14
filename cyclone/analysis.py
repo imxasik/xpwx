@@ -5,8 +5,11 @@ cyclonic vorticity maximum within CENTER_BOX_DEG of the nominal centre on D. The
 centres on D-1 and D+1 are searched within TRACK_BOX_DEG of the D centre. Motion
 is the displacement between them over two days.
 
-Shear: the max-layer shear (the level pair between 200 and 850 hPa with the largest
-magnitude), pointwise on the maps and averaged in a box about the centre (core.box_average_shear).
+Shear: the max-layer shear is the level pair between 200 and 850 hPa with the largest
+magnitude. On the map it is taken pointwise over the whole data (core.max_layer_shear_field).
+In the box about the centre it is the pair whose box-mean shear is largest
+(core.box_max_layer); its layer is shown in the figure, and its box-mean vector and speed
+give the box arrow and value.
 
 Search boxes, radii and the annulus widths are analysis parameters declared
 below. Physical constants live in core.py.
@@ -66,9 +69,10 @@ def analyze(lat0, lon0, D):
     tilt = [{"hPa": 850.0, "lat": la_c, "lon": lo_c, "at_edge": edge}]
     tilt += core.tilt(zeta3d, lev, lat, lon, la_c, lo_c, TILT_LEVELS, box_deg=TILT_BOX_DEG)
 
-    # pointwise max shear over the data, and its average in the box on the centre (la_c, lo_c)
+    # box about the centre (la_c, lo_c): the max-layer shear of the box-mean shear
+    shear_box = core.box_max_layer(g["u"], g["v"], lat, lon, lev, la_c, lo_c, half_deg=SHEAR_BOX_DEG)
+    # map: pointwise max shear over the whole data
     du_all, dv_all = core.max_layer_shear_field(g["u"], g["v"], lev)
-    shear_box = core.box_average_shear(du_all, dv_all, lat, lon, la_c, lo_c, half_deg=SHEAR_BOX_DEG)
 
     # --- sections through the centre --------------------------------------
     vt, y_tan = core.tangential_wind(g["u"], g["v"], lat, lon, la_c, lo_c)

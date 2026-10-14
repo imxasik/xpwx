@@ -67,7 +67,7 @@ PRODUCTS = {
         id="cyc_dynamic",
         name="Dynamic Fig",
         title="Dynamic Fig · tropical-cyclone structure at a chosen location",
-        desc="200-hPa divergence, 850–200 hPa shear, vortex tilt and Hadley-type "
+        desc="200-hPa divergence, max-layer shear (200–850 hPa search), vortex tilt and Hadley-type "
              "φ–p section around a lat/lon you enter.",
         kind="cyc_fig1",
     ),

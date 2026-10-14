@@ -230,23 +230,43 @@ def max_layer_shear_field(u3d, v3d, lev, top_hPa=200.0, bottom_hPa=850.0):
     return bu, bv
 
 
-def box_average_shear(du, dv, lat, lon, lat_c, lon_c, half_deg=2.5, step_deg=0.25):
-    """Box average of the pointwise max shear in a square box centred on (lat_c, lon_c).
+def box_max_layer(u3d, v3d, lat, lon, lev, lat_c, lon_c, top_hPa=200.0, bottom_hPa=850.0,
+                  half_deg=2.5, step_deg=0.25):
+    """Max-layer shear of the box mean about (lat_c, lon_c).
 
-    The box is exactly +/- half_deg about the centre; the pointwise shear is sampled at
-    points spaced step_deg inside it. The speed is the mean of the sampled magnitudes;
-    the vector (and so the arrow direction) is the mean of the sampled vectors.
+    Sampling points lie on a grid of step_deg inside the square of +/- half_deg about the
+    centre (exact centre, not grid-snapped). For every pair of levels between top_hPa and
+    bottom_hPa the box-mean shear vector V_top - V_bottom is formed; the pair whose mean
+    magnitude is largest is the max layer. Its layer, mean vector, speed and direction are
+    returned. The speed is the magnitude of the box-mean vector (box-mean shear).
     """
+    lev = np.asarray(lev, dtype=float)
     n = int(round(2.0 * half_deg / step_deg)) + 1
     off = np.linspace(-half_deg, half_deg, n)
     LA, LO = np.meshgrid(lat_c + off, lon_c + off, indexing="ij")
-    us = make_sampler(du, lat, lon)(LA, LO)
-    vs = make_sampler(dv, lat, lon)(LA, LO)
-    u_m, v_m = float(np.nanmean(us)), float(np.nanmean(vs))
-    toward = float((np.degrees(np.arctan2(u_m, v_m)) + 360.0) % 360.0)
+    sel = np.where((lev >= top_hPa - 1e-6) & (lev <= bottom_hPa + 1e-6))[0]
+    mean_u, mean_v = {}, {}
+    for k in sel:
+        mean_u[k] = float(np.nanmean(make_sampler(u3d[k], lat, lon)(LA, LO)))
+        mean_v[k] = float(np.nanmean(make_sampler(v3d[k], lat, lon)(LA, LO)))
+    best = None
+    for i in sel:                                    # i: bottom (higher pressure)
+        for j in sel:                                # j: top (lower pressure)
+            if lev[j] >= lev[i]:
+                continue
+            u_m = mean_u[j] - mean_u[i]
+            v_m = mean_v[j] - mean_v[i]
+            mag = float(np.hypot(u_m, v_m))
+            if best is None or mag > best["mag"]:
+                best = {"mag": mag, "u_ms": u_m, "v_ms": v_m,
+                        "top_hPa": float(lev[j]), "bottom_hPa": float(lev[i])}
+    if best is None:
+        raise ValueError("no level pair inside the shear layer range")
+    toward = float((np.degrees(np.arctan2(best["u_ms"], best["v_ms"])) + 360.0) % 360.0)
     return {
-        "u_ms": u_m, "v_ms": v_m,
-        "max_kt": float(np.nanmean(np.hypot(us, vs)) / KT),     # box average of max shear
+        "u_ms": best["u_ms"], "v_ms": best["v_ms"],
+        "max_kt": best["mag"] / KT,                          # box-mean max-layer shear speed
+        "top_hPa": best["top_hPa"], "bottom_hPa": best["bottom_hPa"],
         "toward_deg": toward,
         "box_deg": float(half_deg),
         "lat_lo": float(lat_c - half_deg), "lat_hi": float(lat_c + half_deg),
