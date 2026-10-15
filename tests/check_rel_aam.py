@@ -199,12 +199,13 @@ def main():
     hu = d["mr"] / RA.HU
     check("Mr in a physically plausible range", bool(np.all((hu > 3) & (hu < 40))),
           f"{hu.min():.2f} – {hu.max():.2f} HU")
-    shade = np.asarray(d["anom"]) * RA.DEG / RA.FIELD_UNIT
+    # exactly what the renderer shades: per-degree anomaly x native grid box
+    shade = np.asarray(d["anom"]) * RA.DEG * RA.SHADE_BAND / RA.FIELD_UNIT
     # the synthetic case is deliberately a strong-event case: it should fill the
     # palette out to its end colours without everything saturating
     frac = float(np.mean(np.abs(shade) > 0.5))
     check("the shading uses a good part of the ±2 × 10²⁴ palette",
-          1.0 < float(np.max(np.abs(shade))) < 6.0 and 0.08 < frac < 0.6,
+          1.0 < float(np.max(np.abs(shade))) < 15.0 and 0.17 < frac < 0.40,
           f"max |anom| = {np.max(np.abs(shade)):.2f} × 10²⁴, "
           f"{100 * frac:.0f}% of the area beyond ±0.5")
     peak = float(np.max(np.abs(np.asarray(d["field"]) * RA.DEG / RA.FIELD_UNIT)))
