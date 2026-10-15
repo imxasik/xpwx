@@ -136,6 +136,22 @@ class NCFile:
         return list(self._nc.variables.keys())
 
 
+def release_memory():
+    """Hand freed temporaries back to the OS.
+
+    numpy frees the big read/integration arrays as soon as they go out of scope,
+    but the C allocator keeps the pages, so RSS stays at the request's peak for
+    the life of the process.  On a 512 MB host (Render free) that is the
+    difference between a service that survives a session of map requests and one
+    that is OOM-killed.  Best-effort no-op where glibc's malloc_trim is missing.
+    """
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:                                           # noqa: BLE001
+        pass
+
+
 def _local_path(url):
     """Map a URL to a stable path under CACHE_DIR, e.g. .../Datasets/ncep/uwnd.2026.nc."""
     rel = urllib.parse.urlparse(url).path.lstrip("/")

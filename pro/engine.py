@@ -6,6 +6,7 @@ DEFAULT_N_DAYS = config.DEFAULT_N_DAYS
 DEFAULT_PRODUCT = config.DEFAULT_PRODUCT
 PRODUCTS = products.PRODUCTS
 _resolve_dates = data._resolve_dates
+_release_memory = data.release_memory
 load_coastlines = data.load_coastlines
 compute = _compute.compute
 compute_hov = _compute.compute_hov
@@ -36,6 +37,7 @@ def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
                 "date_start": day_dates[0].isoformat(),
                 "date_end": day_dates[-1].isoformat(),
                 "n_days": len(day_dates), "level": pkg["level"]}
+        _release_memory()
         return buf, meta
 
     say(f"[0/4] {pkg['title']} | {dates[0]} → {dates[-1]} ({len(dates)}-day mean)")
@@ -58,6 +60,7 @@ def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
     meta = {"product": pkg["id"], "title": pkg["title"],
             "date_start": dates[0].isoformat(), "date_end": dates[-1].isoformat(),
             "n_days": len(dates), "level": pkg["level"]}
+    _release_memory()
     return buf, meta
 
 def generate_diff(product_id=DEFAULT_PRODUCT, date1=None, n_days1=DEFAULT_N_DAYS,
@@ -96,4 +99,5 @@ def generate_diff(product_id=DEFAULT_PRODUCT, date1=None, n_days1=DEFAULT_N_DAYS
             "date_start": dates_a[0].isoformat(), "date_end": dates_a[-1].isoformat(),
             "date_b_start": dates_b[0].isoformat(), "date_b_end": dates_b[-1].isoformat(),
             "n_days": len(dates_a), "level": pkg["level"], "diff": True, "inverse": inverse}
+    _release_memory()
     return buf, meta

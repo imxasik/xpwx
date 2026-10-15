@@ -11,6 +11,11 @@ services:
     name: vp-anomaly-map
     runtime: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
+    # The warm-up builds the Relative AAM climatology cache inside the deployed
+    # image (a few minutes, once per deploy) so that no request ever has to build
+    # it — that build is what used to OOM the 512 MB free instance.  `|| true`
+    # keeps a NOAA hiccup from failing the whole deploy: the app then simply
+    # builds the cache on its first request, as before.
+    buildCommand: "pip install -r requirements.txt && (python custom/_warm_cache.py || true)"
     startCommand: "gunicorn -b 0.0.0.0:$PORT --timeout 300 app:app"
     # Render injects its own $PORT; do NOT override it here.

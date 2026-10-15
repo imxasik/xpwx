@@ -13,6 +13,7 @@ import io
 import os
 import json
 import datetime
+from collections import OrderedDict
 
 from flask import Flask, render_template, request, send_file, jsonify
 
@@ -25,7 +26,26 @@ app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
 # Server-side render cache: identical key -> raw PNG bytes (near-instant).
 # The engine also caches raw dataset/field fetches, so even a "cold" render of
 # a period that was fetched before is cheap.
-_cache = {}
+#
+# It is bounded on purpose: the process runs on hosts with as little as 512 MB,
+# PNGs are ~0.3-1 MB each, and an unbounded dict would keep every map ever asked
+# for — memory that can never be given back to the OS.  Oldest entry is evicted.
+_CACHE_MAX = 16
+_cache = OrderedDict()
+
+
+def _cache_get(key):
+    data = _cache.get(key)
+    if data is not None:
+        _cache.move_to_end(key)
+    return data
+
+
+def _cache_put(key, data):
+    _cache[key] = data
+    _cache.move_to_end(key)
+    while len(_cache) > _CACHE_MAX:
+        _cache.popitem(last=False)
 
 
 def _serve_png(data):
@@ -91,8 +111,9 @@ def generate():
             return jsonify({"error": "invalid date format, use YYYY-MM-DD"}), 400
 
     key = json.dumps([product_id, mode, manual_date, n_days, lat, lon])
-    if key in _cache:
-        return _serve_png(_cache[key])
+    hit = _cache_get(key)
+    if hit is not None:
+        return _serve_png(hit)
 
     log = []
     try:
@@ -105,7 +126,7 @@ def generate():
                         "log": log[-40:]}), 500
 
     data = buf.getvalue()
-    _cache[key] = data
+    _cache_put(key, data)
     return _serve_png(data)
 
 
@@ -171,8 +192,9 @@ def diff():
         return jsonify({"error": "invalid date format, use YYYY-MM-DD"}), 400
 
     key = json.dumps(["diff", product_id, date1, n_days1, date2, n_days2, inverse])
-    if key in _cache:
-        return _serve_png(_cache[key])
+    hit = _cache_get(key)
+    if hit is not None:
+        return _serve_png(hit)
 
     log = []
     try:
@@ -186,7 +208,7 @@ def diff():
                         "log": log[-40:]}), 500
 
     data = buf.getvalue()
-    _cache[key] = data
+    _cache_put(key, data)
     return _serve_png(data)
 
 
