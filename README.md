@@ -70,10 +70,22 @@ PORT=8000 gunicorn -b 0.0.0.0:$PORT app:app
 ## Deploy on Render (free, from GitHub)
 1. Push to a GitHub repo.
 2. Render → **New → Web Service** → connect GitHub → select the repo.
-3. Fill the form: **Free** instance; Build `pip install -r requirements.txt`;
-   Start `gunicorn -b 0.0.0.0:$PORT --timeout 120 app:app`
+3. Fill the form: **Free** instance;
+   Build `pip install -r requirements.txt && (python custom/_warm_cache.py || true)`;
+   Start `gunicorn -b 0.0.0.0:$PORT --timeout 300 app:app`
    (Render also auto-reads `render.yaml` if you choose **Blueprint**).
 4. **Create Web Service** → open the public URL. ✅
+
+**Why the build step warms a cache.** A free instance has 0.1 CPU and **512 MB**
+of RAM, and its disk is *ephemeral*: `data_cache/` is thrown away on every
+deploy, restart and spin-down. The Relative AAM product needs the 1991–2020
+daily climatology (366 days x 17 levels), and building that inside a request
+peaked at ~470 MB — an OOM kill, which is what a 502/503 from `xpwx.onrender.com`
+was. `custom/_warm_cache.py` builds it **once, during the build**, into
+`ltm_rel_aam_cache.npy` in the project root, which the deployed image then keeps
+(so no request ever pays for it: 494 MB -> 327 MB peak). `|| true` means a NOAA
+hiccup cannot fail the deploy — the app then simply builds the cache on its
+first request, which is serial and fits the box (measured 375 MB peak).
 
 ### Notes
 - `$PORT` is provided by Render (set it manually when testing locally).
@@ -91,6 +103,10 @@ PORT=8000 gunicorn -b 0.0.0.0:$PORT app:app
 - Storage: each full yearly file is roughly 50 MB; the OISST yearly file (used by
   the SST products in `custom/sst.py`) is roughly 740 MB. Make sure the host has
   enough disk space.
+- Memory: the engine hands freed temporaries back to the OS after every request
+  (`pro.data.release_memory`), keeps the PNG response cache bounded and builds the
+  AAM climatology serially — together these keep a long session of map requests
+  inside a 512 MB instance instead of slowly climbing into an OOM kill.
 - **Data end date:** NOAA states NCEP/NCAR Reanalysis 1 production stopped with a
   last date of 17 March 2026, so "auto" mode ends at that date.
 
@@ -150,6 +166,11 @@ Two panels, both for the 120 days ending on the app's selected date:
   sigmas (σ_M = 1.16×10²⁵ kg m² s⁻¹, σ_dM/dt = 1.5×10¹⁹ kg m² s⁻²) come from
   `custom/gwo.py`, and the section is the integrand of the GWO's Mr — so the two
   products can never disagree.
+- The 1991–2020 latitude-resolved climatology is cached in
+  `ltm_rel_aam_cache.npy` in the project root (same pattern as the GWO product's
+  committed `ltm_aam_cache.npy`). It is built by `custom/_warm_cache.py` at
+  deploy time, or by the first request on a plain host; the cache key ignores the
+  file's mtime, so a re-downloaded LTM file never invalidates it.
 - A 5-day running mean is applied to the section and the global curve (the plain
   running mean is linear, so the section integrates exactly to the curve).
 - The latitude-resolved daily climatology is derived once from

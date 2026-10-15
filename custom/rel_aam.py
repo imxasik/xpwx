@@ -24,9 +24,11 @@ The chart follows the classic GSDM/AAM layout, two panels:
 The integration, the 2/2 latitude/longitude strides and the NOAA baseline
 sigmas come from ``custom/gwo.py``, so this product and the GWO Phase product
 can never disagree.  The latitude-resolved daily climatology is derived once
-from the 1991–2020 LTM file and cached in ``data_cache/ltm_rel_aam_cache.npy``
-(git-ignored); the committed ``ltm_aam_cache.npy`` of the GWO product is never
-rewritten.
+from the 1991–2020 LTM file and cached in ``ltm_rel_aam_cache.npy`` in the
+project root — rebuilt only when the LTM file or the grid changes, never on a
+plain restart (``custom/_warm_cache.py`` builds it at deploy time, so no request
+ever pays for it).  The committed ``ltm_aam_cache.npy`` of the GWO product is
+never rewritten.
 
 Data: NOAA PSL NCEP/NCAR daily ``uwnd`` plus ``uwnd.day.ltm.1991-2020.nc`` — the
 same files the rest of the app downloads and caches.
@@ -45,7 +47,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.ticker import MultipleLocator
 
 from pro import config
-from pro.data import open_remote
+from pro.data import open_remote, release_memory
 
 # ---------------------------------------------------------------------------
 # shared AAM machinery — one implementation for both AAM products
@@ -97,8 +99,19 @@ FIELD_LEVELS = np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.5, 1.0, 1.5, 2.0, 2.5])
 # printed in the caption.
 CI_CHOICES = [5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01]
 
-# AAM cache of the latitude-resolved daily climatology (git-ignored data_cache/)
-LTM_CACHE = os.path.join(config.CACHE_DIR, "ltm_rel_aam_cache.npy")
+# AAM cache of the latitude-resolved daily climatology.
+#
+# It lives in the project root, *not* in the git-ignored ``data_cache/``: Render
+# (and any container host) throws ``data_cache/`` away on every deploy, restart
+# and free-tier spin-down, so a copy kept there means the 366 x 17-level build
+# runs again inside the next request — which is what used to push a 512 MB free
+# instance into an OOM kill.  ``gwo.LTM_CACHE_FILE`` is the same pattern for the
+# GWO product: build it once (deploy-time via ``custom/_warm_cache.py``, or by
+# the first request on a long-lived host), then reuse it forever.
+LTM_CACHE = os.path.join(config.BASE_DIR, "ltm_rel_aam_cache.npy")
+
+# bump when the stored climatology must be rebuilt (grid, strides, scale)
+LTM_CACHE_VERSION = 4
 
 # palette — the classic AAM colouring of the reference chart: blue / purple /
 # green for negative anomalies, white / yellow / orange / red for positive
@@ -173,31 +186,38 @@ def _fetch_ltm_chunk(args):
                     f"LTM chunk [{t0}:{t1}] failed after {retries} attempts: {exc}")
 
 
-def compute_ltm_climatology(live_lev, cache_file=LTM_CACHE):
+def compute_ltm_climatology(live_lev, cache_file=None):
     """(clim_field, lat_axis, lev_common) of the 1991–2020 daily LTM.
 
     ``clim_field`` is (n_doy, nlat) in kg m^2 s^-1 per radian of latitude, rows in
     ascending latitude, so it can be subtracted from :func:`lat_field` row by row.
     """
+    cache_file = LTM_CACHE if cache_file is None else cache_file
     live_lev = np.asarray(live_lev, dtype=float)
-    # Open the LTM file first (a no-op when it is already downloaded): its size and
-    # mtime go into the cache key, so a refreshed LTM file — from NOAA or from a
-    # test mirror — invalidates the cached climatology by itself.  The source URL
-    # is part of the key too, so a mirror can never be mistaken for NOAA.
+    # Open the LTM file first (a no-op when it is already downloaded): its size
+    # goes into the cache key, so a genuinely different LTM file invalidates the
+    # cached climatology by itself.  The source URL is part of the key too, so a
+    # mirror can never be mistaken for NOAA.
     ds = open_remote(_gwo.LTM_URL)
+    # The key deliberately does *not* contain the file's mtime.  NOAA re-serves
+    # the same immutable 1991-2020 file with a fresh mtime every time a container
+    # is rebuilt, so an mtime-based key would discard the cached climatology on
+    # every deploy — exactly the rebuild we are avoiding.  Size + grid + levels +
+    # source URL is the identity that matters: a different period, grid or server
+    # still invalidates the cache, a re-download of the same file does not.
     try:
-        st = os.stat(ds.path)
-        stamp = (int(st.st_size), int(st.st_mtime))
+        size_ltm = int(os.stat(ds.path).st_size)
     except OSError:                                             # pragma: no cover
-        stamp = (0, 0)
-    key = (3, _gwo.LAT_STRIDE, _gwo.LON_STRIDE, stamp,
+        size_ltm = 0
+    key = (LTM_CACHE_VERSION, _gwo.LAT_STRIDE, _gwo.LON_STRIDE, size_ltm,
            tuple(np.sort(np.round(live_lev).astype(int))), config.PSL)
     if os.path.exists(cache_file):
         try:
             cached = np.load(cache_file, allow_pickle=True).item()
         except Exception:                                       # noqa: BLE001
             cached = None
-        if cached is not None and cached.get("key") == key:
+        if (cached is not None and cached.get("key") == key
+                and np.asarray(cached.get("clim_field")).ndim == 2):
             print(f"[rel_aam] LTM climatology from cache: {cache_file}", flush=True)
             return cached["clim_field"], cached["lat_axis"], cached["lev_common"]
 
@@ -233,6 +253,10 @@ def compute_ltm_climatology(live_lev, cache_file=LTM_CACHE):
             t0_idx, field = fut.result()
             results[t0_idx] = field
 
+    # the chunk arrays are dead now; hand their pages back before building the
+    # (tiny) climatology so a 512 MB instance never sees the peak twice
+    release_memory()
+
     clim_field = np.concatenate([results[k] for k in sorted(results)], axis=0)
     lat_axis = np.rad2deg(gc["lat_sorted"])            # degrees, ascending
     total = _gwo._trapz_axis1(clim_field, gc["lat_sorted"])
@@ -243,6 +267,7 @@ def compute_ltm_climatology(live_lev, cache_file=LTM_CACHE):
     np.save(cache_file, {"clim_field": clim_field, "lat_axis": lat_axis,
                          "lev_common": lev_common, "key": key})
     print(f"[rel_aam] LTM climatology cached → {cache_file}", flush=True)
+    release_memory()
     return clim_field, lat_axis, lev_common
 
 

@@ -40,7 +40,12 @@ LTM_CACHE_FILE = os.path.join(config.BASE_DIR, "ltm_aam_cache.npy")
 LTM_CHUNKS      = 10
 LTM_RETRIES     = 3
 LTM_RETRY_WAIT  = 5
-LTM_MAX_WORKERS = 4   # parallel chunk fetches
+# Chunks are read from the *local* file (the download already happened), so
+# threads buy nothing here — but they cost a lot of memory: each worker holds its
+# own read buffer + float64 chunk at the same time.  On a 512 MB instance the
+# 4-worker build peaked at ~490 MB (OOM), the serial one at ~390 MB with the same
+# wall time.  Keep it serial; the disk cache above means it rarely runs at all.
+LTM_MAX_WORKERS = 1
 
 # NOAA 1968-1996 baseline sigma values (Weickmann & Berry 2009)
 AAM_STD  = 1.16e25

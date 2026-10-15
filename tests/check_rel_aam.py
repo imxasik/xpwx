@@ -19,17 +19,25 @@ Checks
      same file, column by column (latitude profile) and globally,
   5. /generate returns a real PNG,
   6. the GWO product's committed climatology cache is left untouched,
-  7. short and cross-year windows still render.
+  7. short and cross-year windows still render,
+  8. deploy safety: the climatology cache survives a restart (project root, key
+     ignores the file's mtime), the cold build fits a 512 MB instance, the chunk
+     build is serial and the deploy still warms that cache at build time.
 """
+import contextlib
 import functools
 import hashlib
 import http.server
+import io
 import json
 import os
+import resource
 import shutil
 import struct
 import sys
+import tempfile
 import threading
+import time
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
@@ -293,9 +301,9 @@ def main():
     if CACHE_HASH_BEFORE is not None:
         after = hashlib.sha256(open(GWO_CACHE, "rb").read()).hexdigest()
         check("ltm_aam_cache.npy unchanged", after == CACHE_HASH_BEFORE)
-    check("climatology cached under data_cache/ (git-ignored)",
-          os.path.exists(RA.LTM_CACHE) and RA.LTM_CACHE.startswith(config.CACHE_DIR),
-          RA.LTM_CACHE)
+    check("climatology cache is outside the throwaway data_cache/",
+          os.path.exists(RA.LTM_CACHE)
+          and not RA.LTM_CACHE.startswith(config.CACHE_DIR), RA.LTM_CACHE)
 
     # ---- 7. short / cross-year windows still render -----------------------
     print("\n7. short and cross-year windows")
@@ -307,6 +315,66 @@ def main():
         size = png_size(r.data) if r.status_code == 200 else None
         check(label, r.status_code == 200 and size is not None,
               f"status {r.status_code}, {size}")
+
+    # ---- 8. deploy safety on a small (512 MB) instance --------------------
+    print("\n8. deploy safety (512 MB instance)")
+    check("climatology cache lives in the project root, not in data_cache/",
+          RA.LTM_CACHE == os.path.join(config.BASE_DIR, "ltm_rel_aam_cache.npy"),
+          RA.LTM_CACHE)
+
+    _times_live, lev_live, _la, _lo, _u = GWO.fetch_recent_days(1)
+    tmp_cache = os.path.join(tempfile.gettempdir(), "rel_aam_test_cache.npy")
+    if os.path.exists(tmp_cache):
+        os.remove(tmp_cache)
+
+    # (a) the cold build is what used to OOM a free instance: measure the peak
+    #     RSS of this whole process while it runs
+    t0 = time.time()
+    clim_a, lat_a, lev_a = RA.compute_ltm_climatology(lev_live, cache_file=tmp_cache)
+    build_s = time.time() - t0
+    peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+    check("cold climatology build fits a 512 MB instance",
+          peak_mb < 470.0,
+          f"peak RSS {peak_mb:.0f} MB, {build_s:.1f}s, climatology {clim_a.shape}")
+
+    # (b) a re-downloaded LTM file (new mtime, same bytes) must not throw the
+    #     cache away — that is the deploy/restart case
+    ltm_local = metmap.data._local_path(GWO.LTM_URL)
+    os.utime(ltm_local, None)
+    buf_out = io.StringIO()
+    with contextlib.redirect_stdout(buf_out):
+        clim_b, lat_b, lev_b = RA.compute_ltm_climatology(lev_live, cache_file=tmp_cache)
+    check("cache survives a re-download (key ignores mtime)",
+          "from cache" in buf_out.getvalue()
+          and np.array_equal(clim_a, clim_b) and np.array_equal(lat_a, lat_b),
+          buf_out.getvalue().strip().splitlines()[-1] if buf_out.getvalue() else "")
+
+    # (c) what a running request would load must be exactly what the warm-up /
+    #     first build stored
+    if os.path.exists(RA.LTM_CACHE):
+        stored = np.load(RA.LTM_CACHE, allow_pickle=True).item()
+        check("the cache the app loads equals a fresh build",
+              np.array_equal(np.asarray(stored["clim_field"]), clim_a),
+              f"shape {np.asarray(stored['clim_field']).shape}")
+
+    # (d) serial chunk build + the deploy-time warm-up that keeps it out of the
+    #     request path at all
+    check("chunk build is serial (LTM_MAX_WORKERS)", GWO.LTM_MAX_WORKERS == 1,
+          f"LTM_MAX_WORKERS={GWO.LTM_MAX_WORKERS}")
+    warm = os.path.join(ROOT, "custom", "_warm_cache.py")
+    render_yaml = os.path.join(ROOT, "render.yaml")
+    wiring = ""
+    if os.path.exists(render_yaml):
+        with open(render_yaml) as fh:
+            wiring = fh.read()
+    check("deploy warms the cache at build time",
+          os.path.exists(warm) and "_warm_cache.py" in wiring,
+          "custom/_warm_cache.py + render.yaml buildCommand")
+
+    # (e) the PNG response cache must not grow without bound
+    check("PNG response cache is bounded",
+          getattr(flask_app, "_CACHE_MAX", None) is not None
+          and 0 < flask_app._CACHE_MAX <= 64, f"max {getattr(flask_app, '_CACHE_MAX', None)}")
 
     print("\nRESULT", "PASS" if OK else "FAIL")
     if _HTTPD is not None:
