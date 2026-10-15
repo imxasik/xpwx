@@ -39,7 +39,11 @@ Torque / Flow / Advanced / Surface / Hovmöller**. Examples:
   brown = suppressed), ψ200′ wave-train contours (firebrick ridge / blue dashed
   trough), Takaya–Nakamura wave-activity-flux arrows, and the Ks≥5 stationary
   wavenumber waveguide band (indigo).
-- **Hovmöller:** U850 (5°S–5°N) and χ200 (15°S–15°N), 120-day longitude–time.
+- **Hovmöller:** U850 (5°S–5°N) and χ200 (15°S–15°N), 120-day longitude–time;
+  MJO phase diagram (RMM, JMA); Time–Height section; **Relative AAM** —
+  latitude–time section of the vertically and zonally integrated AAM anomaly
+  (1000–10 hPa) with the total field as contours, plus the global AAM anomaly
+  (see below).
 - Frictional torque (τx/τy/|τ|), IVT, QG omega forcing, MSE, temperature
   advection, geostrophic/ageostrophic wind.
 
@@ -116,3 +120,41 @@ The RMM1/RMM2 phase diagram (last 40 days) uses the JMA MJO index (chi200 + u850
 
 `rmm/ncep_rmm.py` and `rmm/velpot.py` (an NCEP-based index using a χ200 inversion) are kept
 but are not used by the diagram.
+
+## Relative AAM diagram (sidebar product `rel_aam`)
+
+`custom/rel_aam.py` draws the **relative** angular momentum of the atmosphere —
+the wind term of the global angular-momentum budget — vertically and zonally
+integrated over 1000–10 hPa:
+
+    A(phi, t) = (a³/g) ∬ u cos²φ dp dλ     [kg m² s⁻¹ per radian of latitude]
+    Mr(t)     = ∫ A dφ                     [kg m² s⁻¹]
+
+Two panels, both for the 120 days ending on the app's selected date:
+
+1. **Latitude–time section.** Shading is the anomaly of `A` against the daily
+   1991–2020 climatology, in the classic AAM palette — white inside ±0.5, then
+   yellow/orange/red above and light-green/green/purple/blue below, with ticks
+   at ±0.5 … ±2 × 10²⁴ kg m² s⁻¹ per degree. The black contours are the
+   **total** field, solid above zero and dashed below. The contour interval is
+   chosen automatically from a list of round values so that every chart — quiet
+   or strong — gets three to nine lines, and it is printed in the caption.
+2. **Global AAM anomaly**, in Hadley units (10²⁵ kg m² s⁻¹), i.e. the numerator
+   of the standardised anomaly M = Mr′ / σ_M used by the GWO phase diagram.
+
+- The integration, the 2/2 latitude/longitude strides and the NOAA baseline
+  sigmas (σ_M = 1.16×10²⁵ kg m² s⁻¹, σ_dM/dt = 1.5×10¹⁹ kg m² s⁻²) come from
+  `custom/gwo.py`, and the section is the integrand of the GWO's Mr — so the two
+  products can never disagree.
+- A 5-day running mean is applied to the section and the global curve (the plain
+  running mean is linear, so the section integrates exactly to the curve).
+- The latitude-resolved daily climatology is derived once from
+  `uwnd.day.ltm.1991-2020.nc` and cached in `data_cache/ltm_rel_aam_cache.npy`
+  (git-ignored); the committed `ltm_aam_cache.npy` used by the GWO product is
+  never rewritten.
+- The frame is square with inward ticks on all four sides, and the footer carries
+  only BASE PERIOD (1991–2020) and LAST DAY USED, as on the reference chart.
+- Checks (offline, on synthetic NCEP-format files): `tests/check_rel_aam.py` +
+  `tests/aam_synthetic.py` — closed-form integration per latitude and globally,
+  exact field ↔ Mr bookkeeping, an independent full-resolution quadrature, the
+  contour-interval rule, smoothing properties, and an end-to-end `/generate`.
