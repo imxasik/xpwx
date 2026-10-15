@@ -60,3 +60,17 @@ PRODUCTS = {
 ```
 Save it as `custom/mywu500.py`, redeploy, and it appears under the **Custom**
 group. That's it.
+
+## What is already in here
+
+| file | what it adds | sidebar group |
+|------|--------------|---------------|
+| `gwo.py` | GWO phase-space diagram (M, dM/dt) | Torque |
+| `rel_aam.py` | Relative AAM: latitude–time section (anomaly shaded, total field contoured) + the global AAM anomaly, in the classic GSDM/AAM layout. Reuses `gwo.py`'s integration | Hovmöller |
+| `mjo_rmm8.py` | MJO phase diagram (RMM, JMA) | Hovmöller |
+| `time_height.py` | Time–height section (wind speed + barbs) | Hovmöller |
+| `chi200.py`, `sst.py`, `tc.py`, `cyclone.py` | χ200, OISST/CoralTemp SST, TC diagnostics | Upper / SST / TC / Cyclone |
+
+Addons may import each other (a plain `from custom import gwo as _gwo` works,
+because the project root is on `sys.path`); keep shared physics in the file that
+owns it so there is only ever one implementation to fix.
