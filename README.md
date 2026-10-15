@@ -135,10 +135,14 @@ Two panels, both for the 120 days ending on the app's selected date:
 1. **Latitude–time section.** Shading is the anomaly of `A` against the daily
    1991–2020 climatology, in the classic AAM palette — white inside ±0.5, then
    yellow/orange/red above and light-green/green/purple/blue below, with ticks
-   at ±0.5 … ±2 × 10²⁴ kg m² s⁻¹ per degree. The black contours are the
-   **total** field, solid above zero and dashed below. The contour interval is
-   chosen automatically from a list of round values so that every chart — quiet
-   or strong — gets three to nine lines, and it is printed in the caption.
+   at ±0.5 … ±2. As on the reference GSDM chart, the shaded anomaly is the
+   value per latitude **grid box** (the native 2.5° spacing, ×2.5 relative to
+   the per-degree contours), which is what gives the chart its large, readable
+   patches; the numbers are therefore 10²⁴ kg m² s⁻¹ per 2.5° box. The black
+   contours are the **total** field per degree, solid above zero and dashed
+   below. The contour interval is chosen automatically from a list of round
+   values so that every chart — quiet or strong — gets three to nine lines, and
+   it is printed in the caption.
 2. **Global AAM anomaly**, in Hadley units (10²⁵ kg m² s⁻¹), i.e. the numerator
    of the standardised anomaly M = Mr′ / σ_M used by the GWO phase diagram.
 

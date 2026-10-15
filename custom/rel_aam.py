@@ -11,9 +11,10 @@ The chart follows the classic GSDM/AAM layout, two panels:
          A(phi, t) = (a^3/g) ∬ u cos^2(phi) dp dlambda   [kg m^2 s^-1 per degree]
 
      * shading  — the anomaly against the 1991–2020 daily climatology at the
-                  same latitudes, in 10^24 kg m^2 s^-1 per degree.  The palette
-                  is the classic AAM one: blue/purple/green below −0.5, white
-                  inside ±0.5, yellow/orange/red above +0.5.
+                  same latitudes, in 10^24 kg m^2 s^-1 per 2.5-degree latitude
+                  box (the native grid spacing, as on the classic GSDM chart).
+                  The palette is the classic AAM one: blue/purple/green below
+                  −0.5, white inside ±0.5, yellow/orange/red above +0.5.
      * contours — the total (absolute) field, solid above zero and dashed
                   below, at a round contour interval printed in the caption.
   2. **Global AAM anomaly** — the section integrated over the whole globe, in
@@ -74,7 +75,18 @@ CLIM_SMOOTH = 31                  # cyclic smoothing of the daily climatology
 HU = 1.0e25                       # Hadley unit, 10^25 kg m^2 s^-1
 DEG = np.pi / 180.0               # per-radian -> per-degree latitude
 
-# shading scale of panel 1 (10^24 kg m^2 s^-1 per degree)
+# Quantities per latitude grid *box* rather than per degree.
+#
+# The classic GSDM/AAM chart shades the AAM anomaly per latitude box of the
+# reanalysis grid, while its total-field contours are per degree.  The two are
+# related by the grid spacing: shading = (per-degree anomaly) x SHADE_BAND.
+# Without this factor the per-degree anomaly of the real atmosphere (~0.2-1.0
+# in 10^24 kg m^2 s^-1/deg, i.e. 3-10 m/s zonal-mean wind anomalies) sits
+# almost entirely inside the white band of the scale and the section looks
+# empty.  The contour field is deliberately left per degree and unchanged.
+SHADE_BAND = 2.5                  # native NCEP/NCAR latitude spacing, degrees
+
+# shading scale of panel 1 (10^24 kg m^2 s^-1 per 2.5-degree latitude box)
 FIELD_UNIT = 1.0e24
 # shading levels: white inside ±0.5 and half-unit steps beyond — the classic AAM
 # scale whose ticks are ±0.5, ±1.0, ±1.5, ±2.0
@@ -366,7 +378,7 @@ def _render_rel_aam(lat, lon, data, pkg, coast_segs, dates, out_buf=None, **_kw)
     times = data["times"]
     lat_axis = np.asarray(data["lat_axis"], float)
     field = np.asarray(data["field"], float) * DEG          # per degree latitude
-    anom = np.asarray(data["anom"], float) * DEG
+    anom = np.asarray(data["anom"], float) * DEG * SHADE_BAND   # per 2.5-deg box
     anom_tot = np.asarray(data["anom_tot"], float)
     smooth = int(data.get("smooth_days", SMOOTH_DAYS))
 
