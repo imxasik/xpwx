@@ -212,12 +212,13 @@ class Http:
                 time.sleep(wait)
             self.last = time.time()
 
-    def get(self, url, byte_range=None):
+    def get(self, url, byte_range=None, retries=None):
         headers = dict(UA)
         if byte_range:
             headers['Range'] = 'bytes=%d-%d' % byte_range
         delay = 3.0
-        for attempt in range(MAX_RETRIES):
+        max_retries = MAX_RETRIES if retries is None else max(1, int(retries))
+        for attempt in range(max_retries):
             self._polite()
             try:
                 req = urllib.request.Request(url, headers=headers)
@@ -229,11 +230,12 @@ class Http:
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     raise FileNotFoundError(url)
-                print(f'  ⚠ HTTP {e.code} — {delay:.0f}s পর আবার চেষ্টা ({attempt+1}/{MAX_RETRIES})')
+                print(f'  ⚠ HTTP {e.code} — {delay:.0f}s পর আবার চেষ্টা ({attempt+1}/{max_retries})')
             except Exception as e:
-                print(f'  ⚠ নেটওয়ার্ক সমস্যা: {e} — {delay:.0f}s পর আবার ({attempt+1}/{MAX_RETRIES})')
-            time.sleep(delay)
-            delay = min(delay * 3, 90)
+                print(f'  ⚠ নেটওয়ার্ক সমস্যা: {e} — {delay:.0f}s পর আবার ({attempt+1}/{max_retries})')
+            if attempt + 1 < max_retries:
+                time.sleep(delay)
+                delay = min(delay * 3, 90)
         raise ConnectionError('সার্ভার থেকে ডাউনলোড ব্যর্থ: ' + url)
 
     def status_ok(self, url):
@@ -241,6 +243,15 @@ class Http:
             self.get(url)
             return True
         except FileNotFoundError:
+            return False
+
+    def exists(self, url):
+        """হালকা প্রোব (1-বাইট রেঞ্জ + একবার চেষ্টা) — রান খোঁজার জন্য।
+        যেকোনো ব্যর্থতায় False, যাতে পরের প্রার্থী রান চেষ্টা করা যায়।"""
+        try:
+            self.get(url, byte_range=(0, 0), retries=1)
+            return True
+        except Exception:
             return False
 
 
@@ -579,10 +590,12 @@ def find_latest_run():
         if cands:
             break
     cache_file = os.path.join(CACHE_DIR, 'last_run.json')
-    for dstr, hh in cands[:6]:
+    for dstr, hh in cands[:8]:
         url = f'{BASE_URL}/{dstr}/{hh}z/ifs/0p25/oper/{dstr}{hh}0000-0h-oper-fc.index'
         print(f'  রান খোঁজা হচ্ছে: {dstr} {hh}Z …', flush=True)
-        if HTTP.status_ok(url):
+        # প্রোব ব্যর্থ হলে (404/নেটওয়ার্ক) এই রান বাদ দিয়ে পরেরটা দেখো —
+        # একটা প্রার্থীর সমস্যায় পুরো খোঁজ থামবে না।
+        if HTTP.exists(url):
             run = {'date': dstr, 'hour': hh, 'found': time.time()}
             try:
                 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -629,8 +642,10 @@ def load_index(run, step):
         lines = open(cf, 'r', encoding='utf-8').read().splitlines()
     else:
         try:
-            data = HTTP.get(index_url(run, step))
-        except FileNotFoundError:
+            data = HTTP.get(index_url(run, step), retries=2)
+        except Exception:
+            # 404 হোক বা সাময়িক নেটওয়ার্ক সমস্যা — স্টেপ এখন उपलब्ध নয় ধরো;
+            # কলার (auto ফলব্যাক / পরিষ্কার এরর মেসেজ) সিদ্ধান্ত নেবে।
             return None
         lines = data.decode().splitlines()
         try:
@@ -644,6 +659,21 @@ def load_index(run, step):
         except Exception:
             pass
     return entries
+
+
+def step_available(run, step, map_key='combo'):
+    """এই রানে কাঙ্ক্ষিত ফোরকাস্ট স্টেপের ডেটা প্রকাশিত হয়েছে কি না।
+    (tp24/combo-র পেছনের উইন্ডো-স্টেপও লাগে, সেটাও যাচাই করে।)"""
+    step = int(step)
+    if load_index(run, step) is None:
+        return False
+    if map_key == 'tp24':
+        return step >= 24 and load_index(run, step - 24) is not None
+    if map_key == 'combo':
+        prev = max(0, step - max(1, STEP_H))
+        if 0 < prev < step and load_index(run, prev) is None:
+            return False
+    return True
 
 
 def msg_cache_path(run, step, param, lev):

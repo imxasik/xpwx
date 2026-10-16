@@ -396,7 +396,8 @@
                    min="0" max="{{ ecmwf_config.max_step }}" step="{{ ecmwf_config.step_interval }}" />
           </div>
         </div>
-        <button class="btn" id="ecmwf-go" onclick="runEcmwf()">&#9654; ECMWF Map</button>
+        <button class="btn" type="button" id="ecmwf-go" onclick="runEcmwf(true)">&#9654; ECMWF Map</button>
+        <div id="ecmwf-run-note" style="font-size:11.5px;color:var(--mut);text-align:center"></div>
       </section>
 
       <section class="stage">
@@ -761,13 +762,51 @@
     return ECMWF.maps.find(m => m.id === ecmwfMap) || null;
   }
 
-  function setEcmwfMode(m){
+  let ecmwfLatest = null, ecmwfLatestAt = 0, ecmwfBusy = false;
+
+  function ecmwfRunNote(txt){
+    const el = document.getElementById("ecmwf-run-note");
+    if (el) el.textContent = txt || "";
+  }
+
+  // Auto মোডে সার্ভার থেকে আসল সর্বশেষ রান এনে RUN DATE / RUN HOUR ফিল্ডে বসায়
+  async function refreshEcmwfLatest(force){
+    if (!force && ecmwfLatest && (Date.now() - ecmwfLatestAt) < 10 * 60 * 1000) return ecmwfLatest;
+    try{
+      const r = await fetch("/ecmwf/latest-run");
+      if (!r.ok) throw new Error("latest-run lookup failed (" + r.status + ")");
+      const j = await r.json();
+      ecmwfLatest = j; ecmwfLatestAt = Date.now();
+      ECMWF_DATE.value = j.date;
+      ECMWF_RUN_HOUR.value = String(j.hour);
+      if (ecmwfMode === "auto") ecmwfRunNote("Auto · latest run: " + j.label);
+      return j;
+    }catch(e){
+      if (ecmwfMode === "auto") ecmwfRunNote("Auto · latest run (server will resolve it)");
+      return null;
+    }
+  }
+
+  function applyEcmwfRunLabel(label){
+    const m = /(\d{4})-(\d{2})-(\d{2}) (\d{2})Z/.exec(label || "");
+    if (!m) return;
+    ECMWF_DATE.value = `${m[1]}-${m[2]}-${m[3]}`;
+    ECMWF_RUN_HOUR.value = String(parseInt(m[4], 10));
+    ecmwfLatest = {date: ECMWF_DATE.value, hour: parseInt(m[4], 10), label};
+    ecmwfLatestAt = Date.now();
+    if (ecmwfMode === "auto") ecmwfRunNote("Auto · latest run: " + label);
+  }
+
+  async function setEcmwfMode(m){
     ecmwfMode = m;
     document.getElementById("ecmwf-m-auto").classList.toggle("active", m === "auto");
     document.getElementById("ecmwf-m-manual").classList.toggle("active", m === "manual");
     ECMWF_DATE.disabled = m === "auto";
     ECMWF_RUN_HOUR.disabled = m === "auto";
-    if (appMode === "ecmwf") runEcmwf();
+    if (appMode === "ecmwf"){
+      if (m === "auto") await refreshEcmwfLatest(true);
+      runEcmwf();
+    }
   }
 
   function pickEcmwf(map){
@@ -787,8 +826,10 @@
   ECMWF_DATE.addEventListener("change", () => { if(appMode==="ecmwf" && ecmwfMode==="manual") runEcmwf(); });
   ECMWF_STEP.addEventListener("change", () => { if(appMode==="ecmwf") runEcmwf(); });
 
-  async function runEcmwf(){
-    if(appMode !== "ecmwf") return;
+  async function runEcmwf(fromButton){
+    // বাটন/পিক যেখান থেকেই আসুক — কখনো নীরবে ফিরে যাবে না, সঙ্গে সঙ্গে ফিডব্যাক দেবে
+    appMode = "ecmwf";
+    if (ecmwfBusy){ S.textContent = "ECMWF: a map is already being generated…"; S.className = ""; return; }
     const step = Math.max(0, Math.min(ECMWF.max_step, parseInt(ECMWF_STEP.value,10) || 0));
     ECMWF_STEP.value = step;
     if (step % ECMWF.step_interval !== 0){
@@ -802,26 +843,37 @@
     if (ecmwfMode === "manual" && !ECMWF_DATE.value){
       S.textContent = "Pick a run date."; S.className = "err"; return;
     }
-    const region = ECMWF_REGION.value || ECMWF.default_region;
-    const runHour = parseInt(ECMWF_RUN_HOUR.value,10) || 0;
-    const key = JSON.stringify({m:ecmwfMap, mode:ecmwfMode, d:ECMWF_DATE.value||null,
-                                h:runHour, s:step, r:region});
 
-    if(ecmwfCache[key]){
-      showEcmwf(ecmwfCache[key], "Latest ECMWF run");
-      S.textContent = "Cache · instant."; S.className = "ok";
-      return;
-    }
-
+    ecmwfBusy = true;
     document.getElementById("ecmwf-go").disabled = true;
-    PH.style.display = "flex"; PT.textContent = "Fetching ECMWF forecast…";
+    PH.style.display = "flex";
+    PT.textContent = ecmwfMode === "auto" ? "Finding latest ECMWF run…" : "Fetching ECMWF forecast…";
     IMG.style.display = "none"; DL.style.display = "none";
     META.innerHTML = "<b>ECMWF Forecast</b> · Rendering…";
-
-    const body = { map: ecmwfMap, mode: ecmwfMode, forecast_hour: step, region };
-    if (ecmwfMode === "manual"){ body.date = ECMWF_DATE.value; body.run_hour = runHour; }
+    S.textContent = "ECMWF: generating map…"; S.className = "";
 
     try{
+      // Auto মোডে আগে আসল সর্বশেষ রানটা জেনে ফিল্ডে দেখাই (সার্ভারও নিজে রিজল্ভ করে)
+      if (ecmwfMode === "auto") await refreshEcmwfLatest(false);
+
+      const region = ECMWF_REGION.value || ECMWF.default_region;
+      const runHour = parseInt(ECMWF_RUN_HOUR.value,10) || 0;
+      const key = JSON.stringify({m:ecmwfMap, mode:ecmwfMode,
+                                  d: ecmwfMode === "auto" ? (ecmwfLatest ? ecmwfLatest.date : null) : (ECMWF_DATE.value||null),
+                                  h: ecmwfMode === "auto" ? (ecmwfLatest ? ecmwfLatest.hour : null) : runHour,
+                                  s:step, r:region});
+
+      if(ecmwfCache[key]){
+        showEcmwf(ecmwfCache[key], ecmwfLatest ? ecmwfLatest.label || "" : "Latest ECMWF run");
+        S.textContent = "Cache · instant."; S.className = "ok";
+        return;
+      }
+
+      PT.textContent = "Fetching ECMWF forecast… (first load for a run can take a few minutes)";
+
+      const body = { map: ecmwfMap, mode: ecmwfMode, forecast_hour: step, region };
+      if (ecmwfMode === "manual"){ body.date = ECMWF_DATE.value; body.run_hour = runHour; }
+
       const r = await fetch("/ecmwf/generate", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
@@ -834,12 +886,16 @@
       }
       const url = URL.createObjectURL(await r.blob());
       ecmwfCache[key] = url;
-      showEcmwf(url, r.headers.get("X-ECMWF-Run") || "Latest ECMWF run",
-                    r.headers.get("X-ECMWF-Valid") || "");
+      const runLabel = r.headers.get("X-ECMWF-Run") || "Latest ECMWF run";
+      applyEcmwfRunLabel(runLabel);
+      showEcmwf(url, runLabel, r.headers.get("X-ECMWF-Valid") || "");
       S.textContent = "ECMWF Ready."; S.className = "ok";
     }catch(e){
+      IMG.style.display = "none";
+      META.innerHTML = "<b>ECMWF Forecast</b> · Failed — see message below.";
       S.textContent = "ECMWF Error: " + (e.message||e); S.className = "err";
     }finally{
+      ecmwfBusy = false;
       PH.style.display = "none";
       document.getElementById("ecmwf-go").disabled = false;
     }

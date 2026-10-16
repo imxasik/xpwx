@@ -176,6 +176,16 @@ def ecmwf_config():
     return jsonify(ecmwf_web.metadata())
 
 
+@app.route("/ecmwf/latest-run")
+def ecmwf_latest_run():
+    """Latest available ECMWF run (for the Auto Date display in the UI)."""
+    try:
+        return jsonify(ecmwf_web.latest_run_info())
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("ECMWF latest-run lookup failed")
+        return jsonify({"error": str(exc), "code": "ecmwf_latest_run_failed"}), 503
+
+
 @app.route("/ecmwf/generate", methods=["POST"])
 def ecmwf_generate():
     body = request.get_json(silent=True) or {}
