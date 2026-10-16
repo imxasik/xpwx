@@ -19,6 +19,7 @@ from flask import Flask, render_template, request, send_file, jsonify
 
 import pro as metmap
 import gfs_web
+import ecmwf_web
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
@@ -62,7 +63,8 @@ def index():
                            default_product=metmap.DEFAULT_PRODUCT,
                            products=metmap.list_products(),
                            groups=metmap.group_products(),
-                           gfs_config=gfs_web.metadata())
+                           gfs_config=gfs_web.metadata(),
+                           ecmwf_config=ecmwf_web.metadata())
 
 
 @app.route("/health")
@@ -167,6 +169,53 @@ def gfs_generate():
             "error": str(exc),
             "code": "gfs_generation_failed",
         }), 500
+
+
+@app.route("/ecmwf/config")
+def ecmwf_config():
+    return jsonify(ecmwf_web.metadata())
+
+
+@app.route("/ecmwf/generate", methods=["POST"])
+def ecmwf_generate():
+    body = request.get_json(silent=True) or {}
+    map_key = body.get("map", ecmwf_web.DEFAULT_MAP)
+    mode = body.get("mode", "auto")
+    manual_date = body.get("date")
+    try:
+        run_hour = int(body.get("run_hour", 0) or 0)
+        forecast_hour = int(body.get("forecast_hour", ecmwf_web.DEFAULT_STEP) or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "run hour and forecast hour must be numbers",
+                        "code": "ecmwf_bad_input"}), 400
+    region_id = str(body.get("region", ecmwf_web.DEFAULT_REGION))
+
+    try:
+        data, meta = ecmwf_web.generate(
+            map_key=map_key,
+            mode=mode,
+            manual_date=manual_date,
+            run_hour=run_hour,
+            forecast_hour=forecast_hour,
+            region_id=region_id,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "code": "ecmwf_bad_input"}), 400
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception("ECMWF map generation failed")
+        return jsonify({
+            "error": str(exc),
+            "code": "ecmwf_generation_failed",
+        }), 500
+
+    resp = _serve_png(data)
+    resp.headers["X-ECMWF-Run"] = meta.get("run", "")
+    resp.headers["X-ECMWF-Valid"] = meta.get("valid", "")
+    resp.headers["X-ECMWF-Region"] = meta.get("region", "")
+    resp.headers["X-ECMWF-Cache"] = str(meta.get("cache", False)).lower()
+    if "seconds" in meta:
+        resp.headers["X-ECMWF-Seconds"] = str(meta["seconds"])
+    return resp
 
 
 @app.route("/diff", methods=["POST"])

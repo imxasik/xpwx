@@ -47,6 +47,24 @@ Torque / Flow / Advanced / Surface / Hovmöller**. Examples:
 - Frictional torque (τx/τy/|τ|), IVT, QG omega forcing, MSE, temperature
   advection, geostrophic/ageostrophic wind.
 
+## ECMWF Forecast (sidebar, above GFS)
+The **ECMWF FORECAST** sidebar group renders ECMWF IFS HRES 0.25° open-data
+maps with the standalone map-maker design (header, colour bar, city labels,
+`@XPWEATHER` watermark): Rain + MSLP + Wind (combo, default), 2m Temperature,
+MSLP, MSLP + Wind, Accumulated / 24-hour Precipitation, 10 m Wind, 500 hPa
+Height, 850 hPa Temperature, Total Cloud Cover and CAPE.
+- `ecmwf/engine.py` — the engine: polite HTTP range-request client, pure-Python
+  GRIB2 + CCSDS (libaec) decoder, and the plot engine. Downloaded messages are
+  cached per run under `ecmwf/ecmwf_cache/` (git-ignored; last 2 runs kept).
+  Optional division borders: drop a `bd_states.geojson` next to the engine.
+- `ecmwf_web.py` — Flask adapter (same pattern as `gfs_web.py`).
+- Controls: **Auto Date** uses the latest available IFS run; **Manual Date**
+  takes a run date + run hour (00/06/12/18Z). The numeric input is the
+  **forecast hour** (0–240, 3-hourly steps; `tp24` needs ≥ 24). No GIF.
+- API: `GET /ecmwf/config`, `POST /ecmwf/generate`
+  `{"map": "combo", "mode": "auto"|"manual", "date": "YYYY-MM-DD", "run_hour": 0, "forecast_hour": 24, "region": "bangladesh"}` → PNG.
+  Data licence: ECMWF (CC-BY-4.0).
+
 ## Run locally
 ```bash
 pip install -r requirements.txt   # netCDF4 replaces the former pydap dependency
