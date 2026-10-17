@@ -99,7 +99,7 @@ MAP_DESCRIPTIONS = {
     'tcc':      'Total cloud cover (%).',
     'cape':     'Most-unstable CAPE (J/kg).',
     'steer':    '850–200 hPa deep-layer mean wind speed (shaded) + streamlines.',
-    'satdef':   '700–500 hPa layer-mean saturation deficit (g/kg) — dry-air intrusion.',
+    'satdef':   '700–500 hPa saturation deficit (g/kg, shaded) + layer-mean wind streamlines — dry-air intrusion.',
     'secondary': 'Azimuthal-mean secondary circulation: radius–height overturning around a centre you enter.',
     'outflow':  '200 hPa divergence + outflow streamlines and radial-outflow profile around a centre you enter.',
 }
@@ -919,7 +919,8 @@ def prepare_map_data(run, kind, step):
         return lats, lons, np.hypot(u, v), (u, v)
     if kind == 'satdef':
         # 700–500 hPa স্তর-গড় saturation deficit (g/kg): qs·(1 − RH/100)
-        g = _fetch_levels(run, step, ['t', 'r'], SATDEF_LEVELS)
+        # extra: একই স্তরের গড় বাতাস — শুষ্ক বাতাসের প্রবাহ দেখাতে স্ট্রিমলাইন
+        g = _fetch_levels(run, step, ['t', 'r', 'u', 'v'], SATDEF_LEVELS)
         if not g:
             return None
         defs = []
@@ -928,7 +929,8 @@ def prepare_map_data(run, kind, step):
             RH = np.clip(g[('r', lev)].values, 0.0, 100.0)
             defs.append(_qsat_gkg(T, float(lev)) * (1.0 - RH / 100.0))
         f = g[('t', SATDEF_LEVELS[0])]
-        return f.lats, f.lons, np.mean(defs, axis=0), None
+        _, _, u_mean, v_mean = _layer_mean_wind(g, SATDEF_LEVELS)
+        return f.lats, f.lons, np.mean(defs, axis=0), (u_mean, v_mean)
     print(f'  ⚠ অজানা ম্যাপ কী: {kind}')
     return None
 
@@ -1166,8 +1168,9 @@ def plot_single(kind, step, data3, run, region_key, bbox, th):
                   width=0.0021 * scale, headwidth=3.0, headlength=4.0, headaxislength=3.4,
                   minlength=0.5, pivot='middle', linewidth=0.4, color='#26313b',
                   alpha=0.78, zorder=8)
-    if extra_c and kind == 'steer':
-        # স্ট্রিমলাইন (ল্যাট ascending করে দিতে হয়)
+    if extra_c and kind in ('steer', 'satdef'):
+        # স্ট্রিমলাইন (ল্যাট ascending করে দিতে হয়) — satdef-এ একই স্তরের
+        # গড় বাতাস, যাতে শুষ্ক বাতাসের অনুপ্রবেশের দিক বোঝা যায়
         u_c, v_c = extra_c[0], extra_c[1]
         o = np.argsort(lats_c)
         density = 1.4 if (bbox[3] - bbox[2]) < 40 else 1.8
