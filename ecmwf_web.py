@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import importlib.util
 import os
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -25,9 +26,14 @@ from collections import OrderedDict
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE_PATH = os.path.join(_HERE, "ecmwf", "engine.py")
 
-_spec = importlib.util.spec_from_file_location("ecmwf_engine", _ENGINE_PATH)
-eengine = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(eengine)
+# Share one engine module with other consumers (the Kelvin addon does the
+# same lookup): one HTTP politeness clock, one set of cache constants.
+eengine = sys.modules.get("ecmwf_engine")
+if eengine is None:
+    _spec = importlib.util.spec_from_file_location("ecmwf_engine", _ENGINE_PATH)
+    eengine = importlib.util.module_from_spec(_spec)
+    sys.modules["ecmwf_engine"] = eengine
+    _spec.loader.exec_module(eengine)
 
 _LOCK = threading.RLock()
 _CACHE = OrderedDict()

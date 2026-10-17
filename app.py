@@ -12,6 +12,7 @@ GET  /health      -> health check for uptime monitors / Render
 import io
 import os
 import json
+import time
 import datetime
 from collections import OrderedDict
 
@@ -35,15 +36,20 @@ _CACHE_MAX = 16
 _cache = OrderedDict()
 
 
-def _cache_get(key):
-    data = _cache.get(key)
-    if data is not None:
-        _cache.move_to_end(key)
+def _cache_get(key, ttl=None):
+    item = _cache.get(key)
+    if item is None:
+        return None
+    stamp, data = item
+    if ttl is not None and (time.time() - stamp) > ttl:
+        _cache.pop(key, None)
+        return None
+    _cache.move_to_end(key)
     return data
 
 
 def _cache_put(key, data):
-    _cache[key] = data
+    _cache[key] = (time.time(), data)
     _cache.move_to_end(key)
     while len(_cache) > _CACHE_MAX:
         _cache.popitem(last=False)
@@ -90,6 +96,10 @@ def generate():
     if product_id not in metmap.PRODUCTS:
         return jsonify({"error": f"unknown product '{product_id}'",
                         "code": "unknown_product"}), 400
+    # Forecast products must pick up a new model run; reanalysis renders are
+    # deterministic and can stay cached until eviction.
+    forecast_product = bool(metmap.PRODUCTS[product_id].get("forecast"))
+    cache_ttl = 15 * 60 if forecast_product else None
 
     lat = lon = None
     if metmap.PRODUCTS[product_id].get("needs_latlon"):
@@ -113,7 +123,7 @@ def generate():
             return jsonify({"error": "invalid date format, use YYYY-MM-DD"}), 400
 
     key = json.dumps([product_id, mode, manual_date, n_days, lat, lon])
-    hit = _cache_get(key)
+    hit = _cache_get(key, ttl=cache_ttl)
     if hit is not None:
         return _serve_png(hit)
 
@@ -130,6 +140,48 @@ def generate():
     data = buf.getvalue()
     _cache_put(key, data)
     return _serve_png(data)
+
+
+@app.route("/kelvin/csv")
+def kelvin_csv():
+    """Trajectory table behind the Kelvin phase diagram (sidebar Hovmöller).
+
+    The chart itself is served by /generate like every other product; this
+    endpoint returns the same lead times as CSV.  The downloadable link only
+    appears in the UI after the chart has been rendered, so the VP
+    coefficients are already on disk and this is a sub-second request.
+    """
+    mode = request.args.get("mode", "auto")
+    mode = "manual" if mode == "manual" else "auto"
+    date_s = request.args.get("date")
+    date = None
+    if mode == "manual":
+        try:
+            date = datetime.date.fromisoformat(date_s or "")
+        except ValueError:
+            return jsonify({"error": "manual mode requires date=YYYY-MM-DD"}), 400
+
+    key = json.dumps(["kelvin_csv", mode, date_s])
+    name = "kelvin_vp200.csv"
+    hit = _cache_get(key, ttl=15 * 60)
+    if hit is not None:
+        data = hit
+    else:
+        try:
+            from kelvin import pipeline, plot
+            forecast = pipeline.build_forecast(mode=mode, date=date)
+            data = plot.csv_text(forecast).encode("utf-8")
+            run = forecast["run"]
+            name = f"kelvin_vp200_{run[0]}_{run[1]}z.csv"
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("Kelvin CSV build failed")
+            return jsonify({"error": str(exc), "code": "csv_failed"}), 500
+        _cache_put(key, data)
+
+    resp = send_file(io.BytesIO(data), mimetype="text/csv",
+                     as_attachment=True, download_name=name)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route("/gfs/config")

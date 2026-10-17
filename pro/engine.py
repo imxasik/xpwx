@@ -19,11 +19,24 @@ def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
              n_days=DEFAULT_N_DAYS, log=None, lat=None, lon=None):
     """Build one product. lat/lon (degrees) are passed to products that need a location."""
     pkg = PRODUCTS.get(product_id, PRODUCTS[DEFAULT_PRODUCT])
+    # Request context for addons whose data source is not the PSL archive
+    # (forecast products need to know Auto vs a manual run date).
+    pkg = dict(pkg, request_mode=mode, request_date=manual_date)
     if lat is not None and lon is not None:
         pkg = dict(pkg, lat=float(lat), lon=float(lon))
     say = (lambda m: log.append(m)) if log is not None else (lambda m: None)
 
-    dates = _resolve_dates(mode, manual_date, n_days)
+    if pkg.get("forecast"):
+        # A forecast product carries its own time axis (the IFS run); the
+        # NCEP date resolution below is only needed by reanalysis products.
+        if mode == "manual" and manual_date:
+            day = (manual_date if isinstance(manual_date, datetime.date)
+                   else datetime.date.fromisoformat(str(manual_date)))
+            dates = [day]
+        else:
+            dates = [datetime.date.today()]
+    else:
+        dates = _resolve_dates(mode, manual_date, n_days)
 
     if pkg["kind"] == "hov":
         say(f"[0/3] {pkg['title']} | {pkg.get('window', 120)}-day Hovmöller")
@@ -40,13 +53,29 @@ def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
         _release_memory()
         return buf, meta
 
-    say(f"[0/4] {pkg['title']} | {dates[0]} → {dates[-1]} ({len(dates)}-day mean)")
-    say("[0/4] Loading coastline …")
-    coast_segs = load_coastlines()
-    say(f"  {len(coast_segs)} segments loaded.")
-    say("[1-2/4] Fetching obs & climatology (cached) …")
+    if pkg.get("forecast"):
+        say(f"[0/4] {pkg['title']} | ECMWF IFS forecast")
+    else:
+        say(f"[0/4] {pkg['title']} | {dates[0]} → {dates[-1]} ({len(dates)}-day mean)")
+    if pkg.get("needs_coast", True):
+        say("[0/4] Loading coastline …")
+        coast_segs = load_coastlines()
+        say(f"  {len(coast_segs)} segments loaded.")
+    else:
+        # Diagnostics that draw their own figure (phase diagrams) do not need
+        # the Natural Earth download; skipping it also keeps the first cold
+        # render from depending on an unrelated server.
+        coast_segs = []
+    if pkg.get("forecast"):
+        say("[1-2/4] Fetching ECMWF IFS d200 fields (cached) …")
+    else:
+        say("[1-2/4] Fetching obs & climatology (cached) …")
     lat, lon, data = compute(pkg, dates)
-    say(f"  grid {lat.size}×{lon.size} @ {pkg['level']} hPa")
+    if pkg.get("forecast") and isinstance(data, dict):
+        say(f"  {data.get('n_steps', 0)} daily fields · run "
+            f"{data.get('run_label', '?')}")
+    else:
+        say(f"  grid {lat.size}×{lon.size} @ {pkg['level']} hPa")
     say("[3/4] Rendering …")
     rfn = _compute._custom_render(pkg["kind"])
     if rfn is not None:
@@ -60,6 +89,18 @@ def generate(product_id=DEFAULT_PRODUCT, mode="auto", manual_date=None,
     meta = {"product": pkg["id"], "title": pkg["title"],
             "date_start": dates[0].isoformat(), "date_end": dates[-1].isoformat(),
             "n_days": len(dates), "level": pkg["level"]}
+    if isinstance(data, dict):
+        if data.get("run_label"):
+            meta["run"] = data["run_label"]
+        if data.get("n_steps"):
+            meta["n_steps"] = int(data["n_steps"])
+        if data.get("valid_end"):
+            meta["valid_end"] = data["valid_end"].isoformat()
+        if pkg.get("forecast") and data.get("valid_start") and data.get("valid_end"):
+            # The valid range of the trajectory, not the request date.
+            meta["date_start"] = data["valid_start"].date().isoformat()
+            meta["date_end"] = data["valid_end"].date().isoformat()
+            meta["n_days"] = int(data.get("n_steps") or len(dates))
     _release_memory()
     return buf, meta
 
@@ -67,6 +108,8 @@ def generate_diff(product_id=DEFAULT_PRODUCT, date1=None, n_days1=DEFAULT_N_DAYS
                   date2=None, n_days2=DEFAULT_N_DAYS, inverse=False, log=None):
     """Return one map of (Range A − Range B), or (B − A) if inverse=True."""
     pkg = PRODUCTS.get(product_id, PRODUCTS[DEFAULT_PRODUCT])
+    if pkg.get("forecast"):
+        raise ValueError("forecast products do not support date-range differencing")
     say = (lambda m: log.append(m)) if log is not None else (lambda m: None)
 
     dates_a = _resolve_dates("manual", date1, n_days1)

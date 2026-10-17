@@ -390,7 +390,9 @@ def list_products():
              "desc": p["desc"], "level": p["level"], "tag": p["tag"],
              "kind": p["kind"],
              "needs_latlon": bool(p.get("needs_latlon")),
-             "uses_days": bool(p.get("uses_days"))}
+             "uses_days": bool(p.get("uses_days")),
+             "forecast": bool(p.get("forecast")),
+             "csv": p.get("csv")}
             for p in PRODUCTS.values()]
 
 def group_products():
@@ -407,5 +409,7 @@ def group_products():
              "desc": p["desc"], "level": p["level"], "tag": p["tag"],
              "kind": p["kind"],
              "needs_latlon": bool(p.get("needs_latlon")),
-             "uses_days": bool(p.get("uses_days"))} for p in by_tag[tag]]})
+             "uses_days": bool(p.get("uses_days")),
+             "forecast": bool(p.get("forecast")),
+             "csv": p.get("csv")} for p in by_tag[tag]]})
     return out
