@@ -61,8 +61,14 @@ Height, 850 hPa Temperature, Total Cloud Cover and CAPE.
 - Controls: **Auto Date** uses the latest available IFS run; **Manual Date**
   takes a run date + run hour (00/06/12/18Z). The numeric input is the
   **forecast hour** (0–240, 3-hourly steps; `tp24` needs ≥ 24). No GIF.
-- API: `GET /ecmwf/config`, `POST /ecmwf/generate`
-  `{"map": "combo", "mode": "auto"|"manual", "date": "YYYY-MM-DD", "run_hour": 0, "forecast_hour": 24, "region": "bangladesh"}` → PNG.
+- Cyclone diagnostics (from IFS pressure-level `u/v/t/r`): **Deep-Layer Steering
+  Flow** (850–200 hPa mean wind + streamlines, basin map), **Saturation Deficit**
+  (700–500 hPa), **Azimuthal-Mean Secondary Circulation** (radius–height
+  overturning; ω diagnosed from mass continuity) and **Outflow Strength**
+  (200 hPa divergence + radial-outflow profile). The last two take a centre
+  lat/lon (the 850 hPa vorticity maximum near it is used as the centre).
+- API: `GET /ecmwf/config`, `GET /ecmwf/latest-run`, `POST /ecmwf/generate`
+  `{"map": "combo", "mode": "auto"|"manual", "date": "YYYY-MM-DD", "run_hour": 0, "forecast_hour": 24, "region": "bangladesh", "centre_lat": 16.5, "centre_lon": 87.0}` → PNG.
   Data licence: ECMWF (CC-BY-4.0).
 
 ## Run locally

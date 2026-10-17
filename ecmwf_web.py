@@ -69,6 +69,7 @@ def metadata():
                 "name": eengine.MAP_TITLES[k][0],
                 "unit": eengine.MAP_TITLES[k][1],
                 "desc": eengine.MAP_DESCRIPTIONS[k],
+                "needs_centre": k in eengine.CENTRE_MAPS,
             }
             for k in eengine.MAP_ORDER
         ],
@@ -141,7 +142,8 @@ def _resolve_auto_run(map_key, step):
 
 
 def generate(map_key, mode="auto", manual_date=None, run_hour=0,
-             forecast_hour=DEFAULT_STEP, region_id=DEFAULT_REGION):
+             forecast_hour=DEFAULT_STEP, region_id=DEFAULT_REGION,
+             centre_lat=None, centre_lon=None):
     """Return PNG bytes + useful metadata for one ECMWF forecast map."""
     map_key = str(map_key or DEFAULT_MAP)
     if map_key not in eengine.MAP_TITLES:
@@ -149,6 +151,17 @@ def generate(map_key, mode="auto", manual_date=None, run_hour=0,
     region_id = str(region_id or DEFAULT_REGION)
     if region_id not in eengine.REGION_PRESETS:
         raise ValueError(f"unknown ECMWF region '{region_id}'")
+
+    centre = None
+    if map_key in eengine.CENTRE_MAPS:
+        try:
+            clat = float(centre_lat)
+            clon = float(centre_lon)
+        except (TypeError, ValueError):
+            raise ValueError("enter a centre latitude and longitude for this map")
+        if not (-90.0 <= clat <= 90.0) or not (-180.0 <= clon <= 360.0):
+            raise ValueError("centre latitude must be -90 to 90 and longitude -180 to 360")
+        centre = (clat, ((clon + 180.0) % 360.0) - 180.0)
 
     try:
         step = int(forecast_hour)
@@ -170,7 +183,8 @@ def generate(map_key, mode="auto", manual_date=None, run_hour=0,
     else:
         run = resolve_run(mode, manual_date, run_hour)
 
-    key = (run, map_key, step, region_id)
+    centre_key = (round(centre[0], 2), round(centre[1], 2)) if centre else None
+    key = (run, map_key, step, region_id, centre_key)
     cached = _cache_get(key)
     if cached is not None:
         png, meta = cached
@@ -184,7 +198,7 @@ def generate(map_key, mode="auto", manual_date=None, run_hour=0,
             return png, {**meta, "cache": True}
 
         t0 = time.time()
-        png, meta = eengine.render_map(map_key, run, step, region_id)
+        png, meta = eengine.render_map(map_key, run, step, region_id, centre=centre)
         meta = {**meta, "seconds": round(time.time() - t0, 1), "cache": False}
         _cache_put(key, (png, meta))
         return png, meta

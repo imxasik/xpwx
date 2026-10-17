@@ -396,6 +396,16 @@
                    min="0" max="{{ ecmwf_config.max_step }}" step="{{ ecmwf_config.step_interval }}" />
           </div>
         </div>
+        <div class="rowf" id="ecmwf-latlon-row" style="display:none">
+          <div class="field">
+            <label>CENTRE LATITUDE (°N)</label>
+            <input type="number" id="ecmwf-lat" step="0.01" min="-90" max="90" placeholder="e.g. 16.5" />
+          </div>
+          <div class="field">
+            <label>CENTRE LONGITUDE (°E)</label>
+            <input type="number" id="ecmwf-lon" step="0.01" min="-180" max="360" placeholder="e.g. 84.5" />
+          </div>
+        </div>
         <button class="btn" type="button" id="ecmwf-go" onclick="runEcmwf(true)">&#9654; ECMWF Map</button>
         <div id="ecmwf-run-note" style="font-size:11.5px;color:var(--mut);text-align:center"></div>
       </section>
@@ -749,6 +759,8 @@
   const ECMWF_DATE = document.getElementById("ecmwf-date");
   const ECMWF_RUN_HOUR = document.getElementById("ecmwf-run-hour");
   const ECMWF_STEP = document.getElementById("ecmwf-step");
+  const ECMWF_LAT = document.getElementById("ecmwf-lat");
+  const ECMWF_LON = document.getElementById("ecmwf-lon");
   const ECMWF_CONTROLS = document.getElementById("ecmwf-controls");
   let ecmwfMap = ECMWF.default_map, ecmwfMode = "auto";
 
@@ -809,6 +821,21 @@
     }
   }
 
+  function ecmwfCentreInput(){
+    const meta = ecmwfProductMeta();
+    if (!meta || !meta.needs_centre) return {ok: true, centre: null};
+    const la = parseFloat(ECMWF_LAT.value), lo = parseFloat(ECMWF_LON.value);
+    if (!isFinite(la) || !isFinite(lo)) return {ok: false, centre: null};
+    if (la < -90 || la > 90 || lo < -180 || lo > 360) return {ok: false, centre: null};
+    return {ok: true, centre: [la, lo]};
+  }
+
+  function ecmwfCentreVisible(){
+    const meta = ecmwfProductMeta();
+    document.getElementById("ecmwf-latlon-row").style.display =
+      (meta && meta.needs_centre) ? "flex" : "none";
+  }
+
   function pickEcmwf(map){
     appMode = "ecmwf";
     ecmwfMap = map;
@@ -817,7 +844,16 @@
     REAN_CONTROLS.style.display = "none";
     GFS_CONTROLS.style.display = "none";
     ECMWF_CONTROLS.style.display = "flex";
+    ecmwfCentreVisible();
     closeMenu();
+    const meta = ecmwfProductMeta();
+    if (meta && meta.needs_centre && !ecmwfCentreInput().ok){
+      IMG.style.display = "none"; DL.style.display = "none"; PH.style.display = "none";
+      META.innerHTML = "<b>" + meta.name + "</b> · enter the centre latitude and longitude, then press ECMWF Map.";
+      S.textContent = "Enter the cyclone centre latitude and longitude."; S.className = "";
+      ECMWF_LAT.focus();
+      return;
+    }
     runEcmwf();
   }
 
@@ -843,6 +879,11 @@
     if (ecmwfMode === "manual" && !ECMWF_DATE.value){
       S.textContent = "Pick a run date."; S.className = "err"; return;
     }
+    const meta0 = ecmwfProductMeta();
+    if (meta0 && meta0.needs_centre && !ecmwfCentreInput().ok){
+      S.textContent = "ECMWF Error: enter the centre latitude and longitude for this map.";
+      S.className = "err"; ECMWF_LAT.focus(); return;
+    }
 
     ecmwfBusy = true;
     document.getElementById("ecmwf-go").disabled = true;
@@ -858,10 +899,11 @@
 
       const region = ECMWF_REGION.value || ECMWF.default_region;
       const runHour = parseInt(ECMWF_RUN_HOUR.value,10) || 0;
+      const centreIn = ecmwfCentreInput();
       const key = JSON.stringify({m:ecmwfMap, mode:ecmwfMode,
                                   d: ecmwfMode === "auto" ? (ecmwfLatest ? ecmwfLatest.date : null) : (ECMWF_DATE.value||null),
                                   h: ecmwfMode === "auto" ? (ecmwfLatest ? ecmwfLatest.hour : null) : runHour,
-                                  s:step, r:region});
+                                  s:step, r:region, c:centreIn.centre});
 
       if(ecmwfCache[key]){
         showEcmwf(ecmwfCache[key], ecmwfLatest ? ecmwfLatest.label || "" : "Latest ECMWF run");
@@ -873,6 +915,7 @@
 
       const body = { map: ecmwfMap, mode: ecmwfMode, forecast_hour: step, region };
       if (ecmwfMode === "manual"){ body.date = ECMWF_DATE.value; body.run_hour = runHour; }
+      if (centreIn.centre){ body.centre_lat = centreIn.centre[0]; body.centre_lon = centreIn.centre[1]; }
 
       const r = await fetch("/ecmwf/generate", {
         method:"POST",
@@ -888,7 +931,8 @@
       ecmwfCache[key] = url;
       const runLabel = r.headers.get("X-ECMWF-Run") || "Latest ECMWF run";
       applyEcmwfRunLabel(runLabel);
-      showEcmwf(url, runLabel, r.headers.get("X-ECMWF-Valid") || "");
+      showEcmwf(url, runLabel, r.headers.get("X-ECMWF-Valid") || "",
+                r.headers.get("X-ECMWF-Centre") || "");
       S.textContent = "ECMWF Ready."; S.className = "ok";
     }catch(e){
       IMG.style.display = "none";
@@ -901,7 +945,7 @@
     }
   }
 
-  function showEcmwf(url, runLabel, validLabel){
+  function showEcmwf(url, runLabel, validLabel, centreLabel){
     IMG.src = url; IMG.style.display = "block";
     DL.href = url; DL.style.display = "inline-block";
     DL.setAttribute("download", "ecmwf-"+ecmwfMap+".png");
@@ -910,7 +954,8 @@
     META.innerHTML = "<b>" + (meta ? meta.name : ecmwfMap) + "</b> · "
       + (region ? region.name : "") + " · +"
       + ECMWF_STEP.value + "h · Run " + runLabel
-      + (validLabel ? " · Valid " + validLabel : "");
+      + (validLabel ? " · Valid " + validLabel : "")
+      + (centreLabel ? " · centre " + centreLabel : "");
   }
 
   // ── initialise SST / TC lists ─────────────────────────────────────────────

@@ -208,6 +208,8 @@ def ecmwf_generate():
             run_hour=run_hour,
             forecast_hour=forecast_hour,
             region_id=region_id,
+            centre_lat=body.get("centre_lat"),
+            centre_lon=body.get("centre_lon"),
         )
     except ValueError as exc:
         return jsonify({"error": str(exc), "code": "ecmwf_bad_input"}), 400
@@ -221,6 +223,8 @@ def ecmwf_generate():
     resp = _serve_png(data)
     resp.headers["X-ECMWF-Run"] = meta.get("run", "")
     resp.headers["X-ECMWF-Valid"] = meta.get("valid", "")
+    if meta.get("centre"):
+        resp.headers["X-ECMWF-Centre"] = meta["centre"].replace("°", "")
     resp.headers["X-ECMWF-Region"] = meta.get("region", "")
     resp.headers["X-ECMWF-Cache"] = str(meta.get("cache", False)).lower()
     if "seconds" in meta:

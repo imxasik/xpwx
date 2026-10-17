@@ -80,7 +80,11 @@ gh500 (500hPa উচ্চতা gpm) | t850 (850hPa তাপমাত্রা
 
 # ওয়েব সাইডবারে দেখানোর ক্রম (ডিফল্ট 'combo' — মূল স্ক্রিপ্টের MAPS ডিফল্ট)
 MAP_ORDER = ['combo', 't2m', 'msl', 'msl_wind', 'tp', 'tp24',
-             'wind10', 'gh500', 't850', 'tcc', 'cape']
+             'wind10', 'gh500', 't850', 'tcc', 'cape',
+             'steer', 'satdef', 'secondary', 'outflow']
+
+# কোর-কেন্দ্রিক (cyclone) ম্যাপ — ব্যবহারকারীর দেওয়া সেন্টার lat/lon লাগে
+CENTRE_MAPS = {'secondary', 'outflow'}
 
 MAP_DESCRIPTIONS = {
     'combo':    'Rain (last 3 h) shaded + MSLP contours + 10 m wind arrows.',
@@ -94,6 +98,10 @@ MAP_DESCRIPTIONS = {
     't850':     '850 hPa temperature (°C).',
     'tcc':      'Total cloud cover (%).',
     'cape':     'Most-unstable CAPE (J/kg).',
+    'steer':    '850–200 hPa deep-layer mean wind speed (shaded) + streamlines.',
+    'satdef':   '700–500 hPa layer-mean saturation deficit (g/kg) — dry-air intrusion.',
+    'secondary': 'Azimuthal-mean secondary circulation: radius–height overturning around a centre you enter.',
+    'outflow':  '200 hPa divergence + outflow streamlines and radial-outflow profile around a centre you enter.',
 }
 
 # ============================== রিজিয়ন প্রিসেট ==============================
@@ -172,6 +180,8 @@ LEVELS = {
     'gh500':  (np.arange(4400, 6100, 60).tolist(), GH_CMAP, 'both'),
     'tcc':    (np.arange(0, 105, 10).tolist(), TCC_CMAP, 'neither'),
     'cape':   ([0, 100, 250, 500, 1000, 1500, 2000, 2500, 3000, 4000], CAPE_CMAP, 'max'),
+    'steer':  ([0, 2, 4, 6, 8, 10, 12, 14, 17, 20, 24, 28, 33], WIND_COLORS, 'max'),
+    'satdef': ([0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 10, 12], 'YlOrBr', 'max'),
 }
 
 MAP_TITLES = {
@@ -186,7 +196,16 @@ MAP_TITLES = {
     'gh500': ('500 hPa Geopotential Height', 'gpm'),
     'tcc': ('Total Cloud Cover', '%'),
     'cape': ('CAPE (most-unstable)', 'J/kg'),
+    'steer': ('Deep-Layer Steering Flow (850–200 hPa)', 'm/s'),
+    'satdef': ('Saturation Deficit (700–500 hPa)', 'g/kg'),
+    'secondary': ('Azimuthal-Mean Secondary Circulation', 'm/s'),
+    'outflow': ('Outflow Strength (200 hPa)', '10⁻⁵ s⁻¹'),
 }
+
+# — সাইক্লোন ডায়াগনস্টিকের লেভেল সেট (ECMWF IFS pressure-level ডেটা) —
+STEER_LEVELS = [850, 700, 500, 300, 200]        # steering layer (চাপ-ওজনিত গড়)
+SATDEF_LEVELS = [700, 600, 500]                  # saturation deficit layer
+SECTION_LEVELS = [200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]  # ascending p পরে সাজানো হয়
 
 # ============================ ভূ-লেয়ার (GeoJSON) =============================
 GEOJSON_BASES = [
@@ -780,6 +799,33 @@ def convert(f, kind):
     return v
 
 
+def _fetch_levels(run, step, params, levels):
+    """এক স্টেপে অনেক লেভেলের ফিল্ড একসাথে নামায়; কিছু মিস হলে None।"""
+    reqs = [(p, lev) for lev in levels for p in params]
+    return get_field(run, step, reqs)
+
+
+def _layer_mean_wind(fields, levels):
+    """চাপ-ওজনিত (trapezoid) স্তর-গড় u,v — ফিল্ড ডিক্ট থেকে।"""
+    p = np.asarray(sorted(levels, reverse=True), dtype=float)   # 850 → 200
+    w = np.abs(np.gradient(p))
+    w[0] *= 0.5
+    w[-1] *= 0.5
+    w = w / w.sum()
+    u = sum(wi * fields[('u', int(pi))].values for wi, pi in zip(w, p))
+    v = sum(wi * fields[('v', int(pi))].values for wi, pi in zip(w, p))
+    f0 = fields[('u', int(p[0]))]
+    return f0.lats, f0.lons, u, v
+
+
+def _qsat_gkg(T_k, p_hpa):
+    """সম্পৃক্ত স্পেসিফিক হিউমিডিটি (g/kg) — Bolton-এর সূত্রে।"""
+    Tc = T_k - 273.15
+    es = 6.112 * np.exp(17.67 * Tc / (Tc + 243.5))          # hPa
+    qs = 0.622 * es / (p_hpa - 0.378 * es)                  # kg/kg
+    return qs * 1000.0
+
+
 def prepare_map_data(run, kind, step):
     """প্রতিটি ম্যাপ কী-এর জন্য ডেটা নামায় + নির্ণীত অ্যারে রিটার্ন করে"""
     if kind == 't2m':
@@ -864,6 +910,25 @@ def prepare_map_data(run, kind, step):
             return None
         f = g[('mucape', None)]
         return f.lats, f.lons, f.values, None
+    if kind == 'steer':
+        # 850–200 hPa চাপ-ওজনিত গড় বাতাস: গতি শেইড + স্ট্রিমলাইন (extra)
+        g = _fetch_levels(run, step, ['u', 'v'], STEER_LEVELS)
+        if not g:
+            return None
+        lats, lons, u, v = _layer_mean_wind(g, STEER_LEVELS)
+        return lats, lons, np.hypot(u, v), (u, v)
+    if kind == 'satdef':
+        # 700–500 hPa স্তর-গড় saturation deficit (g/kg): qs·(1 − RH/100)
+        g = _fetch_levels(run, step, ['t', 'r'], SATDEF_LEVELS)
+        if not g:
+            return None
+        defs = []
+        for lev in SATDEF_LEVELS:
+            T = g[('t', lev)].values
+            RH = np.clip(g[('r', lev)].values, 0.0, 100.0)
+            defs.append(_qsat_gkg(T, float(lev)) * (1.0 - RH / 100.0))
+        f = g[('t', SATDEF_LEVELS[0])]
+        return f.lats, f.lons, np.mean(defs, axis=0), None
     print(f'  ⚠ অজানা ম্যাপ কী: {kind}')
     return None
 
@@ -1101,6 +1166,13 @@ def plot_single(kind, step, data3, run, region_key, bbox, th):
                   width=0.0021 * scale, headwidth=3.0, headlength=4.0, headaxislength=3.4,
                   minlength=0.5, pivot='middle', linewidth=0.4, color='#26313b',
                   alpha=0.78, zorder=8)
+    if extra_c and kind == 'steer':
+        # স্ট্রিমলাইন (ল্যাট ascending করে দিতে হয়)
+        u_c, v_c = extra_c[0], extra_c[1]
+        o = np.argsort(lats_c)
+        density = 1.4 if (bbox[3] - bbox[2]) < 40 else 1.8
+        ax.streamplot(lons_c, lats_c[o], u_c[o], v_c[o], color='#14202b',
+                      density=density, linewidth=0.65, arrowsize=0.75, zorder=8)
 
     draw_baseline(ax, bbox, th, scale)
     if CITIES_ON and region_key in REGION_PRESETS and 'cities' in REGION_PRESETS[region_key]:
@@ -1126,6 +1198,302 @@ def plot_single(kind, step, data3, run, region_key, bbox, th):
     fig.savefig(buf, format='png', dpi=DPI, facecolor=fig.get_facecolor())
     plt.close(fig)
     return buf.getvalue()
+
+
+# ===================== কোর-কেন্দ্রিক সাইক্লোন ডায়াগনস্টিক =====================
+# ECMWF IFS pressure-level ডেটা থেকে: সেন্টার খোঁজা (850 hPa vorticity),
+# azimuthal-mean secondary circulation (radius–height) ও 200 hPa outflow।
+# omega আলাদা ফিল্ড না ধরে winds থেকে mass continuity দিয়ে নির্ণয় করা হয়
+# (reanalysis cyclone/ প্যাকেজের একই পদ্ধতি)।
+
+EARTH_R = 6.371e6
+R_D = 287.04
+GRAV = 9.80665
+
+
+def _bilinear(lats, lons, arr, plat, plon):
+    """(nlat, nlon) গ্রিড থেকে পয়েন্টে bilinear স্যাম্পল (lat যেকোনো ক্রমে)।"""
+    lats = np.asarray(lats, float)
+    lons = np.asarray(lons, float)
+    if lats[0] > lats[-1]:
+        lats, arr = lats[::-1], arr[::-1]
+    plat = np.asarray(plat, float)
+    plon = ((np.asarray(plon, float) + 180.0) % 360.0) - 180.0
+    fi = np.interp(plat, lats, np.arange(lats.size), left=np.nan, right=np.nan)
+    fj = np.interp(plon, lons, np.arange(lons.size), left=np.nan, right=np.nan)
+    i0 = np.floor(fi).astype(int)
+    j0 = np.floor(fj).astype(int)
+    ok = np.isfinite(fi) & np.isfinite(fj)
+    i0 = np.clip(i0, 0, lats.size - 2)
+    j0 = np.clip(j0, 0, lons.size - 2)
+    ti = np.where(ok, fi - i0, 0.0)
+    tj = np.where(ok, fj - j0, 0.0)
+    out = (arr[i0, j0] * (1 - ti) * (1 - tj) + arr[i0, j0 + 1] * (1 - ti) * tj +
+           arr[i0 + 1, j0] * ti * (1 - tj) + arr[i0 + 1, j0 + 1] * ti * tj)
+    return np.where(ok, out, np.nan)
+
+
+def _divergence2d(u, v, lats, lons):
+    phi = np.deg2rad(np.asarray(lats, float))
+    lam = np.deg2rad(np.asarray(lons, float))
+    cos = np.cos(phi)[:, None]
+    du_dlam = np.gradient(u, lam, axis=1)
+    dvc_dphi = np.gradient(v * cos, phi, axis=0)
+    return (du_dlam + dvc_dphi) / (EARTH_R * cos)
+
+
+def _vorticity2d(u, v, lats, lons):
+    phi = np.deg2rad(np.asarray(lats, float))
+    lam = np.deg2rad(np.asarray(lons, float))
+    cos = np.cos(phi)[:, None]
+    dv_dlam = np.gradient(v, lam, axis=1)
+    duc_dphi = np.gradient(u * cos, phi, axis=0)
+    return (dv_dlam - duc_dphi) / (EARTH_R * cos)
+
+
+def _find_centre(u850, v850, lats, lons, lat0, lon0, box_deg=2.5, step_deg=0.25):
+    """850 hPa cyclonic vorticity maximum, nominal সেন্টারের ±box_deg-এর মধ্যে।"""
+    zeta = _vorticity2d(u850, v850, lats, lons)
+    sign = 1.0 if lat0 >= 0 else -1.0
+    score = sign * zeta
+    la = np.arange(lat0 - box_deg, lat0 + box_deg + step_deg / 2, step_deg)
+    lo = np.arange(lon0 - box_deg, lon0 + box_deg + step_deg / 2, step_deg)
+    LA, LO = np.meshgrid(la, lo, indexing='ij')
+    vals = _bilinear(lats, lons, score, LA, LO)
+    if not np.isfinite(vals).any():
+        return float(lat0), float(lon0), False
+    i, j = np.unravel_index(np.nanargmax(vals), vals.shape)
+    edge = i in (0, vals.shape[0] - 1) or j in (0, vals.shape[1] - 1)
+    return float(LA[i, j]), float(LO[i, j]), bool(edge)
+
+
+def _omega_from_divergence(u3d, v3d, lev_top_first, lats, lons):
+    """ω (Pa/s): ∂ω/∂p = −∇·V, উপরে (সর্বনিম্ন p) ω=0 ধরে নিচে ইন্টিগ্রেট।"""
+    divs = np.stack([_divergence2d(u3d[k], v3d[k], lats, lons)
+                     for k in range(u3d.shape[0])])
+    p = np.asarray(lev_top_first, float) * 100.0
+    omega = np.zeros_like(divs)
+    for k in range(1, len(p)):
+        omega[k] = omega[k - 1] - 0.5 * (divs[k] + divs[k - 1]) * (p[k] - p[k - 1])
+    return omega
+
+
+def _polar_latlon(lat_c, lon_c, rmax_km=1000.0, dr_km=25.0, dth_deg=10.0):
+    r = np.arange(0.0, rmax_km + dr_km / 2, dr_km)
+    th = np.deg2rad(np.arange(0.0, 360.0, dth_deg))
+    R, TH = np.meshgrid(r, th, indexing='ij')
+    x, y = R * np.sin(TH), R * np.cos(TH)                    # east, north (km)
+    lat = lat_c + y * 1000.0 / EARTH_R * (180.0 / np.pi)
+    lon = lon_c + x * 1000.0 / (EARTH_R * np.cos(np.deg2rad(lat_c))) * (180.0 / np.pi)
+    return R, TH, lat, lon
+
+
+def _fetch_section_fields(run, step):
+    """secondary circulation-এর জন্য u/v/t সব SECTION_LEVELS-এ।"""
+    g = _fetch_levels(run, step, ['u', 'v', 't'], SECTION_LEVELS)
+    if not g:
+        return None
+    lev = sorted(SECTION_LEVELS)                            # ascending p: 200 → 1000
+    f0 = g[('u', lev[0])]
+    u3d = np.stack([g[('u', p)].values for p in lev])
+    v3d = np.stack([g[('v', p)].values for p in lev])
+    T3d = np.stack([g[('t', p)].values for p in lev])
+    return lev, f0.lats, f0.lons, u3d, v3d, T3d
+
+
+def compute_secondary(run, step, centre):
+    """আজিমুথাল-গড় radial/tangential wind ও w — radius × pressure গ্রিডে।"""
+    got = _fetch_section_fields(run, step)
+    if got is None:
+        return None
+    lev, lats, lons, u3d, v3d, T3d = got
+    k850 = lev.index(850)
+    lat_c, lon_c, edge = _find_centre(u3d[k850], v3d[k850], lats, lons, *centre)
+    omega = _omega_from_divergence(u3d, v3d, lev, lats, lons)
+    R, TH, pla, plo = _polar_latlon(lat_c, lon_c)
+    sinT, cosT = np.sin(TH), np.cos(TH)
+    lev_arr = np.asarray(lev, float)
+    ur = np.empty((len(lev),) + R.shape)
+    vt = np.empty_like(ur)
+    w = np.empty_like(ur)
+    for k in range(len(lev)):
+        us = _bilinear(lats, lons, u3d[k], pla, plo)
+        vs = _bilinear(lats, lons, v3d[k], pla, plo)
+        oms = _bilinear(lats, lons, omega[k], pla, plo)
+        Ts = _bilinear(lats, lons, T3d[k], pla, plo)
+        ur[k] = us * sinT + vs * cosT                       # radial (বাইরের দিকে +)
+        vt[k] = -us * cosT + vs * sinT                      # tangential (cyclonic +)
+        w[k] = -oms * R_D * Ts / (lev_arr[k] * 100.0 * GRAV)
+    with np.errstate(all='ignore'):
+        out = {
+            'centre': (lat_c, lon_c), 'at_edge': edge, 'lev': lev_arr,
+            'r_km': R[:, 0],
+            'ur': np.nanmean(ur, axis=2), 'vt': np.nanmean(vt, axis=2),
+            'w': np.nanmean(w, axis=2),
+        }
+    return out
+
+
+def compute_outflow(run, step, centre):
+    """200 hPa divergence ম্যাপ + azimuthal-mean radial outflow প্রোফাইল।"""
+    g = _fetch_levels(run, step, ['u', 'v'], [850, 200])
+    if not g:
+        return None
+    f200 = g[('u', 200)]
+    lats, lons = f200.lats, f200.lons
+    lat_c, lon_c, edge = _find_centre(g[('u', 850)].values, g[('v', 850)].values,
+                                      lats, lons, *centre)
+    u200, v200 = f200.values, g[('v', 200)].values
+    div200 = _divergence2d(u200, v200, lats, lons) * 1e5    # 1e-5 s-1
+    gh = get_field(run, step, [('gh', 200)])
+    gh200 = gh[('gh', 200)].values if gh else None
+    R, TH, pla, plo = _polar_latlon(lat_c, lon_c)
+    us = _bilinear(lats, lons, u200, pla, plo)
+    vs = _bilinear(lats, lons, v200, pla, plo)
+    ur = us * np.sin(TH) + vs * np.cos(TH)
+    with np.errstate(all='ignore'):
+        profile = np.nanmean(ur, axis=1)                    # (nr,)
+    kmax = int(np.nanargmax(profile)) if np.isfinite(profile).any() else 0
+    return {'centre': (lat_c, lon_c), 'at_edge': edge, 'lats': lats, 'lons': lons,
+            'div200': div200, 'u200': u200, 'v200': v200, 'gh200': gh200,
+            'r_km': R[:, 0], 'ur_profile': profile,
+            'ur_max': float(profile[kmax]), 'ur_max_r': float(R[kmax, 0])}
+
+
+def _section_figure(th, title, subtitle, unit_tag):
+    """ম্যাপ-হেডারের একই স্টাইলে radius–height সেকশনের ফিগার।"""
+    W, H = 10.6, 8.0
+    fig = plt.figure(figsize=(W, H), dpi=DPI, facecolor=th['fig'])
+    L, R = 0.62 / W, 1.0 - 0.45 / W
+    fig.add_artist(plt.Rectangle((0.0, 1 - 0.05 / H), 1.0, 0.05 / H, transform=fig.transFigure,
+                                 facecolor=th['accent'], edgecolor='none', clip_on=False))
+    fig.text(L, 1 - 0.46 / H, title, fontsize=14, weight='bold', color=th['text'], va='center')
+    fig.text(L, 1 - 0.86 / H, subtitle, fontsize=8.8, color=th['sub'], va='center')
+    fig.text(R, 1 - 0.46 / H, 'ECMWF · IFS', fontsize=9.5, weight='bold',
+             color=th['badge_fg'], ha='right', va='center', clip_on=False,
+             bbox=dict(boxstyle='round,pad=0.38', facecolor=th['accent'], edgecolor='none'))
+    if unit_tag:
+        fig.text(R, 1 - 0.86 / H, unit_tag, fontsize=8.5, color=th['sub'], ha='right', va='center')
+    ax = fig.add_axes([L, 1.55 / H, (R - L), 1 - 2.85 / H])
+    cax = fig.add_axes([L + 0.14 * (R - L), 0.72 / H, 0.72 * (R - L), 0.15 / H])
+    return fig, ax, cax
+
+
+def _valid_txt(kind, rdt, vdt, step):
+    return f'Valid {fmt_short(vdt)} (+{step} h)'
+
+
+def render_secondary(run, step, centre, th):
+    data = compute_secondary(run, step, centre)
+    if data is None:
+        raise RuntimeError('ECMWF pressure-level u/v/t fields could not be fetched for the secondary circulation.')
+    lat_c, lon_c = data['centre']
+    rdt = run_datetime(*run)
+    vdt = rdt + dt.timedelta(hours=step)
+    subtitle = (f'IFS HRES 0.25°   ·   Run {fmt_short(rdt)}   ·   {_valid_txt("secondary", rdt, vdt, step)}'
+                f'   ·   centre {lat_c:.2f}°N {lon_c:.2f}°E (850 hPa vorticity max)')
+    fig, ax, cax = _section_figure(
+        th, 'Azimuthal-Mean Secondary Circulation', subtitle, '[w: m/s]')
+    r, lev, w, vt, ur = data['r_km'], data['lev'], data['w'], data['vt'], data['ur']
+    z = np.log(1000.0 / lev)
+    order = np.argsort(z)
+    z_s, w_s, vt_s, ur_s = z[order], w[order], vt[order], ur[order]
+    lim = max(float(np.nanmax(np.abs(w_s))), 0.01)
+    levels = np.linspace(-lim, lim, 21)
+    im = ax.contourf(r, z_s, w_s, levels=levels, cmap='RdBu_r', extend='both')
+    cs = ax.contour(r, z_s, vt_s, levels=np.arange(-10, 45, 5), colors='#111111',
+                    linewidths=0.7)
+    ax.clabel(cs, fmt='%d', fontsize=7)
+    # overturning arrows: radial (x) ও w (y) আলাদা স্কেলে (আকৃতি বোঝার জন্য)
+    sx = max(1, r.size // 14)
+    sz = max(1, z_s.size // 9)
+    X, Z = np.meshgrid(r[::sx], z_s[::sz])
+    kx = 0.055 * (r[-1] - r[0]) / max(float(np.nanmax(np.abs(ur_s))), 0.1)
+    kz = 0.055 * (z_s[-1] - z_s[0]) / lim
+    ax.quiver(X, Z, ur_s[::sz, ::sx] * kx, w_s[::sz, ::sx] * kz,
+              angles='xy', scale_units='xy', scale=1.0, width=0.0032,
+              headwidth=4.0, headlength=4.4, color='#111111', zorder=7)
+    ticks = [t for t in (1000, 850, 700, 500, 300, 200) if lev.min() <= t <= lev.max()]
+    ax.set_yticks([np.log(1000.0 / t) for t in ticks])
+    ax.set_yticklabels([str(t) for t in ticks], fontsize=8, color=th['sub'])
+    ax.set_xlabel('Radius from centre (km)', fontsize=9, color=th['text'])
+    ax.set_ylabel('Pressure (hPa)', fontsize=9, color=th['text'])
+    ax.tick_params(labelsize=8, colors=th['sub'], length=0)
+    for s in ax.spines.values():
+        s.set_color(th['sub'])
+    cb = fig.colorbar(im, cax=cax, orientation='horizontal')
+    cb.set_label('vertical velocity w (m/s)  — red = ascent', fontsize=9, color=th['text'])
+    cb.ax.tick_params(labelsize=7.5, color=th['sub'], length=2.5)
+    cb.outline.set_visible(False)
+    fig.text(0.985, 0.012, '@XPWEATHER', transform=fig.transFigure, fontsize=11,
+             weight='bold', color='#0d1217', alpha=0.6, ha='right', va='bottom')
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=DPI, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return buf.getvalue(), data['centre']
+
+
+def render_outflow(run, step, centre, th):
+    data = compute_outflow(run, step, centre)
+    if data is None:
+        raise RuntimeError('ECMWF 850/200 hPa wind fields could not be fetched for the outflow map.')
+    lat_c, lon_c = data['centre']
+    rdt = run_datetime(*run)
+    vdt = rdt + dt.timedelta(hours=step)
+    bbox = (max(-80.0, lat_c - 10.0), min(80.0, lat_c + 10.0),
+            max(-180.0, lon_c - 12.0), min(180.0, lon_c + 12.0))
+    subtitle = (f'IFS HRES 0.25°   ·   Run {fmt_short(rdt)}   ·   {_valid_txt("outflow", rdt, vdt, step)}'
+                f'   ·   centre {lat_c:.2f}°N {lon_c:.2f}°E')
+    fig, ax, cax = make_figure(bbox, th, 'Outflow Strength (200 hPa)', subtitle, '[10⁻⁵ s⁻¹]')
+    lats_c, lons_c, div_c, extra_c = crop_to_bbox(
+        data['lats'], data['lons'], data['div200'], bbox,
+        extra=(data['u200'], data['v200']) + ((data['gh200'],) if data['gh200'] is not None else ()))
+    dlat = abs(lats_c[0] - lats_c[1])
+    dlon = abs(lons_c[0] - lons_c[1])
+    extent = [lons_c[0] - dlon / 2, lons_c[-1] + dlon / 2, lats_c[-1] - dlat / 2, lats_c[0] + dlat / 2]
+    div_levels = np.arange(-10, 10.1, 1.0).tolist()
+    cmap = plt.get_cmap('RdBu_r')
+    norm = mcolors.BoundaryNorm(div_levels, ncolors=cmap.N, clip=False)
+    im = ax.imshow(div_c, extent=extent, origin='upper', cmap=cmap, norm=norm,
+                   interpolation='bilinear', zorder=2)
+    style_axes(ax, bbox, th, None)
+    if data['gh200'] is not None:
+        cs = ax.contour(lons_c, lats_c, extra_c[2], levels=np.arange(11000, 12600, 60),
+                        colors='#14202b', linewidths=0.55, alpha=0.8, zorder=6)
+        ax.clabel(cs, fmt='%d', fontsize=6.5, inline=True)
+    o = np.argsort(lats_c)
+    ax.streamplot(lons_c, lats_c[o], extra_c[0][o], extra_c[1][o], color='#14202b',
+                  density=1.3, linewidth=0.65, arrowsize=0.75, zorder=7)
+    draw_baseline(ax, bbox, th, 1.2)
+    ax.plot(lon_c, lat_c, '+', ms=13, mew=2.2, color='#111111', zorder=9)
+    ax.text(lon_c + 0.3, lat_c + 0.3, 'centre', fontsize=8, weight='bold', color='#111111',
+            zorder=9).set_path_effects([patheffects.withStroke(linewidth=2.2, foreground='white', alpha=0.85)])
+    # প্রোফাইল ইনসেট: azimuthal-mean radial outflow (200 hPa)
+    inset = ax.inset_axes([0.585, 0.045, 0.395, 0.33])
+    inset.set_facecolor((1, 1, 1, 0.92))
+    inset.plot(data['r_km'], data['ur_profile'], color='#b2182b', lw=1.6)
+    inset.axhline(0, color='#666666', lw=0.7)
+    inset.fill_between(data['r_km'], data['ur_profile'], 0,
+                       where=(data['ur_profile'] > 0), color='#b2182b', alpha=0.25)
+    inset.set_xlabel('radius (km)', fontsize=6.5)
+    inset.set_ylabel('radial outflow (m/s)', fontsize=6.5)
+    inset.tick_params(labelsize=6.5, length=2)
+    inset.set_title(f"max {data['ur_max']:.1f} m/s at {data['ur_max_r']:.0f} km (200 hPa)",
+                    fontsize=7)
+    for s in inset.spines.values():
+        s.set_color('#888888')
+    ax.text(0.985, 0.008, '@XPWEATHER', transform=ax.transAxes, fontsize=13,
+            weight='bold', color='#0d1217', alpha=0.6, ha='right', va='bottom',
+            zorder=30).set_path_effects([patheffects.withStroke(linewidth=2.6, foreground='white', alpha=0.75)])
+    cb = fig.colorbar(im, cax=cax, orientation='horizontal', extend='both',
+                      ticks=div_levels[::2])
+    cb.set_label('200 hPa divergence (10⁻⁵ s⁻¹) — red = outflow', fontsize=9, color=th['text'])
+    cb.ax.tick_params(labelsize=7.5, color=th['sub'], length=2.5)
+    cb.outline.set_visible(False)
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=DPI, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return buf.getvalue(), data['centre']
 
 
 # ============================ ওয়েব এন্ট্রি পয়েন্ট ============================
@@ -1156,10 +1524,11 @@ def cleanup_old_runs(current_run, keep=2):
             pass
 
 
-def render_map(map_key, run, step, region_key='bangladesh'):
+def render_map(map_key, run, step, region_key='bangladesh', centre=None):
     """একটা ECMWF ম্যাপ রেন্ডার করে (PNG bytes, meta dict) রিটার্ন করে।
 
     run: (YYYYMMDD, HH) — resolve করা রান; step: ফোরকাস্ট আওয়ার।
+    centre: (lat, lon) — CENTRE_MAPS-এর জন্য আবশ্যক (নমিনাল সেন্টার)।
     ডেটা/স্টেপ না থাকলে ValueError/RuntimeError ওঠে (ওয়েব লেয়ার ধরে)।"""
     if map_key not in MAP_TITLES:
         raise ValueError(f"unknown ECMWF map '{map_key}'")
@@ -1176,15 +1545,23 @@ def render_map(map_key, run, step, region_key='bangladesh'):
         raise ValueError(f'ECMWF step +{step - 24}h (needed for tp24) is not available for this run.')
 
     cleanup_old_runs(run)
-    data3 = prepare_map_data(run, map_key, step)
-    if data3 is None:
-        raise RuntimeError(
-            f'ECMWF data for {map_key} at +{step}h could not be fetched for run '
-            f'{run[0]} {run[1]}Z (parameter missing in this run/step, or download failed).')
-
-    bbox = REGION_PRESETS[region_key]['bbox']
     th = THEMES.get(THEME, THEMES['light'])
-    png = plot_single(map_key, step, data3, run, region_key, bbox, th)
+    centre_found = None
+    if map_key in CENTRE_MAPS:
+        if centre is None:
+            raise ValueError('this map needs a centre latitude and longitude')
+        if map_key == 'secondary':
+            png, centre_found = render_secondary(run, step, centre, th)
+        else:
+            png, centre_found = render_outflow(run, step, centre, th)
+    else:
+        data3 = prepare_map_data(run, map_key, step)
+        if data3 is None:
+            raise RuntimeError(
+                f'ECMWF data for {map_key} at +{step}h could not be fetched for run '
+                f'{run[0]} {run[1]}Z (parameter missing in this run/step, or download failed).')
+        bbox = REGION_PRESETS[region_key]['bbox']
+        png = plot_single(map_key, step, data3, run, region_key, bbox, th)
 
     rdt = run_datetime(*run)
     vdt = rdt + dt.timedelta(hours=step)
@@ -1202,4 +1579,6 @@ def render_map(map_key, run, step, region_key='bangladesh'):
         'bytes_downloaded': round(HTTP.n_bytes / 1e6, 2),
         'requests': HTTP.n_requests,
     }
+    if centre_found is not None:
+        meta['centre'] = f'{centre_found[0]:.2f}°N {centre_found[1]:.2f}°E'
     return png, meta
