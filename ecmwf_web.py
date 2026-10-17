@@ -107,6 +107,39 @@ def resolve_run(mode, manual_date=None, run_hour=0):
     return run
 
 
+def latest_run_info():
+    """সর্বশেষ উপলব্ধ রান — UI-তে Auto মোডে তারিখ/ঘণ্টা দেখানোর জন্য।"""
+    run = resolve_run("auto")
+    rdt = eengine.run_datetime(*run)
+    return {
+        "date": rdt.strftime("%Y-%m-%d"),
+        "hour": int(run[1]),
+        "label": f"{rdt:%d %b %Y} {run[1]}Z",
+        "run": f"{rdt:%Y-%m-%d %H}Z",
+    }
+
+
+def _previous_runs(run, count=4):
+    """run-এর আগের রানগুলো (৬ ঘণ্টা করে পেছনে) — স্টেপ না পেলে ফলব্যাক।"""
+    rdt = eengine.run_datetime(*run)
+    out = []
+    for i in range(1, count + 1):
+        prev = rdt - datetime.timedelta(hours=6 * i)
+        out.append((prev.strftime("%Y%m%d"), f"{prev.hour:02d}"))
+    return out
+
+
+def _resolve_auto_run(map_key, step):
+    """Auto মোড: সর্বশেষ রান; কাঙ্ক্ষিত স্টেপ সেখানে না থাকলে আগের রান।"""
+    run = resolve_run("auto")
+    if eengine.step_available(run, step, map_key):
+        return run
+    for prev in _previous_runs(run):
+        if eengine.step_available(prev, step, map_key):
+            return prev
+    return run  # কোথাও না পেলে সর্বশেষটাই — render পরিষ্কার এরর দেবে
+
+
 def generate(map_key, mode="auto", manual_date=None, run_hour=0,
              forecast_hour=DEFAULT_STEP, region_id=DEFAULT_REGION):
     """Return PNG bytes + useful metadata for one ECMWF forecast map."""
@@ -132,7 +165,10 @@ def generate(map_key, mode="auto", manual_date=None, run_hour=0,
             "24-hour Precipitation (tp24) needs a forecast hour of at least 24.")
 
     mode = "manual" if str(mode).lower() == "manual" else "auto"
-    run = resolve_run(mode, manual_date, run_hour)
+    if mode == "auto":
+        run = _resolve_auto_run(map_key, step)
+    else:
+        run = resolve_run(mode, manual_date, run_hour)
 
     key = (run, map_key, step, region_id)
     cached = _cache_get(key)
