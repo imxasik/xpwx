@@ -21,6 +21,7 @@ The engine lives package-by-package under `pro/` so no single module balloons:
 | `pro/addons.py` | Drop-in product loader (scans `custom/*.py`). |
 | `pro/__init__.py` | Re-exports the public names. |
 | `custom/` | **Your own maps.** Drop a `.py` file here (see `custom/README.md`). Files starting with `_` are skipped. |
+| `kelvin/` | ECMWF IFS Kelvin VP200 phase-space forecast: d200 retrieval (reusing `ecmwf/engine.py`), spherical VP inversion, Kelvin filter, EOF projection and the chart. |
 | `metmap.py` | Thin backward-compatible shim → forwards to `pro`. |
 | `app.py` | Flask web app (`GET /`, `/health`, `/products`; `POST /generate`). |
 | `templates/index.html` | Web page (grouped product sidebar, date picker, viewer). |
@@ -40,10 +41,11 @@ Torque / Flow / Advanced / Surface / Hovmöller**. Examples:
   trough), Takaya–Nakamura wave-activity-flux arrows, and the Ks≥5 stationary
   wavenumber waveguide band (indigo).
 - **Hovmöller:** U850 (5°S–5°N) and χ200 (15°S–15°N), 120-day longitude–time;
-  MJO phase diagram (RMM, JMA); Time–Height section; **Relative AAM** —
-  latitude–time section of the vertically and zonally integrated AAM anomaly
-  (1000–10 hPa) with the total field as contours, plus the global AAM anomaly
-  (see below).
+  MJO phase diagram (RMM, JMA); **ECMWF IFS Kelvin VP200 phase-space
+  forecast** (15-day trajectory, see below); Time–Height section;
+  **Relative AAM** — latitude–time section of the vertically and zonally
+  integrated AAM anomaly (1000–10 hPa) with the total field as contours, plus
+  the global AAM anomaly (see below).
 - Frictional torque (τx/τy/|τ|), IVT, QG omega forcing, MSE, temperature
   advection, geostrophic/ageostrophic wind.
 
@@ -160,6 +162,49 @@ The RMM1/RMM2 phase diagram (last 40 days) uses the JMA MJO index (chi200 + u850
 
 `rmm/ncep_rmm.py` and `rmm/velpot.py` (an NCEP-based index using a χ200 inversion) are kept
 but are not used by the diagram.
+
+## Kelvin VP200 phase-space forecast (sidebar product `kelvin_phase`)
+
+The **ECMWF IFS Kelvin VP200 Phase-Space Forecast** (Hovmöller group) plots the
+15-day IFS forecast trajectory in the phase plane of the two digitized
+Kelvin-filtered 200-hPa velocity-potential EOFs. The whole chain is local and
+data-driven — no image or pre-computed index is shipped:
+
+    ECMWF Open Data d200 (0.25°, 00Z/12Z, 0–360 h)
+      -> spherical Poisson inversion (15S-15N cosine-weighted VP200)
+      -> eastward 2.5-20 day / k=1-14 Kelvin band-pass
+      -> projection on EOF1/EOF2 -> daily phase and amplitude
+      -> phase-space PNG + CSV
+
+- `kelvin/fetch.py` — run selection (newest **complete** 00Z/12Z run; a partial
+  run is used only when it covers at least 10 days), polite range requests and
+  the per-step GRIB decode, all through the existing `ecmwf/engine.py` client
+  and decoder. Per-step VP coefficients are cached in
+  `ecmwf/ecmwf_cache/kelvin/` (git-ignored), so a second render is instant.
+- `kelvin/physics.py` — the inversion and filter. The mirror extension is
+  conjugated so the padded record keeps its eastward sense; a plain reflection
+  would inject a spurious westward wave.
+- `kelvin/eofs.py` — the two Fourier EOF vectors (the only place to replace
+  them) and `kelvin/plot.py` — the reference chart design at 300 dpi.
+- `custom/kelvin_phase.py` — the sidebar product (`forecast: true`). The DAYS
+  control is hidden because the trajectory length is the forecast horizon, not
+  an averaging window.
+- **Auto Date** uses the newest complete ECMWF run; **Manual Date** uses the
+  newest complete run on or before that date. ECMWF Open Data keeps only the
+  latest ~12 runs (2–3 days), so an older date shows a clear message instead of
+  silently using another run.
+- The image is served by `/generate` like every other product; the **Download
+  CSV** link in the viewer header calls `GET /kelvin/csv?mode=auto|manual&date=…`
+  (columns: run date/hour, lead hours/days, phase, relative amplitude, PC1, PC2).
+- Sampling is daily (16 fields) by default so the first cold render finishes
+  inside the host timeout. Set `KELVIN_STEP_HOURS=12` to use the reference
+  script's 12-hourly sampling (31 fields) on a fast host. `ECMWF_BASE_URL`
+  overrides the data server (useful for a local mirror).
+- **Offline check:** `python tests/check_kelvin.py` builds a synthetic
+  ECMWF-open-data mirror with an analytic 10-day Kelvin wave and verifies the
+  full chain (phase advance, PNG, CSV and the Flask routes) without internet.
+- Data: ECMWF Open Data (IFS HRES 0.25°), CC-BY-4.0. Cite ECMWF when the chart
+  is reused.
 
 ## Relative AAM diagram (sidebar product `rel_aam`)
 

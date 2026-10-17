@@ -127,6 +127,8 @@
     padding:9px 15px;border-bottom:1px solid var(--line);background:#faf9f4}
   .stage .bar .meta{font-size:12.5px;color:var(--mut)}
   .bar .meta b{color:var(--ink)}
+  .bar .meta a.metalink{color:var(--acc);font-weight:600;text-decoration:none}
+  .bar .meta a.metalink:hover{text-decoration:underline}
   .imgwrap{padding:12px;max-width:1240px;margin:0 auto}
   .imgwrap img{display:block;width:100%;height:auto;border-radius:7px;border:1px solid var(--line)}
   .ph{min-height:260px;display:flex;align-items:center;justify-content:center;gap:10px;
@@ -557,8 +559,10 @@
   // Products that need a location: show the lat/lon fields and wait for "Map".
   function setLatLonVisible(on, p){
     document.getElementById("latlon-row").style.display = on ? "flex" : "none";
-    // the day-count box is hidden for lat/lon products unless the product uses the window length
-    const showDays = !on || !!(p && p.uses_days);
+    // The day-count box is hidden for lat/lon products unless the product uses
+    // the window length, and always hidden for forecast products (their time
+    // axis is the model run, not an averaging window).
+    const showDays = !(p && p.forecast) && (!on || !!(p && p.uses_days));
     document.getElementById("ndays-field").style.display = showDays ? "" : "none";
   }
   function askLatLon(p){
@@ -604,7 +608,11 @@
     if (cache[k]){ show(cache[k]); S.textContent="Cache · instant."; S.className="ok"; return; }
 
     document.getElementById("go").disabled = true;
-    PH.style.display = "flex"; PT.textContent = "Rendering…"; IMG.style.display = "none"; DL.style.display = "none";
+    PH.style.display = "flex";
+    PT.textContent = (p && p.forecast)
+      ? "Fetching ECMWF IFS fields… (the first run can take a few minutes)"
+      : "Rendering…";
+    IMG.style.display = "none"; DL.style.display = "none";
 
     const body = { product: current, mode, n_days: ndv };
     if (mode === "manual") body.date = DATE.value;
@@ -626,6 +634,18 @@
     IMG.src = url; IMG.style.display = "block";
     DL.href = url; DL.style.display = "inline-block";
     const p = P(current);
+    if (p && p.forecast){
+      let extra = "";
+      if (p.csv){
+        const q = "mode=" + encodeURIComponent(mode)
+          + (mode==="manual" ? "&date=" + encodeURIComponent(DATE.value) : "");
+        extra = ' · <a class="metalink" href="' + p.csv + '?' + q + '">Download CSV</a>';
+      }
+      META.innerHTML = "<b>" + p.name + "</b> · IFS "
+        + (mode==="manual" ? "run ≤ " + DATE.value : "latest complete run")
+        + " · the exact run is printed on the chart" + extra;
+      return;
+    }
     if (p && p.needs_latlon){
       const ll = latlonInput();
       META.innerHTML = "<b>" + p.name + "</b> · " + (ll.lat !== undefined

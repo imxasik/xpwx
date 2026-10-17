@@ -69,6 +69,7 @@ group. That's it.
 | `rel_aam.py` | Relative AAM: latitude–time section (anomaly shaded, total field contoured) + the global AAM anomaly, in the classic GSDM/AAM layout. Reuses `gwo.py`'s integration | Hovmöller |
 | `_warm_cache.py` | Not a product (the leading `_` keeps it out of the sidebar): the deploy-time warm-up that builds `rel_aam`'s 1991–2020 climatology cache into `ltm_rel_aam_cache.npy` in the project root, so no request has to build it (512 MB hosts → see the main README's Render notes) | — |
 | `mjo_rmm8.py` | MJO phase diagram (RMM, JMA) | Hovmöller |
+| `kelvin_phase.py` | ECMWF IFS Kelvin-filtered VP200 phase-space forecast (15-day trajectory + CSV). Uses the `kelvin/` package and the shared `ecmwf/engine.py` client; forecast-only, so the DAYS box is hidden | Hovmöller |
 | `time_height.py` | Time–height section (wind speed + barbs) | Hovmöller |
 | `chi200.py`, `sst.py`, `tc.py`, `cyclone.py` | χ200, OISST/CoralTemp SST, TC diagnostics | Upper / SST / TC / Cyclone |
 

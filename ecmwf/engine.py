@@ -69,7 +69,7 @@ try:
 except ImportError:
     pass
 
-BASE_URL = 'https://data.ecmwf.int/forecasts'
+BASE_URL = os.environ.get('ECMWF_BASE_URL', 'https://data.ecmwf.int/forecasts')
 UA = {'User-Agent': 'ecmwf-map-maker/1.0 (xpwx web; contact: local-user)'}
 
 # =============================== ম্যাপ রেজিস্ট্রি ===============================
