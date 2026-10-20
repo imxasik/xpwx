@@ -1,0 +1,20 @@
+# Downloaded NOAA PSL netCDF files (large; re-fetched automatically)
+data_cache/
+
+# ECMWF engine: downloaded GRIB messages / index files / basemap geojson
+ecmwf/ecmwf_cache/
+
+# Relative AAM climatology cache (built by custom/_warm_cache.py at deploy time)
+ltm_rel_aam_cache.npy
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local secrets / env
+.env
+
+# Generated MJO diagrams
+rmm/output/
