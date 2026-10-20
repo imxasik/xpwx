@@ -144,7 +144,7 @@ def render_map(
 
     # A near-square plotting field prevents the Bay of Bengal from appearing
     # horizontally compressed; the chart itself remains a full-width image.
-    fig = plt.figure(figsize=(10, 9), dpi=dpi, facecolor="white")
+    fig = plt.figure(figsize=(10, 8), dpi=dpi, facecolor="white")
     ax = fig.add_axes([0.035, 0.072, 0.93, 0.875])
     ax.set_facecolor("#fbfbf8")
     ax.set_xticks(np.arange(70, 111, 5))
