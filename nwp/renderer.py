@@ -9,15 +9,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
-from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, Normalize
 import numpy as np
 import shapefile
 
 WEST, EAST, SOUTH, NORTH = 70.0, 107.0, -5.0, 30.0
 GEODATA = Path(__file__).parent / "static" / "geodata"
 
-# A discrete grey/blue/purple/red wind ramp, extended to match the broad
-# operational scale in the user's visual reference (values are knots).
+# A smooth grey/blue/purple/red wind ramp with reference-style tick levels
+# through 135 knots. Coarse forecast vectors are interpolated for display only.
 WIND_LEVELS_KN = np.array([
     4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30,
     34, 38, 42, 46, 50, 54, 58, 62, 66, 70, 74, 78, 82, 86, 90,
@@ -34,7 +34,7 @@ WIND_COLOR_STOPS = [
     "#521e27",
 ]
 WIND_CMAP = LinearSegmentedColormap.from_list(
-    "baywind-operational", WIND_COLOR_STOPS, N=len(WIND_LEVELS_KN)
+    "baywind-operational", WIND_COLOR_STOPS, N=256
 )
 KNOT_FACTOR = 1.943844
 UNIT_INFO = {
@@ -82,6 +82,31 @@ def _add_shapefile_lines(ax: Any, filename: str, color: str, linewidth: float, z
         ax.add_collection(LineCollection(segments, colors=color, linewidths=linewidth, zorder=zorder, clip_on=True))
 
 
+def _smooth_regular_vectors(
+    lons: np.ndarray,
+    lats: np.ndarray,
+    u: np.ndarray,
+    v: np.ndarray,
+    target_step: float = 0.1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Bilinearly densify coarse regular grids for clean shading and flow lines."""
+    dx = float(np.nanmedian(np.diff(lons))) if len(lons) > 1 else target_step
+    dy = float(np.nanmedian(np.diff(lats))) if len(lats) > 1 else target_step
+    if max(abs(dx), abs(dy)) <= target_step * 1.15:
+        return lons, lats, u, v
+
+    nx = max(len(lons), int(round((lons[-1] - lons[0]) / target_step)) + 1)
+    ny = max(len(lats), int(round((lats[-1] - lats[0]) / target_step)) + 1)
+    fine_lons = np.linspace(lons[0], lons[-1], nx, dtype=np.float64)
+    fine_lats = np.linspace(lats[0], lats[-1], ny, dtype=np.float64)
+
+    def interp(values: np.ndarray) -> np.ndarray:
+        across = np.vstack([np.interp(fine_lons, lons, row) for row in values]).astype(np.float32)
+        return np.vstack([np.interp(fine_lats, lats, across[:, col]) for col in range(nx)]).T.astype(np.float32)
+
+    return fine_lons, fine_lats, interp(u), interp(v)
+
+
 def render_map(
     fields: dict[str, Any],
     model: dict[str, Any],
@@ -95,23 +120,27 @@ def render_map(
     lats = np.asarray(fields["lats"], dtype=np.float64)
     u_ms = np.asarray(fields["u"], dtype=np.float32)
     v_ms = np.asarray(fields["v"], dtype=np.float32)
-    speed = np.hypot(u_ms, v_ms) * factor
+    # HGEFS/GEFS mean grids are coarse. Bilinear vector interpolation to a
+    # finer plotting mesh removes the visible square cells without inventing
+    # extra forecast detail beyond a smooth interpolation of official values.
+    plot_lons, plot_lats, plot_u, plot_v = _smooth_regular_vectors(lons, lats, u_ms, v_ms)
+    speed = np.hypot(plot_u, plot_v) * factor
 
-    # Keep the legend's visual range identical across selectable units.
+    # Continuous ramp, with reference-style tick marks over the full range.
     unit_scale = factor / KNOT_FACTOR
     wind_levels = WIND_LEVELS_KN * unit_scale
     wind_ticks = WIND_TICKS_KN * unit_scale
-    wind_norm = BoundaryNorm(wind_levels, WIND_CMAP.N, extend="max")
+    wind_norm = Normalize(vmin=wind_levels[0], vmax=wind_levels[-1], clip=False)
 
     init = _init_time(fields.get("init", ""))
     valid = init + timedelta(hours=int(step))
     init_label = init.strftime("%d %b %Y %H%M UTC")
     valid_label = valid.strftime("%H:%M %d %b %Y UTC")
 
-    # The map box is deliberately taller than before: its plot aspect now
-    # tracks the supplied reference instead of stretching the geography wide.
-    fig = plt.figure(figsize=(10.25, 8.15), dpi=100, facecolor="white")
-    ax = fig.add_axes([0.035, 0.082, 0.93, 0.873])
+    # A near-square plotting field prevents the Bay of Bengal from appearing
+    # horizontally compressed; the chart itself remains a full-width image.
+    fig = plt.figure(figsize=(10.25, 9.75), dpi=100, facecolor="white")
+    ax = fig.add_axes([0.035, 0.072, 0.93, 0.875])
     ax.set_facecolor("#fbfbf8")
     ax.set_xticks(np.arange(70, 107, 5))
     ax.set_yticks(np.arange(-5, 31, 5))
@@ -127,13 +156,13 @@ def render_map(
 
     if show_speed:
         ax.pcolormesh(
-            lons,
-            lats,
+            plot_lons,
+            plot_lats,
             speed,
             cmap=WIND_CMAP,
             norm=wind_norm,
             shading="auto",
-            alpha=0.98,
+            alpha=1.0,
             zorder=1,
             rasterized=True,
         )
@@ -145,13 +174,13 @@ def render_map(
     if show_streamlines:
         # Plot streamline vectors on a ~0.2° mesh for 0.1° data. Shading stays
         # full resolution, but streamline integration has far fewer grid cells.
-        lon_step = float(np.nanmedian(np.diff(lons))) if len(lons) > 1 else 0.25
+        lon_step = float(np.nanmedian(np.diff(plot_lons))) if len(plot_lons) > 1 else 0.25
         stride = max(1, int(round(0.2 / lon_step))) if lon_step < 0.18 else 1
-        uu = np.ma.masked_invalid(u_ms[::stride, ::stride])
-        vv = np.ma.masked_invalid(v_ms[::stride, ::stride])
+        uu = np.ma.masked_invalid(plot_u[::stride, ::stride])
+        vv = np.ma.masked_invalid(plot_v[::stride, ::stride])
         ax.streamplot(
-            lons[::stride],
-            lats[::stride],
+            plot_lons[::stride],
+            plot_lats[::stride],
             uu,
             vv,
             density=0.95,
@@ -184,27 +213,31 @@ def render_map(
         bbox={"boxstyle": "round,pad=0.34", "facecolor": "#14243a", "edgecolor": "#ffffff", "linewidth": 0.6, "alpha": 0.88},
     )
 
+    resolution = model["resolution"]
+    if "ensemble mean" in resolution.lower():
+        resolution = "Hybrid ensemble"
+    header_left = f"{model['name']} · {resolution} · Init {init_label}"
     fig.text(
         0.035,
-        0.973,
-        f"{model['name']} {model['resolution']}  |  Init {init_label}  |  10 m Wind Speed ({unit_label}) + Streamlines",
+        0.979,
+        header_left,
         ha="left",
         va="top",
-        fontsize=9.7,
+        fontsize=8.8,
         fontweight="medium",
         color="#141719",
     )
     fig.text(
         0.965,
-        0.973,
-        f"Hour: {int(step):03d}  •  Valid: {valid_label}",
+        0.979,
+        f"F{int(step):03d}  ·  Valid: {valid_label}",
         ha="right",
         va="top",
-        fontsize=9.2,
+        fontsize=8.8,
         fontweight="bold",
         color="#141719",
     )
-    fig.add_artist(plt.Line2D([0.035, 0.965], [0.957, 0.957], transform=fig.transFigure, color="#6d7172", linewidth=0.45))
+    fig.add_artist(plt.Line2D([0.035, 0.965], [0.961, 0.961], transform=fig.transFigure, color="#6d7172", linewidth=0.45))
 
     if show_speed:
         cax = fig.add_axes([0.085, 0.047, 0.70, 0.018])
@@ -227,12 +260,24 @@ def render_map(
             labels = [str(int(value)) for value in WIND_TICKS_KN]
         colorbar.ax.set_xticklabels(labels)
         maximum = float(np.nanmax(speed)) if np.isfinite(speed).any() else 0.0
-        fig.text(0.955, 0.057, f"Max: {maximum:.1f} {short_unit}", ha="right", va="center", fontsize=8.5, fontweight="bold", color="#141719")
-        #attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
-        #fig.text(0.085, 0.021, f"10 m wind speed · {unit_label}  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
-        fig.text(0.085, 0.021, f"10 m wind speed · {unit_label}", ha="left", va="center", fontsize=6.3, color="#313638")
+        ax.text(
+            WEST + 0.55,
+            SOUTH + 0.42,
+            f"Max: {maximum:.1f} {short_unit}",
+            transform=ax.transData,
+            ha="left",
+            va="bottom",
+            fontsize=8.2,
+            fontweight="bold",
+            color="#1b2733",
+            zorder=12,
+            bbox={"boxstyle": "round,pad=0.34", "facecolor": "#ffffff", "edgecolor": "#45515c", "linewidth": 0.55, "alpha": 0.88},
+        )
+        attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
+        fig.text(0.085, 0.018, f"10 m wind speed · {unit_label} · Streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
     else:
-        fig.text(0.085, 0.057, "10 m wind streamlines", ha="left", va="center", fontsize=8.2, color="#313638")
+        attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
+        fig.text(0.085, 0.018, f"10 m wind streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
 
     output = BytesIO()
     fig.savefig(output, format="png", dpi=100, facecolor="white", bbox_inches=None)

@@ -54,7 +54,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "type": "fc",
     },
     "aifs": {
-        "name": "AIFS Single",
+        "name": "ECMWF AIFS Single",
         "resolution": "0.25°",
         "source": "ecmwf",
         "source_label": "ECMWF Open Data",
@@ -66,7 +66,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "type": "fc",
     },
     "aifs_ens_control": {
-        "name": "AIFS ENS · Control",
+        "name": "ECMWF AIFS ENS · Control",
         "resolution": "0.25°",
         "source": "ecmwf",
         "source_label": "ECMWF Open Data",

@@ -2,7 +2,7 @@
 
 A Render-ready Flask application that downloads **only 10 m U/V wind** from official model-data providers, crops it to a Bay of Bengal domain, and renders a compact forecast graphic with shaded wind speed and streamlines. It does not fetch or reuse WeatherBell images, scrape its account area, or call third-party weather APIs.
 
-The map presentation follows the supplied reference's clean forecast-chart layout (header, domain graticule, coastlines, streamlines, and an extended 135-knot speed legend), with original styling and an `@XP WEATHER` watermark. It does not reuse WeatherBell artwork or branding.
+The map presentation follows the supplied reference's clean forecast-chart layout (taller regional field, domain graticule, coastlines, streamlines, a smooth extended 135-knot legend, and in-map Max/@XP WEATHER labels), with original styling. Coarse official ensemble grids are bilinearly interpolated for display; forecast information itself remains sourced from the original model grid. It does not reuse WeatherBell artwork or branding.
 
 ## Included model choices
 

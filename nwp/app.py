@@ -16,7 +16,7 @@ app.config["JSON_SORT_KEYS"] = False
 PNG_CACHE_DIR = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 PNG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PNG_CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
-RENDER_VERSION = 2  # invalidate old cached charts after map-layout changes
+RENDER_VERSION = 3  # invalidate charts after header, aspect, and shading fixes
 _RENDER_LOCK = threading.RLock()
 
 
@@ -76,25 +76,42 @@ def map_png():
     image_name = f"baywind-{model_id}-f{step:03d}.png"
     cache_unit = units.replace("/", "_")
     image_cache = PNG_CACHE_DIR / f"map-v{RENDER_VERSION}-{model_id}-f{step:03d}-{cache_unit}-s{int(speed_layer)}-l{int(stream_layer)}.png"
+    metadata_cache = image_cache.with_suffix(".meta")
 
-    def cached_png() -> bytes | None:
-        if image_cache.exists() and (datetime.now(timezone.utc).timestamp() - image_cache.stat().st_mtime < PNG_CACHE_TTL):
-            return image_cache.read_bytes()
-        return None
+    def cached_png() -> tuple[bytes, str] | None:
+        try:
+            fresh = image_cache.exists() and (datetime.now(timezone.utc).timestamp() - image_cache.stat().st_mtime < PNG_CACHE_TTL)
+            if not fresh or not metadata_cache.exists():
+                return None
+            init_text = metadata_cache.read_text(encoding="utf-8").strip()
+            datetime.fromisoformat(init_text.replace("Z", "+00:00"))
+            return image_cache.read_bytes(), init_text
+        except (OSError, ValueError):
+            return None
 
     try:
-        # Return a rendered image without reopening/decompressing GRIB-derived
-        # fields. This is the common fast path for repeat views and animation.
-        png = cached_png()
-        if png is None:
+        # A cached PNG includes its run-time sidecar, so repeat views skip both
+        # GRIB loading and rendering without losing the response time headers.
+        cached = cached_png()
+        if cached is not None:
+            png, init_time = cached
+        else:
             with _RENDER_LOCK:
-                png = cached_png()
-                if png is None:
+                cached = cached_png()
+                if cached is not None:
+                    png, init_time = cached
+                else:
                     fields = get_forecast(model_id, step)
+                    init_time = str(fields.get("init") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"))
+                    datetime.fromisoformat(init_time.replace("Z", "+00:00"))
                     png = render_map(fields, model, step, units, speed_layer, stream_layer)
-                    temporary = image_cache.with_name(image_cache.stem + f"-{threading.get_ident()}.tmp")
-                    temporary.write_bytes(png)
-                    temporary.replace(image_cache)
+                    thread_tag = threading.get_ident()
+                    image_tmp = image_cache.with_name(image_cache.stem + f"-img-{thread_tag}.tmp")
+                    meta_tmp = metadata_cache.with_name(metadata_cache.stem + f"-meta-{thread_tag}.tmp")
+                    image_tmp.write_bytes(png)
+                    meta_tmp.write_text(init_time, encoding="utf-8")
+                    meta_tmp.replace(metadata_cache)
+                    image_tmp.replace(image_cache)
     except Exception as exc:  # UI gets a concise, actionable provider error.
         app.logger.exception("Map generation failed for %s step %s", model_id, step)
         return jsonify({"error": str(exc) or "Could not retrieve this forecast."}), 502
@@ -102,8 +119,9 @@ def map_png():
     response = make_response(send_file(BytesIO(png), mimetype="image/png", download_name=image_name))
     response.headers["Cache-Control"] = "public, max-age=900"
     response.headers["X-Model-Name"] = model["name"]
-    response.headers["X-Model-Run"] = fields["init"]
-    response.headers["X-Valid-Time"] = (datetime.fromisoformat(fields["init"].replace("Z", "+00:00")) + timedelta(hours=step)).strftime("%Y-%m-%d %H:%M UTC")
+    response.headers["X-Model-Run"] = init_time
+    init_dt = datetime.fromisoformat(init_time.replace("Z", "+00:00")).astimezone(timezone.utc)
+    response.headers["X-Valid-Time"] = (init_dt + timedelta(hours=step)).strftime("%Y-%m-%d %H:%M UTC")
     response.headers["X-Forecast-Hour"] = str(step)
     response.headers["X-Data-Source"] = model["source_label"]
     return response
