@@ -19,14 +19,19 @@ from eccodes import (
 )
 
 # A compact set of global deterministic and published ensemble-mean products.
-# All weather fields come from official ECMWF or NCEP/NOMADS distributions;
-# ensemble means are never approximated with a single member.
+# All weather fields come from official ECMWF, NOAA/NCEP, ECCC, or DWD
+# distributions; ensemble means are never approximated with a single member.
 _IFS_STEPS = list(range(0, 145, 3)) + list(range(150, 361, 6))
 _AIFS_STEPS = list(range(0, 361, 6))
 _GFS_STEPS = list(range(0, 121, 3)) + list(range(126, 385, 6))
 _AIGFS_STEPS = list(range(0, 385, 6))
 _GEFS_STEPS = list(range(0, 385, 6))
 _HGEFS_STEPS = list(range(0, 241, 6))
+_GDPS_STEPS = list(range(0, 85)) + list(range(87, 241, 3))
+_GEML_STEPS = list(range(0, 241, 6))
+_GEPS_STEPS = list(range(0, 193, 3)) + list(range(198, 385, 6))
+_ICON_STEPS = list(range(0, 79)) + list(range(81, 181, 3))
+_AICON_STEPS = list(range(3, 181, 3))
 
 MODEL_CATALOG: dict[str, dict[str, Any]] = {
     "ifs_01": {
@@ -54,7 +59,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "type": "fc",
     },
     "aifs": {
-        "name": "ECMWF AIFS",
+        "name": "ECMWF AIFS Single",
         "resolution": "0.25°",
         "source": "ecmwf",
         "source_label": "ECMWF Open Data",
@@ -66,7 +71,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "type": "fc",
     },
     "aifs_ens_control": {
-        "name": "AIFS ENS · Control",
+        "name": "ECMWF AIFS ENS · Control",
         "resolution": "0.25°",
         "source": "ecmwf",
         "source_label": "ECMWF Open Data",
@@ -78,7 +83,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "type": "cf",
     },
     "gfs": {
-        "name": "GFS",
+        "name": "NOAA GFS",
         "resolution": "0.25°",
         "source": "noaa_gfs",
         "source_label": "NOAA NCEP NOMADS",
@@ -86,41 +91,81 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "note": "Regional GRIB filter requests only 10 m U/V wind over the Bay of Bengal box.",
     },
     "aigfs": {
-        "name": "AIGFS",
-        "resolution": "AI",
+        "name": "NOAA AIGFS",
+        "resolution": "Global AI model",
         "source": "noaa_aigfs",
         "source_label": "NOAA NCEP NOMADS",
         "steps": _AIGFS_STEPS,
         "note": "NCEP AI global forecast; only the two 10 m wind fields are transferred, then cropped to the selected domain.",
     },
     "gefs_mean": {
-        "name": "GEFS",
-        "resolution": "0.5° ENS",
+        "name": "NOAA GEFS Mean",
+        "resolution": "0.5° ensemble mean",
         "source": "noaa_gefs",
         "source_label": "NOAA NCEP NOMADS",
         "steps": _GEFS_STEPS,
         "note": "Official precomputed ensemble-mean U/V winds; not a single member and no local ensemble averaging is needed.",
     },
     "aigefs_mean": {
-        "name": "AIGEFS",
-        "resolution": "AI ENS",
+        "name": "NOAA AIGEFS Mean",
+        "resolution": "AI ensemble mean",
         "source": "noaa_aigefs_mean",
         "source_label": "NOAA NCEP NOMADS",
         "steps": _AIGFS_STEPS,
         "note": "Official AI ensemble mean; only indexed 10 m U/V wind messages are transferred.",
     },
     "hgefs_mean": {
-        "name": "HGEFS",
-        "resolution": "Hybrid ENS",
+        "name": "NOAA HGEFS Mean",
+        "resolution": "Hybrid ensemble mean",
         "source": "noaa_hgefs_mean",
         "source_label": "NOAA NCEP NOMADS",
         "steps": _HGEFS_STEPS,
         "note": "Official hybrid ensemble mean. Product currently provides the listed shorter lead-hour range.",
     },
+    "eccc_gdps": {
+        "name": "ECCC GDPS 15 km",
+        "resolution": "15 km · 0.15°",
+        "source": "eccc_gdps",
+        "source_label": "ECCC MSC Datamart (HPFX)",
+        "steps": _GDPS_STEPS,
+        "note": "Official global deterministic forecast; downloads only the 10 m U/V GRIB fields, then crops the map to the Bay domain.",
+    },
+    "eccc_geml": {
+        "name": "ECCC GDPS-GEML 25 km",
+        "resolution": "25 km · 0.25°",
+        "source": "eccc_geml",
+        "source_label": "ECCC MSC Datamart (HPFX)",
+        "steps": _GEML_STEPS,
+        "note": "Official global AI forecast; downloads only the 10 m U/V GRIB fields, then crops the map to the Bay domain.",
+    },
+    "eccc_geps_mean": {
+        "name": "ECCC GEPS Mean",
+        "resolution": "0.5° · 21-member mean",
+        "source": "eccc_geps_mean",
+        "source_label": "ECCC MSC Datamart (HPFX)",
+        "steps": _GEPS_STEPS,
+        "note": "Official 21-member ensemble mean, computed from all 10 m U/V members; only the two required all-member files are fetched.",
+    },
+    "dwd_icon": {
+        "name": "DWD ICON Global",
+        "resolution": "~13 km native grid",
+        "source": "dwd_icon",
+        "source_label": "DWD Open Data",
+        "steps": _ICON_STEPS,
+        "note": "Official global ICON 10 m winds; its native unstructured grid is remapped to the Bay domain at 0.1°.",
+    },
+    "dwd_aicon": {
+        "name": "DWD AICON Global",
+        "resolution": "~13 km native grid",
+        "source": "dwd_aicon",
+        "source_label": "DWD Open Data",
+        "steps": _AICON_STEPS,
+        "note": "Official global AI forecast. DWD ICON grid coordinates are used as specified by DWD; winds are remapped to the Bay domain at 0.1°.",
+    },
 }
 
 DOMAIN = {"west": 70.0, "east": 110.0, "south": 0.0, "north": 30.0}
-FIELD_CACHE_VERSION = 4  # refresh cache for the 70–110°E, 0–30°N crop
+FIELD_CACHE_VERSION = 5  # new ECCC/DWD model decoders and regional remapping
 CACHE_ROOT = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
@@ -174,10 +219,21 @@ def get_forecast(model_id: str, step: int) -> dict[str, Any]:
                 init = _fetch_noaa_indexed_mean("hgefs", step, grib_path)
             elif descriptor["source"] == "noaa_aigfs":
                 init = _fetch_aigfs(step, grib_path)
+            elif descriptor["source"] in {"eccc_gdps", "eccc_geml"}:
+                init = _fetch_eccc_deterministic(descriptor["source"], step, grib_path)
+            elif descriptor["source"] == "eccc_geps_mean":
+                init = _fetch_eccc_geps_mean(step, grib_path)
+            elif descriptor["source"] in {"dwd_icon", "dwd_aicon"}:
+                init = _fetch_dwd_global(descriptor["source"], step, grib_path)
             else:
                 raise ValueError("This model source is not configured.")
 
-            fields = _decode_wind(grib_path)
+            if descriptor["source"] in {"dwd_icon", "dwd_aicon"}:
+                fields = _decode_dwd_unstructured(grib_path, init)
+            elif descriptor["source"] == "eccc_geps_mean":
+                fields = _decode_geps_mean(grib_path)
+            else:
+                fields = _decode_wind(grib_path)
             fields["init"] = init or fields.get("init") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
             fields["model_id"] = model_id
             fields["source"] = descriptor["source_label"]
@@ -188,6 +244,96 @@ def get_forecast(model_id: str, step: int) -> dict[str, Any]:
                 grib_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def _fetch_eccc_deterministic(model_source: str, step: int, target: Path) -> str:
+    """Fetch exactly the 10 m U and V files from the official ECCC HPFX mirror."""
+    session = _request_session()
+    if model_source == "eccc_gdps":
+        folder, resolution, model_name = "model_gdps", "15km", "GDPS"
+    else:
+        folder, resolution, model_name = "model_gdps-geml", "25km", "GDPS-GEML"
+    grid_tag = "0.15" if model_source == "eccc_gdps" else "0.25"
+    failures: list[str] = []
+    for cycle in _candidate_cycles():
+        if cycle.hour not in (0, 12):
+            continue
+        date_text, hour = _cycle_parts(cycle)
+        lead = f"{step:03d}"
+        payloads = []
+        for component, variable in (("u", "WindU"), ("v", "WindV")):
+            name = f"{date_text}T{hour}Z_MSC_{model_name}_{variable}_AGL-10m_LatLon{grid_tag}_PT{lead}H.grib2"
+            url = f"https://hpfx.collab.science.gc.ca/today/{folder}/{resolution}/{hour}/{lead}/{name}"
+            try:
+                response = session.get(url, timeout=HTTP_TIMEOUT)
+                if response.status_code != 200 or not response.content.startswith(b"GRIB"):
+                    raise RuntimeError(f"HTTP {response.status_code}; not a GRIB response")
+                payloads.append(response.content)
+            except Exception as exc:
+                failures.append(f"{cycle:%Y-%m-%d %H} {variable}: {exc}")
+                break
+        if len(payloads) == 2:
+            target.write_bytes(payloads[0] + payloads[1])
+            return cycle.strftime("%Y-%m-%dT%H:%MZ")
+    detail = failures[-1] if failures else "no recent 00/12 UTC run was found"
+    raise RuntimeError(f"ECCC {model_name} 10 m wind files are not currently available for lead {step} h. Try a different forecast hour. Latest check: {detail}")
+
+
+def _fetch_eccc_geps_mean(step: int, target: Path) -> str:
+    """Fetch two official all-member files; the decoder averages their 21 members."""
+    session = _request_session()
+    failures: list[str] = []
+    for cycle in _candidate_cycles():
+        if cycle.hour not in (0, 12):
+            continue
+        date_text, hour = _cycle_parts(cycle)
+        lead = f"{step:03d}"
+        payloads = []
+        for component in ("UGRD", "VGRD"):
+            name = f"CMC_geps-raw_{component}_TGL_10m_latlon0p5x0p5_{date_text}{hour}_P{lead}_allmbrs.grib2"
+            url = f"https://hpfx.collab.science.gc.ca/today/ensemble/geps/grib2/raw/{hour}/{lead}/{name}"
+            try:
+                response = session.get(url, timeout=HTTP_TIMEOUT)
+                if response.status_code != 200 or not response.content.startswith(b"GRIB"):
+                    raise RuntimeError(f"HTTP {response.status_code}; not a GRIB response")
+                payloads.append(response.content)
+            except Exception as exc:
+                failures.append(f"{cycle:%Y-%m-%d %H} {component}: {exc}")
+                break
+        if len(payloads) == 2:
+            target.write_bytes(payloads[0] + payloads[1])
+            return cycle.strftime("%Y-%m-%dT%H:%MZ")
+    detail = failures[-1] if failures else "no recent 00/12 UTC ensemble run was found"
+    raise RuntimeError(f"ECCC GEPS all-member 10 m winds are not currently available for lead {step} h. Try a different forecast hour. Latest check: {detail}")
+
+
+def _fetch_dwd_global(model_source: str, step: int, target: Path) -> str:
+    """Fetch only the 10 m U/V GRIB files from DWD's current global NWP tree."""
+    session = _request_session()
+    model = "icon" if model_source == "dwd_icon" else "aicon"
+    valid_hours = (0, 12) if step > 120 else (0, 6, 12, 18)
+    failures: list[str] = []
+    for cycle in _candidate_cycles():
+        if cycle.hour not in valid_hours:
+            continue
+        run = cycle.strftime("%Y-%m-%dT%H:00")
+        lead = f"PT{step:03d}H00M"
+        payloads = []
+        for component in ("U_10M", "V_10M"):
+            url = f"https://opendata.dwd.de/weather/nwp/v1/m/{model}/p/{component}/r/{run}/s/{lead}.grib2"
+            try:
+                response = session.get(url, timeout=HTTP_TIMEOUT)
+                if response.status_code != 200 or not response.content.startswith(b"GRIB"):
+                    raise RuntimeError(f"HTTP {response.status_code}; not a GRIB response")
+                payloads.append(response.content)
+            except Exception as exc:
+                failures.append(f"{run} {component}: {exc}")
+                break
+        if len(payloads) == 2:
+            target.write_bytes(payloads[0] + payloads[1])
+            return cycle.strftime("%Y-%m-%dT%H:%MZ")
+    detail = failures[-1] if failures else "no recent compatible cycle was found"
+    raise RuntimeError(f"DWD {model.upper()} 10 m U/V fields are not available for lead {step} h. Try another lead hour. Latest check: {detail}")
 
 
 def _fetch_ecmwf(descriptor: dict[str, Any], step: int, target: Path) -> str | None:
@@ -489,6 +635,167 @@ def _decode_wind(path: Path) -> dict[str, Any]:
     if u.shape != v.shape or len(lon_u) != len(lon_v) or len(lat_u) != len(lat_v):
         raise RuntimeError("The source wind components use different grids; this model run cannot be plotted as a wind vector field.")
     return {"lons": lon_u.astype(np.float64), "lats": lat_u.astype(np.float64), "u": u.astype(np.float32), "v": v.astype(np.float32), "init": init}
+
+
+def _decode_geps_mean(path: Path) -> dict[str, Any]:
+    """Average every official GEPS member for each wind component before cropping."""
+    sums: dict[str, np.ndarray] = {}
+    counts = {"u": 0, "v": 0}
+    grids: dict[str, Any] = {}
+    members: dict[str, set[int]] = {"u": set(), "v": set()}
+    init = None
+    try:
+        with path.open("rb") as handle:
+            while True:
+                gid = codes_grib_new_from_file(handle)
+                if gid is None:
+                    break
+                keep_gid = False
+                try:
+                    component = _field_component(gid)
+                    if component not in {"u", "v"}:
+                        continue
+                    if init is None:
+                        data_date = int(_safe_get(gid, "dataDate", 0) or 0)
+                        data_time = int(_safe_get(gid, "dataTime", 0) or 0)
+                        if data_date:
+                            date_text = datetime.strptime(str(data_date), "%Y%m%d").strftime("%Y-%m-%d")
+                            init = f"{date_text}T{data_time // 100:02d}:{data_time % 100:02d}Z"
+                    member = _safe_get(gid, "perturbationNumber")
+                    if member is not None:
+                        members[component].add(int(member))
+                    values = np.asarray(codes_get_array(gid, "values"), dtype=np.float64)
+                    if component not in sums:
+                        sums[component] = values.copy()
+                        grids[component] = gid
+                        keep_gid = True
+                    else:
+                        if values.shape != sums[component].shape:
+                            raise RuntimeError("ECCC GEPS ensemble members use inconsistent grids.")
+                        sums[component] += values
+                    counts[component] += 1
+                finally:
+                    if not keep_gid:
+                        codes_release(gid)
+
+        expected_members = set(range(21))  # control (0) plus 20 perturbed members
+        if counts["u"] != 21 or counts["v"] != 21:
+            raise RuntimeError("The official ECCC GEPS files did not contain the expected 21 10 m U/V members.")
+        if members["u"] != expected_members or members["v"] != expected_members:
+            raise RuntimeError("The ECCC GEPS U/V files contain duplicate or missing ensemble-member identifiers.")
+
+        lon_u, lat_u, u = _crop_regular_grid(grids["u"], (sums["u"] / counts["u"]).astype(np.float32))
+        lon_v, lat_v, v = _crop_regular_grid(grids["v"], (sums["v"] / counts["v"]).astype(np.float32))
+        if u.shape != v.shape or not np.array_equal(lon_u, lon_v) or not np.array_equal(lat_u, lat_v):
+            raise RuntimeError("ECCC GEPS ensemble components use different grids.")
+        return {"lons": lon_u, "lats": lat_u, "u": u, "v": v, "init": init, "ensemble_members": counts["u"]}
+    finally:
+        for gid in grids.values():
+            codes_release(gid)
+
+
+_ICON_REGRID_PATH = CACHE_ROOT / "dwd-icon-bay-regrid-v1.npz"
+_ICON_REGRID_LOCK = threading.RLock()
+
+
+def _unit_sphere_xyz(latitudes: np.ndarray, longitudes: np.ndarray) -> np.ndarray:
+    lat_rad = np.deg2rad(np.asarray(latitudes, dtype=np.float64))
+    lon_rad = np.deg2rad(np.asarray(longitudes, dtype=np.float64))
+    cos_lat = np.cos(lat_rad)
+    return np.column_stack((cos_lat * np.cos(lon_rad), cos_lat * np.sin(lon_rad), np.sin(lat_rad)))
+
+
+def _read_dwd_coordinate_field(session: requests.Session, url: str) -> np.ndarray:
+    response = session.get(url, timeout=HTTP_TIMEOUT)
+    if response.status_code != 200 or not response.content.startswith(b"GRIB"):
+        raise RuntimeError(f"DWD ICON grid-coordinate field unavailable (HTTP {response.status_code}).")
+    with tempfile.NamedTemporaryFile(prefix="baywind-coordinate-", suffix=".grib2", dir=CACHE_ROOT) as temp:
+        temp.write(response.content)
+        temp.flush()
+        with open(temp.name, "rb") as handle:
+            gid = codes_grib_new_from_file(handle)
+            if gid is None:
+                raise RuntimeError("DWD returned an unreadable ICON grid-coordinate GRIB.")
+            try:
+                return np.asarray(codes_get_array(gid, "values"), dtype=np.float32)
+            finally:
+                codes_release(gid)
+
+
+def _load_dwd_regrid_map(init: str | None) -> dict[str, np.ndarray]:
+    """Build and cache a 4-neighbour spherical map from the ICON native grid."""
+    with _ICON_REGRID_LOCK:
+        if _ICON_REGRID_PATH.exists():
+            with np.load(_ICON_REGRID_PATH, allow_pickle=False) as archive:
+                return {key: archive[key] for key in ("lons", "lats", "indices", "weights")}
+
+        if not init:
+            raise RuntimeError("The DWD run time is missing; cannot request its ICON grid coordinates.")
+        cycle = datetime.strptime(init, "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
+        run = cycle.strftime("%Y-%m-%dT%H:00")
+        session = _request_session()
+        root = f"https://opendata.dwd.de/weather/nwp/v1/m/icon/p"
+        clat = _read_dwd_coordinate_field(session, f"{root}/CLAT/r/{run}/s/PT000H00M.grib2")
+        clon = _read_dwd_coordinate_field(session, f"{root}/CLON/r/{run}/s/PT000H00M.grib2")
+        if clat.shape != clon.shape:
+            raise RuntimeError("DWD ICON latitude/longitude fields have different native-grid sizes.")
+        clon = ((clon + 180.0) % 360.0) - 180.0
+        valid = np.isfinite(clat) & np.isfinite(clon)
+        valid &= (clat >= DOMAIN["south"] - 0.75) & (clat <= DOMAIN["north"] + 0.75)
+        valid &= (clon >= DOMAIN["west"] - 0.75) & (clon <= DOMAIN["east"] + 0.75)
+        source_indices = np.flatnonzero(valid)
+        if source_indices.size < 16:
+            raise RuntimeError("DWD ICON grid coordinates do not cover the Bay of Bengal map domain.")
+
+        lons = np.round(np.arange(DOMAIN["west"], DOMAIN["east"] + 0.0001, 0.1), 8)
+        lats = np.round(np.arange(DOMAIN["south"], DOMAIN["north"] + 0.0001, 0.1), 8)
+        target_lat, target_lon = np.meshgrid(lats, lons, indexing="ij")
+        target_xyz = _unit_sphere_xyz(target_lat.ravel(), target_lon.ravel())
+        try:
+            from scipy.spatial import cKDTree
+        except ImportError as exc:
+            raise RuntimeError("SciPy is required to remap the official DWD unstructured grid.") from exc
+        tree = cKDTree(_unit_sphere_xyz(clat[source_indices], clon[source_indices]))
+        distances, local_indices = tree.query(target_xyz, k=4, workers=1)
+        if not np.all(np.isfinite(distances)):
+            raise RuntimeError("DWD ICON regridding could not find neighbours for the selected domain.")
+        distances = np.maximum(distances, 1e-10)
+        weights = 1.0 / np.square(distances)
+        weights /= weights.sum(axis=1, keepdims=True)
+        indices = source_indices[local_indices].astype(np.int32).reshape((*target_lat.shape, 4))
+        weights = weights.astype(np.float32).reshape((*target_lat.shape, 4))
+        result = {"lons": lons, "lats": lats, "indices": indices, "weights": weights}
+        temp = _ICON_REGRID_PATH.with_suffix(".tmp")
+        with temp.open("wb") as handle:
+            np.savez_compressed(handle, **result)
+        temp.replace(_ICON_REGRID_PATH)
+        return result
+
+
+def _decode_dwd_unstructured(path: Path, init: str | None) -> dict[str, Any]:
+    remap = _load_dwd_regrid_map(init)
+    components: dict[str, np.ndarray] = {}
+    with path.open("rb") as handle:
+        while True:
+            gid = codes_grib_new_from_file(handle)
+            if gid is None:
+                break
+            try:
+                component = _field_component(gid)
+                if component and component not in components:
+                    if str(_safe_get(gid, "gridType", "")) != "unstructured_grid":
+                        raise RuntimeError("DWD global field grid layout changed; refusing to apply the ICON coordinate map.")
+                    values = np.asarray(codes_get_array(gid, "values"), dtype=np.float32)
+                    if values.size <= int(remap["indices"].max()):
+                        raise RuntimeError("DWD wind field and ICON grid-coordinate sizes do not match.")
+                    components[component] = np.sum(values[remap["indices"]] * remap["weights"], axis=-1, dtype=np.float32)
+            finally:
+                codes_release(gid)
+    if "u" not in components or "v" not in components:
+        raise RuntimeError("DWD GRIB did not contain both 10 m U/V fields.")
+    if components["u"].shape != components["v"].shape:
+        raise RuntimeError("DWD ICON wind components use different native-grid shapes.")
+    return {"lons": remap["lons"], "lats": remap["lats"], "u": components["u"], "v": components["v"], "init": init}
 
 
 def _save_fields(path: Path, fields: dict[str, Any]) -> None:

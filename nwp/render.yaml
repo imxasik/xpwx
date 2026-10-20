@@ -2,7 +2,6 @@ services:
   - type: web
     name: baywind-bay-of-bengal
     runtime: docker
-    rootDir: baywind
     plan: free
     healthCheckPath: /healthz
     autoDeployTrigger: commit

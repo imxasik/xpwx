@@ -80,7 +80,7 @@
           </div>
         </div>
 
-        <div class="source-note"><span class="source-icon">i</span><p>Fields requested: <b>10 m U + V wind</b> only. Regional cropping and caching keep transfers lean.</p></div>
+        <div class="source-note"><span class="source-icon">i</span><p>Forecast variables are limited to <b>10 m U + V wind</b>; DWD grid coordinates are fetched only for remapping. Ensemble means use all published members.</p></div>
       </aside>
 
       <section class="map-panel" aria-label="Generated forecast map">
@@ -98,7 +98,7 @@
             <strong>Preparing the latest forecast</strong>
             <span>Only the selected model's 10 m wind fields will be fetched.</span>
           </div>
-          <div class="map-loading" id="map-loading" hidden><div class="spinner"></div><strong>Building forecast image</strong><span>Downloading the two wind components and rendering the regional map…</span></div>
+          <div class="map-loading" id="map-loading" hidden><div class="spinner"></div><strong>Building forecast image</strong><span>Fetching the selected official wind data and rendering the regional map…</span></div>
           <div class="map-error" id="map-error" hidden><div class="error-icon">!</div><strong>Forecast unavailable</strong><p id="error-message">The selected data is not available right now.</p><button type="button" id="retry-button">Try again</button></div>
         </div>
         <div class="map-caption">
@@ -109,8 +109,8 @@
     </section>
 
     <footer class="page-footer">
-      <span>Model data from <a href="https://data.ecmwf.int/forecasts/" target="_blank" rel="noopener">ECMWF Open Data</a> and <a href="https://nomads.ncep.noaa.gov/" target="_blank" rel="noopener">NOAA NCEP NOMADS</a>.</span>
-      <span>ECMWF data attribution: CC BY 4.0 · Visualization by Baywind</span>
+      <span>Model data from <a href="https://data.ecmwf.int/forecasts/" target="_blank" rel="noopener">ECMWF</a>, <a href="https://nomads.ncep.noaa.gov/" target="_blank" rel="noopener">NOAA NCEP</a>, <a href="https://hpfx.collab.science.gc.ca/" target="_blank" rel="noopener">ECCC MSC</a>, and <a href="https://opendata.dwd.de/weather/nwp/" target="_blank" rel="noopener">DWD Open Data</a>.</span>
+      <span>Data terms and source attribution follow each provider · Visualization by Baywind</span>
     </footer>
   </main>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
