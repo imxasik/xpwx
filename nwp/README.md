@@ -69,6 +69,6 @@ render.yaml             Render Blueprint service
 
 - Image is newly rendered from GRIB vectors; this is not a pixel-for-pixel copy of WeatherBell's proprietary map or branding.
 - Forecast wind speed is computed from the selected model's 10 m U/V components. Streamline direction is integrated from those same components.
-- The longitude/latitude crop is 70°E–107°E, 0°–30°N. Adjust `DOMAIN` in `weather.py` and `WEST/EAST/SOUTH/NORTH` in `renderer.py` together if you want a different extent.
+- The longitude/latitude crop is 70°E–110°E, 0°–30°N. Adjust `DOMAIN` in `weather.py` and `WEST/EAST/SOUTH/NORTH` in `renderer.py` together if you want a different extent.
 - NOAA GFS/GEFS products are subset at NOMADS. ECMWF open-data files are global grids, so the client selects only the two 10 m wind messages per lead and the app crops them immediately after decode; it does not download the full multi-parameter forecast bundle.
 - No secrets, API keys, or WeatherBell credentials are required.

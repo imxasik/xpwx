@@ -15,7 +15,7 @@ from matplotlib.textpath import TextPath
 import numpy as np
 import shapefile
 
-WEST, EAST, SOUTH, NORTH = 70.0, 107.0, 0.0, 30.0
+WEST, EAST, SOUTH, NORTH = 70.0, 110.0, 0.0, 30.0
 GEODATA = Path(__file__).parent / "static" / "geodata"
 
 # A smooth grey/blue/purple/red wind ramp with reference-style tick levels
@@ -138,18 +138,17 @@ def render_map(
 
     init = _init_time(fields.get("init", ""))
     valid = init + timedelta(hours=int(step))
-    init_label = init.strftime("%HZ %d %b %Y")
-    valid_label = valid.strftime("%HZ %d %b %Y")
+    init_label = init.strftime("%Hz %d %b %Y")
+    valid_label = valid.strftime("%Hz %d %b %Y")
 
     # A near-square plotting field prevents the Bay of Bengal from appearing
     # horizontally compressed; the chart itself remains a full-width image.
-    fig = plt.figure(figsize=(10.25, 9.75), dpi=100, facecolor="white")
+    fig = plt.figure(figsize=(10.25, 9.75), dpi=300, facecolor="white")
     ax = fig.add_axes([0.035, 0.072, 0.93, 0.875])
     ax.set_facecolor("#fbfbf8")
-    ax.set_xticks(np.arange(70, 107, 5))
+    ax.set_xticks(np.arange(70, 111, 5))
     ax.set_yticks(np.arange(0, 31, 5))
-    # set_xticks can expand Matplotlib's view limits (previously to 110°E),
-    # which left a blank strip east of the data. Reapply the exact data domain.
+    # set_xticks can expand Matplotlib's view limits; reapply the exact domain.
     ax.set_xlim(WEST, EAST)
     ax.set_ylim(SOUTH, NORTH)
     ax.grid(True, color="#6f777c", alpha=0.40, linewidth=0.42, linestyle="-", zorder=2)
@@ -197,8 +196,9 @@ def render_map(
         )
 
     # Longitude labels along the top and latitude labels at the right edge.
-    for lon in range(75, 107, 5):
+    for lon in range(75, 110, 5):
         ax.text(lon, NORTH - 0.12, f"{lon}°E", ha="center", va="top", fontsize=7.4, color="#202426", zorder=8)
+    ax.text(EAST - 0.12, NORTH - 0.12, f"{int(EAST)}°E", ha="right", va="top", fontsize=7.4, color="#202426", zorder=8)
     for lat in range(5, 30, 5):
         ax.text(EAST - 0.12, lat, f"{lat}°N", ha="right", va="center", fontsize=7.4, color="#202426", zorder=8)
 
@@ -229,42 +229,51 @@ def render_map(
         ("•", True),
         (model["resolution"], True),
         ("•", True),
-        (f"Init: {init_label}", False),
+        ("Init:", True),
+        (init_label, False),
         ("•", True),
         (layer_label, False),
     ]
-    right_label = f"Hour: {int(step)} • Valid: {valid_label}"
-    right_prop = FontProperties(family="DejaVu Sans", size=8.5, weight="bold")
-    right_width = TextPath((0, 0), right_label, prop=right_prop).get_extents().width / (72 * fig.get_figwidth())
-    max_left_width = 0.965 - 0.035 - right_width - 0.018
+    right_parts = [
+        ("Hour:", True),
+        (str(int(step)), False),
+        ("•", True),
+        ("Valid:", True),
+        (valid_label, False),
+    ]
 
-    def measured_parts(font_size: float) -> tuple[list[float], float]:
+    def measure_parts(parts: list[tuple[str, bool]], font_size: float) -> tuple[list[float], float]:
         widths = []
-        for text, bold in left_parts:
+        for text, bold in parts:
             prop = FontProperties(family="DejaVu Sans", size=font_size, weight="bold" if bold else "normal")
             width = TextPath((0, 0), text, prop=prop).get_extents().width / (72 * fig.get_figwidth())
             widths.append(width)
-        # TextPath omits some leading/trailing whitespace from the extents.
         total = sum(widths) + 0.008 * (len(widths) - 1)
         return widths, total
 
+    right_size = 8.5
+    right_widths, right_width = measure_parts(right_parts, right_size)
+    max_left_width = 0.965 - 0.035 - right_width - 0.018
     header_size = 8.5
-    widths, total_width = measured_parts(header_size)
+    widths, total_width = measure_parts(left_parts, header_size)
     while total_width > max_left_width and header_size > 7.0:
         header_size -= 0.25
-        widths, total_width = measured_parts(header_size)
+        widths, total_width = measure_parts(left_parts, header_size)
 
     cursor = 0.035
     for (text, bold), width in zip(left_parts, widths):
         fig.text(cursor, 0.979, text, ha="left", va="top", fontsize=header_size,
                  fontweight="bold" if bold else "normal", color="#141719")
         cursor += width + 0.008
-    fig.text(0.965, 0.979, right_label, ha="right", va="top", fontsize=8.5,
-             fontweight="bold", color="#141719")
+    cursor = 0.965 - right_width
+    for (text, bold), width in zip(right_parts, right_widths):
+        fig.text(cursor, 0.979, text, ha="left", va="top", fontsize=right_size,
+                 fontweight="bold" if bold else "normal", color="#141719")
+        cursor += width + 0.008
     fig.add_artist(plt.Line2D([0.035, 0.965], [0.961, 0.961], transform=fig.transFigure, color="#6d7172", linewidth=0.45))
 
     if show_speed:
-        cax = fig.add_axes([0.085, 0.038, 0.70, 0.018])
+        cax = fig.add_axes([0.15, 0.038, 0.70, 0.018])
         colorbar = fig.colorbar(
             plt.cm.ScalarMappable(norm=wind_norm, cmap=WIND_CMAP),
             cax=cax,
@@ -274,8 +283,8 @@ def render_map(
             extend="max",
             spacing="uniform",
         )
-        colorbar.ax.xaxis.set_ticks_position("top")
-        colorbar.ax.tick_params(axis="x", top=True, labeltop=True, bottom=False, labelbottom=False,
+        colorbar.ax.xaxis.set_ticks_position("bottom")
+        colorbar.ax.tick_params(axis="x", top=False, labeltop=False, bottom=True, labelbottom=True,
                                 labelsize=6.5, length=1.8, pad=1.0, colors="#24282a")
         colorbar.outline.set_linewidth(0.45)
         if units == "m/s":
@@ -306,6 +315,6 @@ def render_map(
         fig.text(0.085, 0.018, f"10 m wind streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
 
     output = BytesIO()
-    fig.savefig(output, format="png", dpi=100, facecolor="white", bbox_inches=None)
+    fig.savefig(output, format="png", dpi=300, facecolor="white", bbox_inches=None)
     plt.close(fig)
     return output.getvalue()
