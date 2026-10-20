@@ -16,6 +16,7 @@ app.config["JSON_SORT_KEYS"] = False
 PNG_CACHE_DIR = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 PNG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PNG_CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
+RENDER_VERSION = 2  # invalidate old cached charts after map-layout changes
 _RENDER_LOCK = threading.RLock()
 
 
@@ -74,18 +75,26 @@ def map_png():
 
     image_name = f"baywind-{model_id}-f{step:03d}.png"
     cache_unit = units.replace("/", "_")
-    image_cache = PNG_CACHE_DIR / f"map-{model_id}-f{step:03d}-{cache_unit}-s{int(speed_layer)}-l{int(stream_layer)}.png"
+    image_cache = PNG_CACHE_DIR / f"map-v{RENDER_VERSION}-{model_id}-f{step:03d}-{cache_unit}-s{int(speed_layer)}-l{int(stream_layer)}.png"
+
+    def cached_png() -> bytes | None:
+        if image_cache.exists() and (datetime.now(timezone.utc).timestamp() - image_cache.stat().st_mtime < PNG_CACHE_TTL):
+            return image_cache.read_bytes()
+        return None
+
     try:
-        fields = get_forecast(model_id, step)
-        with _RENDER_LOCK:
-            cache_fresh = image_cache.exists() and (datetime.now(timezone.utc).timestamp() - image_cache.stat().st_mtime < PNG_CACHE_TTL)
-            if cache_fresh:
-                png = image_cache.read_bytes()
-            else:
-                png = render_map(fields, model, step, units, speed_layer, stream_layer)
-                temporary = image_cache.with_name(image_cache.stem + f"-{threading.get_ident()}.tmp")
-                temporary.write_bytes(png)
-                temporary.replace(image_cache)
+        # Return a rendered image without reopening/decompressing GRIB-derived
+        # fields. This is the common fast path for repeat views and animation.
+        png = cached_png()
+        if png is None:
+            with _RENDER_LOCK:
+                png = cached_png()
+                if png is None:
+                    fields = get_forecast(model_id, step)
+                    png = render_map(fields, model, step, units, speed_layer, stream_layer)
+                    temporary = image_cache.with_name(image_cache.stem + f"-{threading.get_ident()}.tmp")
+                    temporary.write_bytes(png)
+                    temporary.replace(image_cache)
     except Exception as exc:  # UI gets a concise, actionable provider error.
         app.logger.exception("Map generation failed for %s step %s", model_id, step)
         return jsonify({"error": str(exc) or "Could not retrieve this forecast."}), 502

@@ -202,7 +202,9 @@
         option.textContent = `${model.name} — ${model.resolution}`;
         els.model.appendChild(option);
       }
-      els.model.value = 'ifs_01';
+      // Default to the lighter 0.25° IFS file for faster uncached loads;
+      // the 0.1° option remains available in the model selector.
+      els.model.value = 'ifs_025';
       updateModelDetails();
       loadMap();
     } catch (error) {

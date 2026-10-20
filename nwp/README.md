@@ -2,14 +2,14 @@
 
 A Render-ready Flask application that downloads **only 10 m U/V wind** from official model-data providers, crops it to a Bay of Bengal domain, and renders a compact forecast graphic with shaded wind speed and streamlines. It does not fetch or reuse WeatherBell images, scrape its account area, or call third-party weather APIs.
 
-The map presentation follows the supplied reference's clean forecast-chart layout (header, domain graticule, coastlines, streamlines, and a speed legend), but uses original styling and contains no WeatherBell logo or watermark.
+The map presentation follows the supplied reference's clean forecast-chart layout (header, domain graticule, coastlines, streamlines, and an extended 135-knot speed legend), with original styling and an `@XP WEATHER` watermark. It does not reuse WeatherBell artwork or branding.
 
 ## Included model choices
 
 | Selector | Official source | Notes |
 |---|---|---|
 | ECMWF IFS 0.1° | ECMWF Open Data | Highest-resolution IFS surface winds; the 0.1° tier may be published later than 0.25°. |
-| ECMWF IFS 0.25° | ECMWF Open Data | Lighter, standard open-data grid. |
+| ECMWF IFS 0.25° | ECMWF Open Data | Lighter, standard open-data grid; selected by default for quicker uncached loads. |
 | ECMWF AIFS Single 0.25° | ECMWF Open Data | Operational deterministic AI forecast. |
 | ECMWF AIFS ENS Control 0.25° | ECMWF Open Data | Control member only, **not** an ensemble mean. Clearly labelled to avoid presenting one member as consensus. |
 | NOAA GFS 0.25° | NCEP NOMADS | Requests only 10 m UGRD/VGRD and asks NOMADS' GRIB filter for the regional subset. |
@@ -40,11 +40,9 @@ python app.py
 
 ## Deploy on Render
 
-1. Add this `baywind/` folder inside the existing repository. This package sets `rootDir: baywind` in the service Blueprint.
-2. In Render, choose **New → Blueprint**, connect the existing repository, and set Blueprint Path to `baywind/render.yaml`.
-3. Wait for the service health check to pass, then open the generated `onrender.com` address.
+For a repository where this project is stored in `baywind/`, create **New → Web Service**, select the repository and branch, set **Root Directory** to `baywind`, choose **Docker**, and confirm **Free** before creating the service. The included `render.yaml` also specifies `plan: free` if you choose to use a Blueprint.
 
-The first map for a model/lead downloads and renders the selected fields; both cropped wind arrays and rendered PNGs are then cached on disk for 90 minutes. Render's ephemeral filesystem means a restart clears that cache. The UI offers animation, but each frame is loaded lazily rather than pre-downloading a large forecast sequence.
+The first uncached map still has to download the chosen official model fields; ECMWF 0.1° is heavier, so IFS 0.25° is selected by default for quicker loads. Rendered PNGs are checked first and returned without reopening GRIB-derived arrays; both map and cropped-field caches last 90 minutes. 0.1° streamlines are integrated on a coarser mesh while wind-speed shading stays full resolution. Render's ephemeral filesystem clears the cache after a restart, and forecast animation loads frames lazily rather than prefetching a large sequence.
 
 ## Data and attribution
 

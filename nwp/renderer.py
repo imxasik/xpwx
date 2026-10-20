@@ -9,29 +9,43 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
-from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap
 import numpy as np
 import shapefile
 
 WEST, EAST, SOUTH, NORTH = 70.0, 107.0, -5.0, 30.0
 GEODATA = Path(__file__).parent / "static" / "geodata"
 
-# Original, restrained grey-to-blue ramp inspired by operational forecast
-# graphics. It carries no WeatherBell logo, watermark, or proprietary artwork.
-WIND_LEVELS = np.array([0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80], dtype=float)
-WIND_COLORS = [
-    "#fbfbf8", "#eeeeeb", "#d8d9d8", "#c0c2c3", "#a6a9aa",
-    "#8f9699", "#79b7ec", "#5aa5e6", "#378fe0", "#237bd7",
-    "#1767c5", "#1554ad", "#19458f", "#343d82", "#593875",
-    "#793667", "#993851", "#b94840", "#d45a3b", "#ed743d",
+# A discrete grey/blue/purple/red wind ramp, extended to match the broad
+# operational scale in the user's visual reference (values are knots).
+WIND_LEVELS_KN = np.array([
+    4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30,
+    34, 38, 42, 46, 50, 54, 58, 62, 66, 70, 74, 78, 82, 86, 90,
+    94, 98, 102, 110, 120, 135,
+], dtype=float)
+WIND_TICKS_KN = WIND_LEVELS_KN
+WIND_COLOR_STOPS = [
+    "#fbfbf8", "#f0f0ed", "#d9dad9", "#c1c3c4", "#a7aaac", "#8e9598",
+    "#78b9ed", "#55a5e7", "#388fdf", "#237bd6", "#1769c8", "#1558b5",
+    "#174a99", "#283f88", "#403b7d", "#5b3976", "#73366e", "#88345f",
+    "#9c354f", "#ad3947", "#bc4140", "#cb493b", "#d65337", "#df6035",
+    "#e76c35", "#ed7937", "#e98234", "#dd7830", "#cf682d", "#c05a2b",
+    "#b14c2a", "#a3402a", "#93362a", "#832d29", "#702629", "#60232a",
+    "#521e27",
 ]
-WIND_CMAP = ListedColormap(WIND_COLORS, name="baywind-grey-blue")
-WIND_NORM = BoundaryNorm(WIND_LEVELS, WIND_CMAP.N, extend="max")
+WIND_CMAP = LinearSegmentedColormap.from_list(
+    "baywind-operational", WIND_COLOR_STOPS, N=len(WIND_LEVELS_KN)
+)
+KNOT_FACTOR = 1.943844
 UNIT_INFO = {
-    "knots": (1.943844, "knots", "kn"),
+    "knots": (KNOT_FACTOR, "knots", "kn"),
     "m/s": (1.0, "m/s", "m/s"),
     "km/h": (3.6, "km/h", "km/h"),
 }
+
+# Read the Natural Earth outlines once per worker rather than reopening and
+# rebuilding their geometry for each new forecast hour.
+_SHAPE_CACHE: dict[str, list[np.ndarray]] = {}
 
 
 def _init_time(init: str) -> datetime:
@@ -42,10 +56,12 @@ def _init_time(init: str) -> datetime:
         return datetime.now(timezone.utc)
 
 
-def _add_shapefile_lines(ax: Any, filename: str, color: str, linewidth: float, zorder: int) -> None:
+def _outline_segments(filename: str) -> list[np.ndarray]:
+    if filename in _SHAPE_CACHE:
+        return _SHAPE_CACHE[filename]
     path = GEODATA / filename
     reader = shapefile.Reader(str(path))
-    segments = []
+    segments: list[np.ndarray] = []
     for shape_record in reader.iterShapes():
         bounds = shape_record.bbox
         if not bounds or bounds[2] < WEST or bounds[0] > EAST or bounds[3] < SOUTH or bounds[1] > NORTH:
@@ -56,6 +72,12 @@ def _add_shapefile_lines(ax: Any, filename: str, color: str, linewidth: float, z
             line = points[start:end]
             if len(line) >= 2:
                 segments.append(line)
+    _SHAPE_CACHE[filename] = segments
+    return segments
+
+
+def _add_shapefile_lines(ax: Any, filename: str, color: str, linewidth: float, zorder: int) -> None:
+    segments = _outline_segments(filename)
     if segments:
         ax.add_collection(LineCollection(segments, colors=color, linewidths=linewidth, zorder=zorder, clip_on=True))
 
@@ -75,18 +97,28 @@ def render_map(
     v_ms = np.asarray(fields["v"], dtype=np.float32)
     speed = np.hypot(u_ms, v_ms) * factor
 
+    # Keep the legend's visual range identical across selectable units.
+    unit_scale = factor / KNOT_FACTOR
+    wind_levels = WIND_LEVELS_KN * unit_scale
+    wind_ticks = WIND_TICKS_KN * unit_scale
+    wind_norm = BoundaryNorm(wind_levels, WIND_CMAP.N, extend="max")
+
     init = _init_time(fields.get("init", ""))
     valid = init + timedelta(hours=int(step))
     init_label = init.strftime("%d %b %Y %H%M UTC")
     valid_label = valid.strftime("%H:%M %d %b %Y UTC")
 
+    # The map box is deliberately taller than before: its plot aspect now
+    # tracks the supplied reference instead of stretching the geography wide.
     fig = plt.figure(figsize=(10.25, 8.15), dpi=100, facecolor="white")
-    ax = fig.add_axes([0.025, 0.115, 0.95, 0.82])
+    ax = fig.add_axes([0.035, 0.082, 0.93, 0.873])
+    ax.set_facecolor("#fbfbf8")
+    ax.set_xticks(np.arange(70, 107, 5))
+    ax.set_yticks(np.arange(-5, 31, 5))
+    # set_xticks can expand Matplotlib's view limits (previously to 110°E),
+    # which left a blank strip east of the data. Reapply the exact data domain.
     ax.set_xlim(WEST, EAST)
     ax.set_ylim(SOUTH, NORTH)
-    ax.set_facecolor("#fbfbf8")
-    ax.set_xticks(np.arange(70, 111, 5))
-    ax.set_yticks(np.arange(-5, 31, 5))
     ax.grid(True, color="#6f777c", alpha=0.40, linewidth=0.42, linestyle="-", zorder=2)
     ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
     for spine in ax.spines.values():
@@ -99,29 +131,30 @@ def render_map(
             lats,
             speed,
             cmap=WIND_CMAP,
-            norm=WIND_NORM,
+            norm=wind_norm,
             shading="auto",
-            alpha=0.96,
+            alpha=0.98,
             zorder=1,
             rasterized=True,
         )
 
-    # Packaged Natural Earth 1:50m coastlines and country boundaries keep map
-    # rendering fast, offline, and independent of any map-tile API.
+    # Bundled Natural Earth boundaries keep plotting offline and lightweight.
     _add_shapefile_lines(ax, "ne_50m_admin_0_boundary_lines_land.shp", "#25292b", 0.48, 5)
     _add_shapefile_lines(ax, "ne_50m_coastline.shp", "#171a1b", 0.62, 6)
 
     if show_streamlines:
-        # Components remain in m/s; selecting display units changes only the
-        # scalar shading and legend, not the vector-field integration.
-        uu = np.ma.masked_invalid(u_ms)
-        vv = np.ma.masked_invalid(v_ms)
+        # Plot streamline vectors on a ~0.2° mesh for 0.1° data. Shading stays
+        # full resolution, but streamline integration has far fewer grid cells.
+        lon_step = float(np.nanmedian(np.diff(lons))) if len(lons) > 1 else 0.25
+        stride = max(1, int(round(0.2 / lon_step))) if lon_step < 0.18 else 1
+        uu = np.ma.masked_invalid(u_ms[::stride, ::stride])
+        vv = np.ma.masked_invalid(v_ms[::stride, ::stride])
         ax.streamplot(
-            lons,
-            lats,
+            lons[::stride],
+            lats[::stride],
             uu,
             vv,
-            density=1.12,
+            density=0.95,
             color="#4a5054",
             linewidth=0.48,
             arrowsize=0.62,
@@ -131,10 +164,25 @@ def render_map(
         )
 
     # Longitude labels along the top and latitude labels at the right edge.
-    for lon in range(75, 106, 5):
+    for lon in range(75, 107, 5):
         ax.text(lon, NORTH - 0.12, f"{lon}°E", ha="center", va="top", fontsize=7.4, color="#202426", zorder=8)
     for lat in range(5, 30, 5):
         ax.text(EAST - 0.12, lat, f"{lat}°N", ha="right", va="center", fontsize=7.4, color="#202426", zorder=8)
+
+    # User-requested XP Weather credit, overlaid neatly inside the map.
+    ax.text(
+        EAST - 0.45,
+        SOUTH + 0.52,
+        "@XP WEATHER",
+        transform=ax.transData,
+        ha="right",
+        va="bottom",
+        fontsize=8.3,
+        fontweight="bold",
+        color="white",
+        zorder=12,
+        bbox={"boxstyle": "round,pad=0.34", "facecolor": "#14243a", "edgecolor": "#ffffff", "linewidth": 0.6, "alpha": 0.88},
+    )
 
     fig.text(
         0.035,
@@ -156,32 +204,35 @@ def render_map(
         fontweight="bold",
         color="#141719",
     )
-    fig.add_artist(plt.Line2D([0.025, 0.975], [0.952, 0.952], transform=fig.transFigure, color="#6d7172", linewidth=0.45))
+    fig.add_artist(plt.Line2D([0.035, 0.965], [0.957, 0.957], transform=fig.transFigure, color="#6d7172", linewidth=0.45))
 
     if show_speed:
-        cax = fig.add_axes([0.085, 0.064, 0.70, 0.017])
+        cax = fig.add_axes([0.085, 0.047, 0.70, 0.018])
         colorbar = fig.colorbar(
-            plt.cm.ScalarMappable(norm=WIND_NORM, cmap=WIND_CMAP),
+            plt.cm.ScalarMappable(norm=wind_norm, cmap=WIND_CMAP),
             cax=cax,
             orientation="horizontal",
-            ticks=np.arange(0, 81, 5),
+            boundaries=wind_levels,
+            ticks=wind_ticks,
             extend="max",
-            spacing="proportional",
+            spacing="uniform",
         )
-        colorbar.ax.tick_params(labelsize=7, length=2, pad=1.5, colors="#24282a")
+        colorbar.ax.tick_params(labelsize=6.5, length=1.8, pad=1.0, colors="#24282a")
         colorbar.outline.set_linewidth(0.45)
-        for label in colorbar.ax.get_xticklabels():
-            label.set_fontfamily("DejaVu Sans")
+        if units == "m/s":
+            labels = [f"{value:.0f}" if value.is_integer() else f"{value:.1f}" for value in WIND_TICKS_KN * 0.514444]
+        elif units == "km/h":
+            labels = [f"{value:.0f}" for value in WIND_TICKS_KN * 1.852]
+        else:
+            labels = [str(int(value)) for value in WIND_TICKS_KN]
+        colorbar.ax.set_xticklabels(labels)
         maximum = float(np.nanmax(speed)) if np.isfinite(speed).any() else 0.0
-        fig.text(0.955, 0.067, f"Max: {maximum:.1f} {short_unit}", ha="right", va="center", fontsize=8.5, fontweight="bold", color="#141719")
-        fig.text(0.085, 0.039, f"10 m wind speed · {unit_label}", ha="left", va="center", fontsize=7.4, color="#313638")
+        fig.text(0.955, 0.057, f"Max: {maximum:.1f} {short_unit}", ha="right", va="center", fontsize=8.5, fontweight="bold", color="#141719")
+        #attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
+        #fig.text(0.085, 0.021, f"10 m wind speed · {unit_label}  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
+        fig.text(0.085, 0.021, f"10 m wind speed · {unit_label}", ha="left", va="center", fontsize=6.3, color="#313638")
     else:
-        fig.text(0.08, 0.065, "10 m wind streamlines", ha="left", va="center", fontsize=8.2, color="#313638")
-
-    attribution = model["source_label"]
-    if attribution == "ECMWF Open Data":
-        attribution = "ECMWF Open Data · CC BY 4.0 · data.ecmwf.int"
-    fig.text(0.965, 0.022, f"Source: {attribution}  |  Map outlines: Natural Earth  |  Baywind", ha="right", va="center", fontsize=6.4, color="#4b5052")
+        fig.text(0.085, 0.057, "10 m wind streamlines", ha="left", va="center", fontsize=8.2, color="#313638")
 
     output = BytesIO()
     fig.savefig(output, format="png", dpi=100, facecolor="white", bbox_inches=None)

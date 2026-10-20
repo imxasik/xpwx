@@ -54,7 +54,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "type": "fc",
     },
     "aifs": {
-        "name": "ECMWF AIFS Single",
+        "name": "AIFS Single",
         "resolution": "0.25°",
         "source": "ecmwf",
         "source_label": "ECMWF Open Data",
@@ -66,7 +66,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "type": "fc",
     },
     "aifs_ens_control": {
-        "name": "ECMWF AIFS ENS · Control",
+        "name": "AIFS ENS · Control",
         "resolution": "0.25°",
         "source": "ecmwf",
         "source_label": "ECMWF Open Data",
@@ -120,6 +120,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
 }
 
 DOMAIN = {"west": 70.0, "east": 107.0, "south": -5.0, "north": 30.0}
+FIELD_CACHE_VERSION = 2  # discard older cached crops that stopped short of 107E
 CACHE_ROOT = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
@@ -152,7 +153,7 @@ def _request_session() -> requests.Session:
 def get_forecast(model_id: str, step: int) -> dict[str, Any]:
     if model_id not in MODEL_CATALOG:
         raise ValueError("Unknown model.")
-    field_cache = CACHE_ROOT / f"fields-{model_id}-f{step:03d}.npz"
+    field_cache = CACHE_ROOT / f"fields-v{FIELD_CACHE_VERSION}-{model_id}-f{step:03d}.npz"
     with _CACHE_LOCK:
         if _valid_cache(field_cache):
             return _load_fields(field_cache)

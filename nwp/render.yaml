@@ -3,7 +3,7 @@ services:
     name: baywind-bay-of-bengal
     runtime: docker
     rootDir: baywind
-    plan: starter
+    plan: free
     healthCheckPath: /healthz
     autoDeployTrigger: commit
     envVars:
