@@ -9,11 +9,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
-from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.font_manager import FontProperties
+from matplotlib.textpath import TextPath
 import numpy as np
 import shapefile
 
-WEST, EAST, SOUTH, NORTH = 70.0, 107.0, -5.0, 30.0
+WEST, EAST, SOUTH, NORTH = 70.0, 107.0, 0.0, 30.0
 GEODATA = Path(__file__).parent / "static" / "geodata"
 
 # A smooth grey/blue/purple/red wind ramp with reference-style tick levels
@@ -24,18 +26,19 @@ WIND_LEVELS_KN = np.array([
     94, 98, 102, 110, 120, 135,
 ], dtype=float)
 WIND_TICKS_KN = WIND_LEVELS_KN
-WIND_COLOR_STOPS = [
-    "#fbfbf8", "#f0f0ed", "#d9dad9", "#c1c3c4", "#a7aaac", "#8e9598",
-    "#78b9ed", "#55a5e7", "#388fdf", "#237bd6", "#1769c8", "#1558b5",
-    "#174a99", "#283f88", "#403b7d", "#5b3976", "#73366e", "#88345f",
-    "#9c354f", "#ad3947", "#bc4140", "#cb493b", "#d65337", "#df6035",
-    "#e76c35", "#ed7937", "#e98234", "#dd7830", "#cf682d", "#c05a2b",
-    "#b14c2a", "#a3402a", "#93362a", "#832d29", "#702629", "#60232a",
-    "#521e27",
+# Approximate sampled colors from the user-provided reference legend: grey,
+# blues/cyan, green/yellow, orange/red, and the warm high-end tones.
+WIND_COLORS = [
+    "#e5e5e5", "#d7d7d7", "#bbbbbb", "#959595", "#1365d4", "#2781f0",
+    "#4fa6f5", "#96d3fd", "#b4f1fb", "#54f055", "#78f771", "#b0fda4",
+    "#c4febb", "#eefcb3", "#f8c953", "#f9a815", "#ff8d09", "#fe4e05",
+    "#fa3003", "#bb0104", "#a40307", "#643c31", "#794f46", "#8a635a",
+    "#debcb4", "#f1ddd5", "#fcf0e6", "#fee6e5", "#fdc7c5", "#e58382",
+    "#e06464", "#d55051", "#c73b3a", "#a3201f",
 ]
-WIND_CMAP = LinearSegmentedColormap.from_list(
-    "baywind-operational", WIND_COLOR_STOPS, N=256
-)
+# One swatch for each legend interval, plus a final over-range swatch.
+WIND_CMAP = ListedColormap(WIND_COLORS + [WIND_COLORS[-1]], name="baywind-reference", N=len(WIND_LEVELS_KN))
+WIND_CMAP.set_under("#ffffff")
 KNOT_FACTOR = 1.943844
 UNIT_INFO = {
     "knots": (KNOT_FACTOR, "knots", "kn"),
@@ -126,16 +129,17 @@ def render_map(
     plot_lons, plot_lats, plot_u, plot_v = _smooth_regular_vectors(lons, lats, u_ms, v_ms)
     speed = np.hypot(plot_u, plot_v) * factor
 
-    # Continuous ramp, with reference-style tick marks over the full range.
+    # Reference-matched wind bands and full 4–135 range. Spatial values are
+    # interpolated below; the legend's discrete intervals preserve its color key.
     unit_scale = factor / KNOT_FACTOR
     wind_levels = WIND_LEVELS_KN * unit_scale
     wind_ticks = WIND_TICKS_KN * unit_scale
-    wind_norm = Normalize(vmin=wind_levels[0], vmax=wind_levels[-1], clip=False)
+    wind_norm = BoundaryNorm(wind_levels, WIND_CMAP.N, extend="max")
 
     init = _init_time(fields.get("init", ""))
     valid = init + timedelta(hours=int(step))
-    init_label = init.strftime("%d %b %Y %H%M UTC")
-    valid_label = valid.strftime("%H:%M %d %b %Y UTC")
+    init_label = init.strftime("%HZ %d %b %Y")
+    valid_label = valid.strftime("%HZ %d %b %Y")
 
     # A near-square plotting field prevents the Bay of Bengal from appearing
     # horizontally compressed; the chart itself remains a full-width image.
@@ -143,7 +147,7 @@ def render_map(
     ax = fig.add_axes([0.035, 0.072, 0.93, 0.875])
     ax.set_facecolor("#fbfbf8")
     ax.set_xticks(np.arange(70, 107, 5))
-    ax.set_yticks(np.arange(-5, 31, 5))
+    ax.set_yticks(np.arange(0, 31, 5))
     # set_xticks can expand Matplotlib's view limits (previously to 110°E),
     # which left a blank strip east of the data. Reapply the exact data domain.
     ax.set_xlim(WEST, EAST)
@@ -213,34 +217,54 @@ def render_map(
         bbox={"boxstyle": "round,pad=0.34", "facecolor": "#14243a", "edgecolor": "#ffffff", "linewidth": 0.6, "alpha": 0.88},
     )
 
-    resolution = model["resolution"]
-    if "ensemble mean" in resolution.lower():
-        resolution = "Hybrid ensemble"
-    header_left = f"{model['name']} · {resolution} · Init {init_label}"
-    fig.text(
-        0.035,
-        0.979,
-        header_left,
-        ha="left",
-        va="top",
-        fontsize=8.8,
-        fontweight="medium",
-        color="#141719",
-    )
-    fig.text(
-        0.965,
-        0.979,
-        f"F{int(step):03d}  ·  Valid: {valid_label}",
-        ha="right",
-        va="top",
-        fontsize=8.8,
-        fontweight="bold",
-        color="#141719",
-    )
+    display_unit = {"knots": "Knots", "m/s": "m/s", "km/h": "km/h"}[units]
+    if show_speed and show_streamlines:
+        layer_label = f"10m Wind Speed ({display_unit}) & Streamline"
+    elif show_speed:
+        layer_label = f"10m Wind Speed ({display_unit})"
+    else:
+        layer_label = "10m Streamline"
+    left_parts = [
+        (model["name"], True),
+        ("•", True),
+        (model["resolution"], True),
+        ("•", True),
+        (f"Init: {init_label}", False),
+        ("•", True),
+        (layer_label, False),
+    ]
+    right_label = f"Hour: {int(step)} • Valid: {valid_label}"
+    right_prop = FontProperties(family="DejaVu Sans", size=8.5, weight="bold")
+    right_width = TextPath((0, 0), right_label, prop=right_prop).get_extents().width / (72 * fig.get_figwidth())
+    max_left_width = 0.965 - 0.035 - right_width - 0.018
+
+    def measured_parts(font_size: float) -> tuple[list[float], float]:
+        widths = []
+        for text, bold in left_parts:
+            prop = FontProperties(family="DejaVu Sans", size=font_size, weight="bold" if bold else "normal")
+            width = TextPath((0, 0), text, prop=prop).get_extents().width / (72 * fig.get_figwidth())
+            widths.append(width)
+        # TextPath omits some leading/trailing whitespace from the extents.
+        total = sum(widths) + 0.008 * (len(widths) - 1)
+        return widths, total
+
+    header_size = 8.5
+    widths, total_width = measured_parts(header_size)
+    while total_width > max_left_width and header_size > 7.0:
+        header_size -= 0.25
+        widths, total_width = measured_parts(header_size)
+
+    cursor = 0.035
+    for (text, bold), width in zip(left_parts, widths):
+        fig.text(cursor, 0.979, text, ha="left", va="top", fontsize=header_size,
+                 fontweight="bold" if bold else "normal", color="#141719")
+        cursor += width + 0.008
+    fig.text(0.965, 0.979, right_label, ha="right", va="top", fontsize=8.5,
+             fontweight="bold", color="#141719")
     fig.add_artist(plt.Line2D([0.035, 0.965], [0.961, 0.961], transform=fig.transFigure, color="#6d7172", linewidth=0.45))
 
     if show_speed:
-        cax = fig.add_axes([0.085, 0.047, 0.70, 0.018])
+        cax = fig.add_axes([0.085, 0.038, 0.70, 0.018])
         colorbar = fig.colorbar(
             plt.cm.ScalarMappable(norm=wind_norm, cmap=WIND_CMAP),
             cax=cax,
@@ -250,7 +274,9 @@ def render_map(
             extend="max",
             spacing="uniform",
         )
-        colorbar.ax.tick_params(labelsize=6.5, length=1.8, pad=1.0, colors="#24282a")
+        colorbar.ax.xaxis.set_ticks_position("top")
+        colorbar.ax.tick_params(axis="x", top=True, labeltop=True, bottom=False, labelbottom=False,
+                                labelsize=6.5, length=1.8, pad=1.0, colors="#24282a")
         colorbar.outline.set_linewidth(0.45)
         if units == "m/s":
             labels = [f"{value:.0f}" if value.is_integer() else f"{value:.1f}" for value in WIND_TICKS_KN * 0.514444]

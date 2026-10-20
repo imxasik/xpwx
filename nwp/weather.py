@@ -119,8 +119,8 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
     },
 }
 
-DOMAIN = {"west": 70.0, "east": 107.0, "south": -5.0, "north": 30.0}
-FIELD_CACHE_VERSION = 2  # discard older cached crops that stopped short of 107E
+DOMAIN = {"west": 70.0, "east": 107.0, "south": 0.0, "north": 30.0}
+FIELD_CACHE_VERSION = 3  # refresh cache for the 0°S-to-30°N crop
 CACHE_ROOT = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
