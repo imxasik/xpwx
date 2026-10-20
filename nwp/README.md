@@ -42,7 +42,7 @@ python app.py
 
 For a repository where this project is stored in `baywind/`, create **New → Web Service**, select the repository and branch, set **Root Directory** to `baywind`, choose **Docker**, and confirm **Free** before creating the service. The included `render.yaml` also specifies `plan: free` if you choose to use a Blueprint.
 
-The first uncached map still has to download the chosen official model fields; ECMWF 0.1° is heavier, so IFS 0.25° is selected by default for quicker loads. Rendered PNGs are checked first and returned without reopening GRIB-derived arrays; both map and cropped-field caches last 90 minutes. 0.1° streamlines are integrated on a coarser mesh while wind-speed shading stays full resolution. Render's ephemeral filesystem clears the cache after a restart, and forecast animation loads frames lazily rather than prefetching a large sequence.
+The on-screen preview renders at 150 DPI for quicker display; the **HD PNG** button creates a separate 300-DPI export only when requested. The first uncached map still has to download the selected official model fields; ECMWF 0.1° is heavier, so IFS 0.25° is selected by default for quicker loads. Rendered PNGs are checked first and returned without reopening GRIB-derived arrays; both map and cropped-field caches last 90 minutes. Coarse forecast fields are interpolated only for display, and 0.1° streamlines are integrated on a coarser mesh. Render's ephemeral filesystem clears the cache after a restart, and forecast animation loads frames lazily rather than prefetching a large sequence.
 
 ## Data and attribution
 

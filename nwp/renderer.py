@@ -117,6 +117,7 @@ def render_map(
     units: str = "knots",
     show_speed: bool = True,
     show_streamlines: bool = True,
+    dpi: int = 150,
 ) -> bytes:
     factor, unit_label, short_unit = UNIT_INFO[units]
     lons = np.asarray(fields["lons"], dtype=np.float64)
@@ -143,7 +144,7 @@ def render_map(
 
     # A near-square plotting field prevents the Bay of Bengal from appearing
     # horizontally compressed; the chart itself remains a full-width image.
-    fig = plt.figure(figsize=(10.25, 9.75), dpi=300, facecolor="white")
+    fig = plt.figure(figsize=(10, 9), dpi=dpi, facecolor="white")
     ax = fig.add_axes([0.035, 0.072, 0.93, 0.875])
     ax.set_facecolor("#fbfbf8")
     ax.set_xticks(np.arange(70, 111, 5))
@@ -308,13 +309,13 @@ def render_map(
             zorder=12,
             bbox={"boxstyle": "round,pad=0.34", "facecolor": "#ffffff", "edgecolor": "#45515c", "linewidth": 0.55, "alpha": 0.88},
         )
-        attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
-        fig.text(0.085, 0.018, f"10 m wind speed · {unit_label} · Streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
-    else:
-        attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
-        fig.text(0.085, 0.018, f"10 m wind streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
+        #attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
+        #fig.text(0.085, 0.018, f"10 m wind speed · {unit_label} · Streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
+    #else:
+        #attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
+        #fig.text(0.085, 0.018, f"10 m wind streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
 
     output = BytesIO()
-    fig.savefig(output, format="png", dpi=300, facecolor="white", bbox_inches=None)
+    fig.savefig(output, format="png", dpi=dpi, facecolor="white", bbox_inches=None)
     plt.close(fig)
     return output.getvalue()

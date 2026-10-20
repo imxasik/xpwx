@@ -30,6 +30,8 @@
 
   let catalog = [];
   let currentBlobUrl = null;
+  let currentDownloadQuery = null;
+  let hdDownloadInProgress = false;
   let animationTimer = null;
   let requestController = null;
   let requestSequence = 0;
@@ -73,6 +75,7 @@
   }
 
   function showLoading() {
+    currentDownloadQuery = null;
     els.error.hidden = true;
     els.placeholder.hidden = true;
     els.loading.hidden = false;
@@ -82,6 +85,8 @@
   }
 
   function showError(message) {
+    currentDownloadQuery = null;
+    els.download.disabled = true;
     els.loading.hidden = true;
     els.image.hidden = true;
     els.error.hidden = false;
@@ -93,6 +98,8 @@
     const model = currentModel();
     if (!model) return;
     if (!els.speed.checked && !els.stream.checked) {
+      currentDownloadQuery = null;
+      els.download.disabled = true;
       els.error.hidden = false;
       els.loading.hidden = true;
       els.placeholder.hidden = true;
@@ -114,6 +121,7 @@
       units: els.units.value,
       speed: els.speed.checked ? '1' : '0',
       streamlines: els.stream.checked ? '1' : '0',
+      dpi: '150',
     });
 
     try {
@@ -133,6 +141,7 @@
       els.loading.hidden = true;
       els.error.hidden = true;
       els.placeholder.hidden = true;
+      currentDownloadQuery = query.toString();
       els.download.disabled = false;
       els.valid.textContent = response.headers.get('X-Valid-Time') || '—';
       const run = response.headers.get('X-Model-Run');
@@ -177,14 +186,47 @@
     loadMap();
   }
 
-  function downloadCurrent() {
-    if (!currentBlobUrl) return;
-    const link = document.createElement('a');
-    link.href = currentBlobUrl;
-    link.download = `baywind-${els.model.value}-f${pad(selectedStep())}.png`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+  async function downloadCurrent() {
+    if (!currentBlobUrl || !currentDownloadQuery || hdDownloadInProgress) return;
+    hdDownloadInProgress = true;
+    const label = els.download.querySelector('span');
+    const previousLabel = label.textContent;
+    const query = new URLSearchParams(currentDownloadQuery);
+    query.set('dpi', '300');
+    els.download.disabled = true;
+    label.textContent = 'Making HD…';
+    setState('Preparing 300 DPI PNG…', 'is-loading');
+
+    try {
+      const response = await fetch(`/api/map.png?${query.toString()}`, {cache: 'no-store'});
+      if (!response.ok) {
+        let message = `Server returned ${response.status}.`;
+        try { message = (await response.json()).error || message; } catch (_) {}
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const step = query.get('step') || '000';
+      link.href = downloadUrl;
+      link.download = `baywind-${query.get('model')}-f${pad(step)}-300dpi.png`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1500);
+      setState('Map ready', 'is-loaded');
+    } catch (error) {
+      els.download.title = error.message || 'High-resolution export failed';
+      setState('HD export failed', 'is-error');
+      window.setTimeout(() => {
+        if (!els.image.hidden) setState('Map ready', 'is-loaded');
+        els.download.title = 'Download 300 DPI PNG';
+      }, 4500);
+    } finally {
+      hdDownloadInProgress = false;
+      label.textContent = previousLabel;
+      els.download.disabled = els.image.hidden || !currentBlobUrl;
+    }
   }
 
   async function init() {

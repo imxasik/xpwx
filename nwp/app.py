@@ -16,7 +16,7 @@ app.config["JSON_SORT_KEYS"] = False
 PNG_CACHE_DIR = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 PNG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PNG_CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
-RENDER_VERSION = 5  # invalidate charts after 110E extent and 300-DPI title/legend updates
+RENDER_VERSION = 6  # separate fast preview images from 300-DPI exports
 _RENDER_LOCK = threading.RLock()
 
 
@@ -68,14 +68,21 @@ def map_png():
     if units not in {"knots", "m/s", "km/h"}:
         return jsonify({"error": "Choose knots, m/s, or km/h."}), 400
 
+    try:
+        dpi = int(request.args.get("dpi", "150"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "DPI must be 120, 150, or 300."}), 400
+    if dpi not in {120, 150, 300}:
+        return jsonify({"error": "DPI must be 120, 150, or 300."}), 400
+
     speed_layer = request.args.get("speed", "1") == "1"
     stream_layer = request.args.get("streamlines", "1") == "1"
     if not speed_layer and not stream_layer:
         return jsonify({"error": "Turn on at least one map layer."}), 400
 
-    image_name = f"baywind-{model_id}-f{step:03d}.png"
+    image_name = f"baywind-{model_id}-f{step:03d}-{dpi}dpi.png"
     cache_unit = units.replace("/", "_")
-    image_cache = PNG_CACHE_DIR / f"map-v{RENDER_VERSION}-{model_id}-f{step:03d}-{cache_unit}-s{int(speed_layer)}-l{int(stream_layer)}.png"
+    image_cache = PNG_CACHE_DIR / f"map-v{RENDER_VERSION}-{model_id}-f{step:03d}-{cache_unit}-d{dpi}-s{int(speed_layer)}-l{int(stream_layer)}.png"
     metadata_cache = image_cache.with_suffix(".meta")
 
     def cached_png() -> tuple[bytes, str] | None:
@@ -104,7 +111,7 @@ def map_png():
                     fields = get_forecast(model_id, step)
                     init_time = str(fields.get("init") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"))
                     datetime.fromisoformat(init_time.replace("Z", "+00:00"))
-                    png = render_map(fields, model, step, units, speed_layer, stream_layer)
+                    png = render_map(fields, model, step, units, speed_layer, stream_layer, dpi=dpi)
                     thread_tag = threading.get_ident()
                     image_tmp = image_cache.with_name(image_cache.stem + f"-img-{thread_tag}.tmp")
                     meta_tmp = metadata_cache.with_name(metadata_cache.stem + f"-meta-{thread_tag}.tmp")
@@ -124,6 +131,7 @@ def map_png():
     response.headers["X-Valid-Time"] = (init_dt + timedelta(hours=step)).strftime("%Y-%m-%d %H:%M UTC")
     response.headers["X-Forecast-Hour"] = str(step)
     response.headers["X-Data-Source"] = model["source_label"]
+    response.headers["X-Render-DPI"] = str(dpi)
     return response
 
 
