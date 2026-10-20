@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: baywind-bay-of-bengal
+    runtime: docker
+    rootDir: baywind
+    plan: starter
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: BAYWIND_CACHE_TTL
+        value: "5400"
