@@ -8,6 +8,7 @@ from typing import Any
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as path_effects
 from matplotlib.collections import LineCollection
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.font_manager import FontProperties
@@ -454,26 +455,17 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
     if field_id == "mslp":
         minimum = float(np.nanmin(display))
         maximum = float(np.nanmax(display))
-        extrema = f"Min: {minimum:.1f} hPa | Max: {maximum:.1f} hPa"
+        min_rounded = int(np.floor(minimum + 0.5))
+        max_rounded = int(np.floor(maximum + 0.5))
+        extrema = f"Min: {min_rounded} hPa | Max: {max_rounded} hPa"
         min_row, min_col = np.unravel_index(np.nanargmin(display), display.shape)
         min_lon = float(plot_lons[min_col])
         min_lat = float(plot_lats[min_row])
-        label_dx = 1.4 if min_lon < EAST - 5 else -1.4
-        label_dy = 0.8 if min_lat < NORTH - 3 else -0.8
-        label_ha = "left" if label_dx > 0 else "right"
-        ax.annotate(
-            f"Min {minimum:.1f} hPa",
-            xy=(min_lon, min_lat),
-            xytext=(min_lon + label_dx, min_lat + label_dy),
-            textcoords="data",
-            ha=label_ha,
-            va="center",
-            fontsize=8.2,
-            fontweight="bold",
-            color="#162638",
-            zorder=13,
-            arrowprops={"arrowstyle": "-", "color": "#24364a", "linewidth": 0.8, "shrinkA": 2, "shrinkB": 2},
-            bbox={"boxstyle": "round,pad=0.28", "facecolor": "#ffffff", "edgecolor": "#45515c", "linewidth": 0.65, "alpha": 0.94},
+        ax.text(
+            min_lon, min_lat, str(min_rounded),
+            ha="center", va="center", fontsize=8.2, fontweight="bold",
+            color="#162638", zorder=13,
+            path_effects=[path_effects.withStroke(linewidth=1.25, foreground="white")],
         )
     elif field_id == "temperature":
         shown_values = display[np.isfinite(display)]

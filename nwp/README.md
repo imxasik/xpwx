@@ -11,7 +11,7 @@ The Map Layers selector exposes only parameters published by the selected model'
 | Chart | Display | Currently enabled model families |
 |---|---|---|
 | 10 m Wind | Wind-speed shading and streamlines | All existing wind integrations |
-| Mean Sea-Level Pressure | Shaded hPa field with labelled isobars; lower-left Min/Max and a bold minimum label at its grid location | ECMWF IFS/ENS, NOAA GFS/GEFS/NAEFS |
+| Mean Sea-Level Pressure | Shaded hPa field with labelled isobars; rounded lower-left Min/Max and a bold, centered minimum value with no callout box | ECMWF IFS/ENS, NOAA GFS/GEFS/NAEFS |
 | 2 m Temperature | Fixed °C/°F colour scale with temperature contours | ECMWF IFS/ENS/AIFS, NOAA GFS/GEFS/NAEFS |
 | Accumulated Precipitation | Fixed mm palette; GRIB accumulation interval is shown on the chart | ECMWF IFS/ENS/AIFS, NOAA GFS/GEFS |
 | 6 h Precipitation | Exact six-hour amount in mm; cumulative ECMWF fields are differenced, adjacent NOAA 3 h intervals are summed only after their metadata is checked | ECMWF IFS/ENS/AIFS, NOAA GFS/GEFS |
