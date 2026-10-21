@@ -309,12 +309,215 @@ def render_map(
             zorder=12,
             bbox={"boxstyle": "round,pad=0.34", "facecolor": "#ffffff", "edgecolor": "#45515c", "linewidth": 0.55, "alpha": 0.88},
         )
-        #attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
-       # fig.text(0.085, 0.018, f"10 m wind speed · {unit_label} · Streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
-   # else:
-        #attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
-        #fig.text(0.085, 0.018, f"10 m wind streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
+        attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
+        fig.text(0.085, 0.018, f"10 m wind speed · {unit_label} · Streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
+    else:
+        attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
+        fig.text(0.085, 0.018, f"10 m wind streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
 
+    output = BytesIO()
+    fig.savefig(output, format="png", dpi=dpi, facecolor="white", bbox_inches=None)
+    plt.close(fig)
+    return output.getvalue()
+
+
+SCALAR_PALETTE = {
+    "temperature": ("°C", np.arange(-10, 42, 2), "RdYlBu_r"),
+    "mslp": ("hPa", np.arange(960, 1042, 2), "RdYlBu_r"),
+    "precipitation": ("mm", np.array([0.0, 0.1, 1, 2, 5, 10, 20, 30, 50, 75, 100, 150, 200]),
+                      ListedColormap(["#ffffff", "#dff3ff", "#9edcff", "#42b6e8", "#238b45", "#51ad32", "#a8cf32", "#f4e33b", "#f6a433", "#e85d3f", "#c52640", "#7c1e70", "#4a104f"])),
+}
+
+
+def _smooth_scalar_grid(lons: np.ndarray, lats: np.ndarray, values: np.ndarray, target_step: float = 0.1) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    dx = float(np.nanmedian(np.diff(lons))) if len(lons) > 1 else target_step
+    dy = float(np.nanmedian(np.diff(lats))) if len(lats) > 1 else target_step
+    if max(abs(dx), abs(dy)) <= target_step * 1.15:
+        return lons, lats, values
+    nx = max(len(lons), int(round((lons[-1] - lons[0]) / target_step)) + 1)
+    ny = max(len(lats), int(round((lats[-1] - lats[0]) / target_step)) + 1)
+    fine_lons = np.linspace(lons[0], lons[-1], nx, dtype=np.float64)
+    fine_lats = np.linspace(lats[0], lats[-1], ny, dtype=np.float64)
+    valid = np.isfinite(values)
+    safe = np.where(valid, values, np.nan)
+    # Interpolate rows first and then columns, preserving missing cells.
+    across = np.vstack([np.interp(fine_lons, lons, row) for row in safe]).astype(np.float32)
+    fine = np.vstack([np.interp(fine_lats, lats, across[:, col]) for col in range(nx)]).T.astype(np.float32)
+    # Restore missing areas by interpolating a validity mask with the same grid.
+    mask_across = np.vstack([np.interp(fine_lons, lons, row.astype(float)) for row in valid]).astype(np.float32)
+    mask_fine = np.vstack([np.interp(fine_lats, lats, mask_across[:, col]) for col in range(nx)]).T
+    fine[mask_fine < 0.5] = np.nan
+    return fine_lons, fine_lats, fine
+
+
+def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, field_id: str, units: str = "hPa", dpi: int = 150) -> bytes:
+    """Weather-chart-style scalar map; same domain, dimensions, header, and frame as the wind chart."""
+    lons = np.asarray(fields["lons"], dtype=np.float64)
+    lats = np.asarray(fields["lats"], dtype=np.float64)
+    values = np.asarray(fields["values"], dtype=np.float32)
+    if values.shape != (len(lats), len(lons)):
+        raise ValueError("Scalar field array does not match its latitude/longitude grid.")
+    plot_lons, plot_lats, plot_values = _smooth_scalar_grid(lons, lats, values)
+    plot_min = float(np.nanmin(plot_values))
+    plot_max = float(np.nanmax(plot_values))
+    init = _init_time(fields.get("init", ""))
+    valid = init + timedelta(hours=int(step))
+    init_label = init.strftime("%Hz %d %b %Y")
+    valid_label = valid.strftime("%Hz %d %b %Y")
+
+    if field_id == "temperature":
+        if units == "°F":
+            display = plot_values * 9.0 / 5.0 + 32.0
+            scale = np.arange(-10, 111, 4)
+            cmap = "RdYlBu_r"
+            colorbar_ticks = np.arange(-10, 111, 20)
+            unit_label = "°F"
+        else:
+            display = plot_values
+            scale = np.arange(-10, 42, 2)
+            cmap = "RdYlBu_r"
+            colorbar_ticks = np.arange(-10, 41, 10)
+            unit_label = "°C"
+        layer_label = "2 m Temperature"
+        contour_stride = 10 if units == "°F" else 5
+        major_lines = np.arange(-10, 112 if units == "°F" else 42, contour_stride)
+        cmap_obj = cmap
+        norm = BoundaryNorm(scale, plt.get_cmap(cmap).N, extend="both")
+        extend = "both"
+    elif field_id == "mslp":
+        display = plot_values
+        scale = np.arange(960, 1042, 2)
+        cmap_obj = "RdYlBu_r"
+        norm = BoundaryNorm(scale, plt.get_cmap(cmap_obj).N, extend="both")
+        colorbar_ticks = np.arange(960, 1041, 10)
+        major_lines = np.arange(960, 1041, 4)
+        layer_label = "Mean Sea-Level Pressure"
+        unit_label = "hPa"
+        extend = "both"
+    elif field_id == "precipitation":
+        display = plot_values
+        levels = SCALAR_PALETTE["precipitation"][1]
+        cmap_obj = SCALAR_PALETTE["precipitation"][2]
+        scale = levels
+        norm = BoundaryNorm(scale, cmap_obj.N, extend="max")
+        colorbar_ticks = [0.1, 1, 5, 10, 20, 50, 100, 200]
+        major_lines = np.array([])
+        layer_label = "Accumulated Precipitation"
+        unit_label = "mm"
+        extend = "max"
+    elif field_id == "gust":
+        factor, _, short_unit = UNIT_INFO[units]
+        display = plot_values * factor
+        scale = WIND_LEVELS_KN * (factor / KNOT_FACTOR)
+        cmap_obj = WIND_CMAP
+        norm = BoundaryNorm(scale, WIND_CMAP.N, extend="max")
+        colorbar_ticks = np.array([5, 10, 20, 30, 40, 50, 70, 90, 120]) * (factor / KNOT_FACTOR)
+        major_lines = np.array([])
+        layer_label = f"10 m Wind Gust ({units})"
+        unit_label = units
+        extend = "max"
+    else:
+        raise ValueError(f"Unsupported scalar map parameter: {field_id}")
+
+    fig = plt.figure(figsize=(10, 8), dpi=dpi, facecolor="white")
+    ax = fig.add_axes([0.035, 0.072, 0.93, 0.875])
+    ax.set_facecolor("#fbfbf8")
+    ax.set_xticks(np.arange(70, 111, 5))
+    ax.set_yticks(np.arange(0, 31, 5))
+    ax.set_xlim(WEST, EAST)
+    ax.set_ylim(SOUTH, NORTH)
+    ax.grid(True, color="#6f777c", alpha=0.40, linewidth=0.42, linestyle="-", zorder=2)
+    ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+    for spine in ax.spines.values():
+        spine.set_color("#292d2f")
+        spine.set_linewidth(0.55)
+
+    if field_id == "precipitation":
+        mesh = ax.pcolormesh(plot_lons, plot_lats, np.ma.masked_invalid(display), cmap=cmap_obj, norm=norm, shading="auto", zorder=1, rasterized=True)
+    else:
+        mesh = ax.pcolormesh(plot_lons, plot_lats, np.ma.masked_invalid(display), cmap=cmap_obj, norm=norm, shading="auto", zorder=1, rasterized=True)
+    if major_lines.size:
+        in_range = major_lines[(major_lines >= np.nanmin(display)) & (major_lines <= np.nanmax(display))]
+        if in_range.size:
+            contours = ax.contour(plot_lons, plot_lats, display, levels=in_range, colors="#1c2b38", linewidths=0.38, alpha=0.55, zorder=3)
+            if field_id == "mslp" or field_id == "temperature":
+                ax.clabel(contours, contours.levels[::2] if len(contours.levels) > 1 else contours.levels,
+                          inline=True, fontsize=6.3, fmt="%.0f", colors="#273441")
+
+    _add_shapefile_lines(ax, "ne_50m_admin_0_boundary_lines_land.shp", "#25292b", 0.48, 5)
+    _add_shapefile_lines(ax, "ne_50m_coastline.shp", "#171a1b", 0.62, 6)
+    for lon in range(75, 110, 5):
+        ax.text(lon, NORTH - 0.12, f"{lon}°E", ha="center", va="top", fontsize=7.4, color="#202426", zorder=8)
+    ax.text(EAST - 0.12, NORTH - 0.12, f"{int(EAST)}°E", ha="right", va="top", fontsize=7.4, color="#202426", zorder=8)
+    for lat in range(5, 30, 5):
+        ax.text(EAST - 0.12, lat, f"{lat}°N", ha="right", va="center", fontsize=7.4, color="#202426", zorder=8)
+
+    ax.text(EAST - 0.45, SOUTH + 0.52, "@XP WEATHER", transform=ax.transData, ha="right", va="bottom",
+            fontsize=8.3, fontweight="bold", color="white", zorder=12,
+            bbox={"boxstyle": "round,pad=0.34", "facecolor": "#14243a", "edgecolor": "#ffffff", "linewidth": 0.6, "alpha": 0.88})
+
+    if field_id == "mslp":
+        extrema = f"Range: {np.nanmin(display):.1f}–{np.nanmax(display):.1f} hPa"
+    elif field_id == "temperature":
+        shown_values = display[np.isfinite(display)]
+        extrema = f"Min/Max: {np.nanmin(shown_values):.1f}/{np.nanmax(shown_values):.1f} {unit_label}"
+    else:
+        extrema = f"Max: {np.nanmax(display):.1f} {unit_label}"
+    ax.text(WEST + 0.55, SOUTH + 0.42, extrema, transform=ax.transData, ha="left", va="bottom",
+            fontsize=8.1, fontweight="bold", color="#1b2733", zorder=12,
+            bbox={"boxstyle": "round,pad=0.34", "facecolor": "#ffffff", "edgecolor": "#45515c", "linewidth": 0.55, "alpha": 0.90})
+
+    header_parts = [
+        (model["name"], True), ("•", True), (model["resolution"], True), ("•", True),
+        ("Init:", True), (init_label, False), ("•", True), (layer_label, False),
+    ]
+    right_parts = [("Hour:", True), (str(int(step)), False), ("•", True), ("Valid:", True), (valid_label, False)]
+    def measure_parts(parts: list[tuple[str, bool]], font_size: float) -> tuple[list[float], float]:
+        widths = []
+        for text, bold in parts:
+            prop = FontProperties(family="DejaVu Sans", size=font_size, weight="bold" if bold else "normal")
+            widths.append(TextPath((0, 0), text, prop=prop).get_extents().width / (72 * fig.get_figwidth()))
+        return widths, sum(widths) + 0.008 * (len(widths) - 1)
+    right_widths, right_width = measure_parts(right_parts, 8.5)
+    max_left_width = 0.965 - 0.035 - right_width - 0.018
+    header_size = 8.5
+    widths, total_width = measure_parts(header_parts, header_size)
+    while total_width > max_left_width and header_size > 7.0:
+        header_size -= 0.25
+        widths, total_width = measure_parts(header_parts, header_size)
+    cursor = 0.035
+    for (text, bold), width in zip(header_parts, widths):
+        fig.text(cursor, 0.979, text, ha="left", va="top", fontsize=header_size,
+                 fontweight="bold" if bold else "normal", color="#141719")
+        cursor += width + 0.008
+    cursor = 0.965 - right_width
+    for (text, bold), width in zip(right_parts, right_widths):
+        fig.text(cursor, 0.979, text, ha="left", va="top", fontsize=8.5,
+                 fontweight="bold" if bold else "normal", color="#141719")
+        cursor += width + 0.008
+    fig.add_artist(plt.Line2D([0.035, 0.965], [0.961, 0.961], transform=fig.transFigure, color="#6d7172", linewidth=0.45))
+
+    cax = fig.add_axes([0.15, 0.038, 0.70, 0.018])
+    colorbar = fig.colorbar(mesh, cax=cax, orientation="horizontal", ticks=colorbar_ticks,
+                            extend=extend, spacing="uniform")
+    colorbar.ax.xaxis.set_ticks_position("bottom")
+    colorbar.ax.tick_params(axis="x", top=False, labeltop=False, bottom=True, labelbottom=True,
+                            labelsize=6.5, length=1.8, pad=1.0, colors="#24282a")
+    colorbar.outline.set_linewidth(0.45)
+    if field_id == "gust":
+        if units == "m/s":
+            tick_labels = [f"{x * 0.514444:.0f}" for x in [5, 10, 20, 30, 40, 50, 70, 90, 120]]
+        elif units == "km/h":
+            tick_labels = [f"{x * 1.852:.0f}" for x in [5, 10, 20, 30, 40, 50, 70, 90, 120]]
+        else:
+            tick_labels = [str(x) for x in [5, 10, 20, 30, 40, 50, 70, 90, 120]]
+        colorbar.ax.set_xticklabels(tick_labels)
+    elif field_id == "precipitation":
+        colorbar.ax.set_xticklabels(["0.1", "1", "5", "10", "20", "50", "100", "200"])
+    attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
+    interval_text = fields.get("interval", "")
+    footer_label = layer_label + (f" · {interval_text}" if interval_text else "")
+    fig.text(0.085, 0.018, f"{footer_label} · {unit_label}  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
     output = BytesIO()
     fig.savefig(output, format="png", dpi=dpi, facecolor="white", bbox_inches=None)
     plt.close(fig)

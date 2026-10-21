@@ -69,8 +69,8 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "type": "fc",
     },
     "ifs_ens_member01": {
-        "name": "ECMWF ENS",
-        "resolution": "0.25° · M1",
+        "name": "ECMWF ENS · Member 1",
+        "resolution": "0.25° ENS",
         "source": "ecmwf",
         "source_label": "ECMWF Open Data",
         "steps": _IFS_ENS_STEPS,
@@ -80,6 +80,15 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "stream": "enfo",
         "type": "pf",
         "number": 1,
+    },
+    "arpege": {
+        "name": "ARPEGE",
+        "resolution": "0.25°",
+        "source": "meteo_arpege",
+        "source_label": "Météo-France Open API",
+        "steps": _ARPEGE_STEPS,
+        "note": "Official global ARPEGE; regional WCS requests fetch only 10 m U/V. Requires a Météo-France API key in METEOFRANCE_API_KEY (or a bearer token).",
+        "enabled": bool(os.environ.get("METEOFRANCE_API_KEY") or os.environ.get("METEOFRANCE_BEARER_TOKEN")),
     },
     "aifs": {
         "name": "ECMWF AIFS",
@@ -111,7 +120,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "source": "noaa_gfs",
         "source_label": "NOAA NCEP NOMADS",
         "steps": _GFS_STEPS,
-        "note": "Regional GRIB filter requests only 10 m U/V wind over the Bay of Bengal box.",
+        "note": "Official GFS; NOMADS regional filters fetch only the selected wind or scalar field over the Bay box.",
     },
     "aigfs": {
         "name": "AIGFS",
@@ -127,7 +136,15 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "source": "noaa_gefs",
         "source_label": "NOAA NCEP NOMADS",
         "steps": _GEFS_STEPS,
-        "note": "Official precomputed ensemble-mean U/V winds; not a single member and no local ensemble averaging is needed.",
+        "note": "Official precomputed ensemble-mean winds; supported MSLP, 2 m temperature, and precipitation fields are fetched separately.",
+    },
+    "naefs_mean": {
+        "name": "NAEFS · Mean",
+        "resolution": "0.5° ENS",
+        "source": "noaa_naefs_mean",
+        "source_label": "NOAA NCEP NOMADS",
+        "steps": _NAEFS_STEPS,
+        "note": "Official bias-corrected NAEFS mean; NOMADS regional filters expose wind plus published MSLP and 2 m temperature.",
     },
     "aigefs_mean": {
         "name": "AIGEFS",
@@ -144,23 +161,6 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "source_label": "NOAA NCEP NOMADS",
         "steps": _HGEFS_STEPS,
         "note": "Official hybrid ensemble mean. Product currently provides the listed shorter lead-hour range.",
-    },
-    "naefs_mean": {
-        "name": "NAEFS",
-        "resolution": "0.5° ENS",
-        "source": "noaa_naefs_mean",
-        "source_label": "NOAA NCEP NOMADS",
-        "steps": _NAEFS_STEPS,
-        "note": "Official bias-corrected NAEFS ensemble-mean U/V; NOMADS filters the request to the Bay box and 10 m only.",
-    },
-    "arpege": {
-        "name": "ARPEGE",
-        "resolution": "0.25°",
-        "source": "meteo_arpege",
-        "source_label": "Météo-France Open API",
-        "steps": _ARPEGE_STEPS,
-        "note": "Official global ARPEGE; regional WCS requests fetch only 10 m U/V. Requires a Météo-France API key in METEOFRANCE_API_KEY (or a bearer token).",
-        "enabled": bool(os.environ.get("METEOFRANCE_API_KEY") or os.environ.get("METEOFRANCE_BEARER_TOKEN")),
     },
     "eccc_gdps": {
         "name": "GDPS",
@@ -203,14 +203,71 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "note": "Official global AI forecast. DWD ICON grid coordinates are used as specified by DWD; winds are remapped to the Bay domain at 0.1°.",
     },
     "mogreps_g": {
-        "name": "MOGREPS-G",
-        "resolution": "20km ENS",
+        "name": "MOGREPS-G · Mean",
+        "resolution": "20 km ENS",
         "source": "met_office_mogrepsg",
         "source_label": "Met Office Global Ensemble on AWS",
         "steps": _MOGREPS_G_STEPS,
         "note": "Official 18-member vector mean from Met Office 10 m speed/direction. Public AWS copy has about 24 h latency; the two required NetCDF fields are cached after first use.",
     },
 }
+
+FIELD_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "wind": {"label": "10 m Wind", "units": [("knots", "Knots"), ("m/s", "m/s"), ("km/h", "km/h")]},
+    "mslp": {"label": "Mean Sea-Level Pressure", "units": [("hPa", "hPa")]},
+    "temperature": {"label": "2 m Temperature", "units": [("°C", "°C"), ("°F", "°F")]},
+    "precipitation": {"label": "Accumulated Precipitation", "units": [("mm", "mm")]},
+    "gust": {"label": "10 m Wind Gust", "units": [("knots", "Knots"), ("m/s", "m/s"), ("km/h", "km/h")]},
+}
+
+# Parameter exposure is source-specific: the selector only offers fields that
+# are published by the official endpoint used by that model integration.
+MODEL_FIELD_IDS: dict[str, tuple[str, ...]] = {
+    "ifs_01": ("wind", "mslp", "temperature", "precipitation", "gust"),
+    "ifs_025": ("wind", "mslp", "temperature", "precipitation", "gust"),
+    "ifs_ens_member01": ("wind", "mslp", "temperature", "precipitation", "gust"),
+    "aifs": ("wind", "mslp", "temperature", "precipitation"),
+    "aifs_ens_control": ("wind", "mslp", "temperature", "precipitation"),
+    "gfs": ("wind", "mslp", "temperature", "precipitation", "gust"),
+    "gefs_mean": ("wind", "mslp", "temperature", "precipitation"),
+    "naefs_mean": ("wind", "mslp", "temperature"),
+}
+
+NOAA_SCALAR_FIELDS: dict[str, dict[str, str]] = {
+    "mslp": {"variable": "PRMSL", "level": "mean_sea_level"},
+    "temperature": {"variable": "TMP", "level": "2_m_above_ground"},
+    "precipitation": {"variable": "APCP", "level": "surface"},
+    "gust": {"variable": "GUST", "level": "surface"},
+}
+
+
+def field_steps(model_id: str, field_id: str) -> list[int]:
+    model = MODEL_CATALOG[model_id]
+    steps = list(model["steps"])
+    if field_id == "gust" and model.get("source") == "ecmwf":
+        # ECMWF publishes the short-interval 10 m gust field through +144 h.
+        steps = [step for step in steps if 0 < step <= 144]
+    elif field_id == "precipitation":
+        # A forecast accumulation has no useful interval at initialization.
+        steps = [step for step in steps if step > 0]
+    return steps
+
+
+def model_fields(model_id: str) -> list[dict[str, Any]]:
+    fields = []
+    for field_id in MODEL_FIELD_IDS.get(model_id, ("wind",)):
+        definition = FIELD_DEFINITIONS[field_id]
+        item = {
+            "id": field_id,
+            "label": definition["label"],
+            "units": [{"id": unit_id, "label": unit_label} for unit_id, unit_label in definition["units"]],
+        }
+        available_steps = field_steps(model_id, field_id)
+        if available_steps != MODEL_CATALOG[model_id]["steps"]:
+            item["steps"] = available_steps
+        fields.append(item)
+    return fields
+
 
 DOMAIN = {"west": 70.0, "east": 110.0, "south": 0.0, "north": 30.0}
 FIELD_CACHE_VERSION = 6  # NAEFS, ECMWF ENS, ARPEGE WCS, and MOGREPS-G decoders
@@ -425,7 +482,72 @@ def get_forecast(model_id: str, step: int) -> dict[str, Any]:
                     pass
 
 
+def get_scalar_forecast(model_id: str, step: int, field_id: str) -> dict[str, Any]:
+    """Fetch one selected scalar parameter; no other field or model is prefetched."""
+    if model_id not in MODEL_CATALOG:
+        raise ValueError("Unknown model.")
+    if field_id not in MODEL_FIELD_IDS.get(model_id, ("wind",)) or field_id == "wind":
+        raise ValueError("This parameter is not published for the selected model.")
+    if step not in field_steps(model_id, field_id):
+        raise ValueError("That forecast hour is not available for this parameter.")
+
+    total_started = time.perf_counter()
+    field_cache = CACHE_ROOT / f"scalar-v2-{model_id}-{field_id}-f{step:03d}.npz"
+
+    def load_cached() -> dict[str, Any]:
+        cache_started = time.perf_counter()
+        fields = _load_scalar_fields(field_cache)
+        fields["_cache_status"] = "hit"
+        fields["_timings"] = {
+            "field_cache_read_ms": (time.perf_counter() - cache_started) * 1000.0,
+            "fetch_ms": 0.0,
+            "decode_ms": 0.0,
+            "save_ms": 0.0,
+        }
+        return fields
+
+    if _valid_cache(field_cache):
+        return load_cached()
+    with _CACHE_LOCK:
+        if _valid_cache(field_cache):
+            return load_cached()
+        descriptor = MODEL_CATALOG[model_id]
+        with tempfile.NamedTemporaryFile(prefix="baywind-scalar-", suffix=".grib2", dir=CACHE_ROOT, delete=False) as handle:
+            grib_path = Path(handle.name)
+        try:
+            fetch_started = time.perf_counter()
+            init = _fetch_scalar(descriptor, step, field_id, grib_path)
+            fetch_ms = (time.perf_counter() - fetch_started) * 1000.0
+            decode_started = time.perf_counter()
+            fields = _decode_scalar_grib(grib_path, field_id)
+            fields.update({
+                "init": init or fields.get("init") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
+                "model_id": model_id,
+                "source": descriptor["source_label"],
+                "field": field_id,
+            })
+            decode_ms = (time.perf_counter() - decode_started) * 1000.0
+            save_started = time.perf_counter()
+            _save_scalar_fields(field_cache, fields)
+            save_ms = (time.perf_counter() - save_started) * 1000.0
+            fields["_cache_status"] = "miss"
+            fields["_timings"] = {
+                "field_cache_read_ms": 0.0,
+                "fetch_ms": fetch_ms,
+                "decode_ms": decode_ms,
+                "save_ms": save_ms,
+            }
+            _PERF_LOG.info(
+                "scalar_fields model=%s field=%s step=%03d cache=miss fetch_ms=%.1f decode_ms=%.1f total_ms=%.1f",
+                model_id, field_id, step, fetch_ms, decode_ms, (time.perf_counter() - total_started) * 1000.0,
+            )
+            return fields
+        finally:
+            grib_path.unlink(missing_ok=True)
+
+
 def _fetch_eccc_deterministic(model_source: str, step: int, target: Path) -> str:
+
     """Fetch exactly the 10 m U and V files from the official ECCC HPFX mirror."""
     if model_source == "eccc_gdps":
         folder, resolution, model_name = "model_gdps", "15km", "GDPS"
@@ -535,6 +657,81 @@ def _fetch_ecmwf(descriptor: dict[str, Any], step: int, target: Path) -> str | N
         except Exception:
             pass
     return None
+
+
+def _fetch_scalar(descriptor: dict[str, Any], step: int, field_id: str, target: Path) -> str | None:
+    if descriptor["source"] == "ecmwf":
+        try:
+            from ecmwf.opendata import Client
+        except ImportError as exc:
+            raise RuntimeError("ECMWF downloader is not installed; install requirements.txt first.") from exc
+        parameter = {"mslp": "msl", "temperature": "2t", "precipitation": "tp", "gust": "10fg"}[field_id]
+        client = Client(
+            source="ecmwf", model=descriptor["ecmwf_model"], resol=descriptor["resol"],
+            infer_stream_keyword=False,
+        )
+        request = {
+            "stream": descriptor["stream"], "type": descriptor["type"], "step": step,
+            "param": [parameter], "target": str(target),
+        }
+        if "number" in descriptor:
+            request["number"] = descriptor["number"]
+        try:
+            result = client.retrieve(**request)
+        except Exception as exc:
+            raise RuntimeError(f"ECMWF Open Data did not return {FIELD_DEFINITIONS[field_id]['label']} at F{step:03d}: {exc}") from exc
+        result_date = getattr(result, "datetime", None)
+        if result_date is not None:
+            try:
+                return result_date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+            except Exception:
+                pass
+        return None
+
+    source = descriptor["source"]
+    variable = NOAA_SCALAR_FIELDS[field_id]
+    params_base = {
+        f"var_{variable['variable']}": "on",
+        f"lev_{variable['level']}": "on",
+        "subregion": "",
+        "leftlon": str(DOMAIN["west"]),
+        "rightlon": str(DOMAIN["east"]),
+        "toplat": str(DOMAIN["north"]),
+        "bottomlat": str(DOMAIN["south"]),
+    }
+    if source == "noaa_gfs":
+        filter_url = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
+        candidates = _candidate_cycles()[:4]
+        file_for = lambda date, hh: (f"gfs.t{hh}z.pgrb2.0p25.f{step:03d}", f"/gfs.{date}/{hh}/atmos")
+    elif source == "noaa_gefs":
+        filter_url = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gefs_atmos_0p50a.pl"
+        candidates = _candidate_cycles()[:4]
+        file_for = lambda date, hh: (f"geavg.t{hh}z.pgrb2a.0p50.f{step:03d}", f"/gefs.{date}/{hh}/atmos/pgrb2ap5")
+    elif source == "noaa_naefs_mean":
+        filter_url = "https://nomads.ncep.noaa.gov/cgi-bin/filter_naefsbc.pl"
+        candidates = _candidate_cycles()[:4]
+        file_for = lambda date, hh: (f"naefs_geavg.t{hh}z.pgrb2a.0p50_bcf{step:03d}", f"/naefs.{date}/{hh}/pgrb2ap5_bc")
+    else:
+        raise RuntimeError("This official provider's scalar-field download is not configured; wind remains available.")
+
+    failures: list[str] = []
+    session = _request_session()
+    for cycle in candidates:
+        date, hh = _cycle_parts(cycle)
+        filename, directory = file_for(date, hh)
+        params = {"file": filename, "dir": directory, **params_base}
+        try:
+            response = session.get(filter_url, params=params, timeout=HTTP_TIMEOUT)
+            if response.ok and response.content[:4] == b"GRIB":
+                target.write_bytes(response.content)
+                return cycle.strftime("%Y-%m-%dT%H:%MZ")
+            failures.append(f"{cycle:%H}Z HTTP {response.status_code}")
+        except requests.RequestException as exc:
+            failures.append(f"{cycle:%H}Z {exc.__class__.__name__}")
+    raise RuntimeError(
+        f"NOAA NOMADS did not return {FIELD_DEFINITIONS[field_id]['label']} at F{step:03d}. "
+        + "; ".join(failures[-3:])
+    )
 
 
 _METEOFRANCE_ARPEGE_WCS = (
@@ -1125,7 +1322,121 @@ def _decode_wind(path: Path) -> dict[str, Any]:
     return {"lons": lon_u.astype(np.float64), "lats": lat_u.astype(np.float64), "u": u.astype(np.float32), "v": v.astype(np.float32), "init": init}
 
 
+def _scalar_field_matches(gid: Any, field_id: str) -> bool:
+    short = str(_safe_get(gid, "shortName", "")).lower()
+    name = str(_safe_get(gid, "name", "")).lower()
+    param_id = _safe_get(gid, "paramId")
+    level = _safe_get(gid, "level")
+    level_type = str(_safe_get(gid, "typeOfLevel", "")).lower()
+    if field_id == "mslp":
+        return short in {"msl", "prmsl"} or param_id == 151 or "mean sea level pressure" in name
+    if field_id == "temperature":
+        is_temp = short in {"2t", "tmp"} or param_id == 167 or "2 metre temperature" in name or "2 meter temperature" in name
+        return bool(is_temp and (level in (2, 2.0) or "heightaboveground" in level_type or short == "2t"))
+    if field_id == "precipitation":
+        return short in {"tp", "apcp"} or param_id in (61, 228) or "total precipitation" in name
+    if field_id == "gust":
+        return short in {"10fg", "10fg3", "gust"} or param_id in (49, 228028) or "wind gust" in name
+    return False
+
+
+def _canonicalize_scalar(values: np.ndarray, field_id: str, units: str) -> tuple[np.ndarray, str]:
+    values = np.asarray(values, dtype=np.float32)
+    unit = units.strip().lower().replace(" ", "")
+    if field_id == "mslp":
+        if unit in {"pa", "pascal", "pascals"} or (not unit and np.nanmedian(values) > 2000):
+            values = values / 100.0
+        return values, "hPa"
+    if field_id == "temperature":
+        if unit in {"k", "kelvin"} or (not unit and np.nanmedian(values) > 100):
+            values = values - 273.15
+        return values, "°C"
+    if field_id == "precipitation":
+        if unit in {"m", "metre", "meter", "metres", "meters"}:
+            values = values * 1000.0
+        # kg m-2 and mm water equivalent are numerically equivalent.
+        values = np.maximum(values, 0.0)
+        return values, "mm"
+    if field_id == "gust":
+        if unit in {"km/h", "kmh-1", "kmh^-1"}:
+            values = values / 3.6
+        return values, "m/s"
+    raise ValueError(f"Unsupported scalar parameter: {field_id}")
+
+
+def _decode_scalar_grib(path: Path, field_id: str) -> dict[str, Any]:
+    chosen: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
+    init = None
+    raw_units = ""
+    interval = ""
+    with path.open("rb") as handle:
+        while True:
+            gid = codes_grib_new_from_file(handle)
+            if gid is None:
+                break
+            try:
+                if chosen is not None or not _scalar_field_matches(gid, field_id):
+                    continue
+                data_date = int(_safe_get(gid, "dataDate", 0) or 0)
+                data_time = int(_safe_get(gid, "dataTime", 0) or 0)
+                if data_date:
+                    date_text = datetime.strptime(str(data_date), "%Y%m%d").strftime("%Y-%m-%d")
+                    init = f"{date_text}T{data_time // 100:02d}:{data_time % 100:02d}Z"
+                raw_units = str(_safe_get(gid, "units", ""))
+                start_step = _safe_get(gid, "startStep")
+                end_step = _safe_get(gid, "endStep")
+                if field_id == "precipitation" and end_step is not None:
+                    start_value = int(start_step or 0)
+                    end_value = int(end_step)
+                    interval = f"Accumulation F{start_value:03d}–F{end_value:03d}"
+                values = np.asarray(codes_get_array(gid, "values"), dtype=np.float32)
+                missing = _safe_get(gid, "missingValue")
+                if missing is not None and np.isfinite(missing):
+                    values = np.where(np.isclose(values, float(missing), rtol=1e-6), np.nan, values)
+                chosen = _crop_regular_grid(gid, values)
+            finally:
+                codes_release(gid)
+
+    if chosen is None:
+        raise RuntimeError(f"The official GRIB did not contain the requested {FIELD_DEFINITIONS[field_id]['label']} field.")
+    lons, lats, values = chosen
+    values, canonical_units = _canonicalize_scalar(values, field_id, raw_units)
+    values[~np.isfinite(values) | (np.abs(values) > 1e8)] = np.nan
+    if not np.isfinite(values).any():
+        raise RuntimeError(f"The {FIELD_DEFINITIONS[field_id]['label']} field contains no valid values over the map domain.")
+    return {
+        "lons": lons.astype(np.float64),
+        "lats": lats.astype(np.float64),
+        "values": values.astype(np.float32),
+        "units": canonical_units,
+        "interval": interval,
+        "init": init,
+    }
+
+
+def _save_scalar_fields(path: Path, fields: dict[str, Any]) -> None:
+    temp = path.with_suffix(".tmp")
+    with temp.open("wb") as handle:
+        np.savez_compressed(
+            handle,
+            lons=fields["lons"], lats=fields["lats"], values=fields["values"],
+            units=np.array(fields.get("units", "")), interval=np.array(fields.get("interval", "")),
+            init=np.array(fields.get("init") or ""), source=np.array(fields.get("source") or ""),
+        )
+    temp.replace(path)
+
+
+def _load_scalar_fields(path: Path) -> dict[str, Any]:
+    with np.load(path, allow_pickle=False) as archive:
+        return {
+            "lons": archive["lons"], "lats": archive["lats"], "values": archive["values"],
+            "units": str(archive["units"].item()), "interval": str(archive["interval"].item()),
+            "init": str(archive["init"].item()), "source": str(archive["source"].item()),
+        }
+
+
 def _decode_geps_mean(path: Path) -> dict[str, Any]:
+
     """Average every official GEPS member for each wind component before cropping."""
     sums: dict[str, np.ndarray] = {}
     counts = {"u": 0, "v": 0}

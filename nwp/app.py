@@ -9,15 +9,15 @@ from pathlib import Path
 
 from flask import Flask, jsonify, make_response, render_template, request, send_file
 
-from renderer import render_map
-from weather import MODEL_CATALOG, get_forecast
+from renderer import render_map, render_scalar_map
+from weather import FIELD_DEFINITIONS, MODEL_CATALOG, get_forecast, get_scalar_forecast, model_fields
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
 PNG_CACHE_DIR = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 PNG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PNG_CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
-RENDER_VERSION = 8  # added ECMWF ENS, NAEFS, ARPEGE, and MOGREPS-G
+RENDER_VERSION = 9  # adds scalar-field forecast charts without changing the wind layout
 _RENDER_LOCK = threading.RLock()
 
 
@@ -44,6 +44,7 @@ def models():
                 "steps": item["steps"],
                 "note": item.get("note", ""),
                 "enabled": item.get("enabled", True),
+                "fields": model_fields(model_id),
             }
             for model_id, item in MODEL_CATALOG.items()
         ],
@@ -59,17 +60,23 @@ def map_png():
     model = MODEL_CATALOG.get(model_id)
     if model is None:
         return jsonify({"error": "Unknown model selection."}), 400
+    field_id = request.args.get("field", "wind")
+    model_field_options = {item["id"]: item for item in model_fields(model_id)}
+    if field_id not in model_field_options:
+        return jsonify({"error": "That parameter is not available from the selected model."}), 400
 
     try:
         step = int(request.args.get("step", "24"))
     except (TypeError, ValueError):
         return jsonify({"error": "Forecast hour must be a number."}), 400
-    if step not in model["steps"]:
-        return jsonify({"error": "That forecast hour is not available for this model."}), 400
+    if step not in model["steps"] or step not in model_field_options[field_id].get("steps", model["steps"]):
+        return jsonify({"error": "That forecast hour is not available for this parameter on this model."}), 400
 
-    units = request.args.get("units", "knots").lower()
-    if units not in {"knots", "m/s", "km/h"}:
-        return jsonify({"error": "Choose knots, m/s, or km/h."}), 400
+    default_units = "knots" if field_id in {"wind", "gust"} else ("°C" if field_id == "temperature" else ("hPa" if field_id == "mslp" else "mm"))
+    units = request.args.get("units", default_units)
+    allowed_units = {item["id"] for item in model_field_options[field_id]["units"]}
+    if units not in allowed_units:
+        return jsonify({"error": "Choose a display unit supported by the selected parameter."}), 400
 
     try:
         dpi = int(request.args.get("dpi", "150"))
@@ -78,14 +85,14 @@ def map_png():
     if dpi not in {120, 150, 300}:
         return jsonify({"error": "DPI must be 120, 150, or 300."}), 400
 
-    speed_layer = request.args.get("speed", "1") == "1"
-    stream_layer = request.args.get("streamlines", "1") == "1"
-    if not speed_layer and not stream_layer:
-        return jsonify({"error": "Turn on at least one map layer."}), 400
+    speed_layer = request.args.get("speed", "1") == "1" if field_id == "wind" else False
+    stream_layer = request.args.get("streamlines", "1") == "1" if field_id == "wind" else False
+    if field_id == "wind" and not speed_layer and not stream_layer:
+        return jsonify({"error": "Turn on at least one wind layer."}), 400
 
-    image_name = f"baywind-{model_id}-f{step:03d}-{dpi}dpi.png"
-    cache_unit = units.replace("/", "_")
-    image_cache = PNG_CACHE_DIR / f"map-v{RENDER_VERSION}-{model_id}-f{step:03d}-{cache_unit}-d{dpi}-s{int(speed_layer)}-l{int(stream_layer)}.png"
+    image_name = f"baywind-{model_id}-{field_id}-f{step:03d}-{dpi}dpi.png"
+    cache_unit = units.replace("/", "_").replace("°", "deg")
+    image_cache = PNG_CACHE_DIR / f"map-v{RENDER_VERSION}-{model_id}-{field_id}-f{step:03d}-{cache_unit}-d{dpi}-s{int(speed_layer)}-l{int(stream_layer)}.png"
     metadata_cache = image_cache.with_suffix(".meta")
 
     def cached_png() -> tuple[bytes, str] | None:
@@ -122,13 +129,18 @@ def map_png():
                     cache_status = "png-hit-after-wait"
                     png, init_time = cached
                 else:
-                    fields = get_forecast(model_id, step)
+                    if field_id == "wind":
+                        fields = get_forecast(model_id, step)
+                        render_function = lambda: render_map(fields, model, step, units, speed_layer, stream_layer, dpi=dpi)
+                    else:
+                        fields = get_scalar_forecast(model_id, step, field_id)
+                        render_function = lambda: render_scalar_map(fields, model, step, field_id, units, dpi=dpi)
                     field_cache_status = str(fields.get("_cache_status", "unknown"))
                     field_timings = dict(fields.get("_timings", {}))
                     init_time = str(fields.get("init") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"))
                     datetime.fromisoformat(init_time.replace("Z", "+00:00"))
                     render_started = time.perf_counter()
-                    png = render_map(fields, model, step, units, speed_layer, stream_layer, dpi=dpi)
+                    png = render_function()
                     render_ms = (time.perf_counter() - render_started) * 1000.0
                     thread_tag = threading.get_ident()
                     image_tmp = image_cache.with_name(image_cache.stem + f"-img-{thread_tag}.tmp")
@@ -149,6 +161,8 @@ def map_png():
     response.headers["X-Valid-Time"] = (init_dt + timedelta(hours=step)).strftime("%Y-%m-%d %H:%M UTC")
     response.headers["X-Forecast-Hour"] = str(step)
     response.headers["X-Data-Source"] = model["source_label"]
+    response.headers["X-Parameter"] = FIELD_DEFINITIONS[field_id]["label"]
+    response.headers["X-Display-Units"] = units
     response.headers["X-Render-DPI"] = str(dpi)
     total_ms = (time.perf_counter() - request_started) * 1000.0
     field_cache_read_ms = float(field_timings.get("field_cache_read_ms", 0.0))

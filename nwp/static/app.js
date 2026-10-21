@@ -4,6 +4,8 @@
     modelResolution: document.getElementById('model-resolution'),
     modelSource: document.getElementById('model-source'),
     modelNote: document.getElementById('model-note'),
+    field: document.getElementById('field-select'),
+    fieldNote: document.getElementById('field-note'),
     lead: document.getElementById('lead-range'),
     leadLabel: document.getElementById('lead-label'),
     leadEnd: document.getElementById('lead-end'),
@@ -39,6 +41,7 @@
 
   const pad = (value, length = 3) => String(value).padStart(length, '0');
   const currentModel = () => catalog.find(model => model.id === els.model.value);
+  const currentField = () => currentModel()?.fields?.find(field => field.id === els.field.value);
   const selectedStep = () => {
     const model = currentModel();
     return model ? model.steps[Number(els.lead.value)] : 24;
@@ -54,9 +57,67 @@
     els.clock.textContent = `UTC ${new Intl.DateTimeFormat('en-GB', {hour: '2-digit', minute: '2-digit', timeZone: 'UTC'}).format(now)}`;
   }
 
+  function populateFields(model, preferred = els.field.value) {
+    const available = model.fields || [{id: 'wind', label: '10 m Wind', units: [{id: 'knots', label: 'Knots'}], steps: model.steps}];
+    els.field.innerHTML = '';
+    for (const field of available) {
+      const option = document.createElement('option');
+      option.value = field.id;
+      option.textContent = field.label;
+      els.field.appendChild(option);
+    }
+    const target = available.some(field => field.id === preferred) ? preferred : 'wind';
+    els.field.value = available.some(field => field.id === target) ? target : available[0].id;
+  }
+
+  function fitStepToField() {
+    const model = currentModel();
+    const field = currentField();
+    if (!model || !field || !field.steps?.length) return;
+    const current = selectedStep();
+    if (field.steps.includes(current)) return;
+    const nearest = field.steps.reduce((best, value) => Math.abs(value - current) < Math.abs(best - current) ? value : best, field.steps[0]);
+    els.lead.value = String(Math.max(0, model.steps.indexOf(nearest)));
+  }
+
+  function updateFieldControls() {
+    const field = currentField();
+    if (!field) return;
+    const isWind = field.id === 'wind';
+    const speedRow = els.speed.closest('.layer-row');
+    const streamRow = els.stream.closest('.layer-row');
+    els.speed.disabled = !isWind;
+    els.stream.disabled = !isWind;
+    speedRow.classList.toggle('is-inactive', !isWind);
+    streamRow.classList.toggle('is-inactive', !isWind);
+
+    const oldUnits = els.units.value;
+    els.units.innerHTML = '';
+    for (const unit of field.units || []) {
+      const option = document.createElement('option');
+      option.value = unit.id;
+      option.textContent = unit.label;
+      els.units.appendChild(option);
+    }
+    const unitIds = (field.units || []).map(unit => unit.id);
+    els.units.value = unitIds.includes(oldUnits) ? oldUnits : (unitIds[0] || 'knots');
+    els.units.disabled = unitIds.length < 2;
+
+    const notes = {
+      wind: 'Only the selected model, forecast hour, and 10 m U/V wind fields are fetched; maps and fields remain cached.',
+      mslp: 'Shaded sea-level pressure with labelled isobars. Only the selected model and lead are fetched.',
+      temperature: '2 m air temperature in °C or °F. The map uses a fixed, readable temperature scale.',
+      precipitation: 'Accumulation units are mm; the chart also labels the source GRIB accumulation interval.',
+      gust: 'Peak 10 m gust, not sustained wind. ECMWF gust leads are limited to the published range.',
+    };
+    els.fieldNote.textContent = notes[field.id] || 'Only the selected official model, lead, and parameter are fetched.';
+    els.image.alt = `${field.label} forecast over the Bay of Bengal`;
+  }
+
   function updateModelDetails() {
     const model = currentModel();
     if (!model) return;
+    const preferredField = els.field.value || 'wind';
     els.modelResolution.textContent = model.resolution;
     els.modelSource.textContent = model.source;
     els.modelNote.textContent = model.note || '';
@@ -65,6 +126,9 @@
     els.lead.max = String(Math.max(0, model.steps.length - 1));
     els.lead.value = String(Math.max(0, model.steps.indexOf(24) >= 0 ? model.steps.indexOf(24) : 0));
     els.leadEnd.textContent = `+${model.steps[model.steps.length - 1]} h`;
+    populateFields(model, preferredField);
+    fitStepToField();
+    updateFieldControls();
     updateLeadLabel();
   }
 
@@ -97,7 +161,7 @@
   async function loadMap() {
     const model = currentModel();
     if (!model) return;
-    if (!els.speed.checked && !els.stream.checked) {
+    if (els.field.value === 'wind' && !els.speed.checked && !els.stream.checked) {
       currentDownloadQuery = null;
       els.download.disabled = true;
       els.error.hidden = false;
@@ -119,8 +183,9 @@
       model: model.id,
       step: String(selectedStep()),
       units: els.units.value,
-      speed: els.speed.checked ? '1' : '0',
-      streamlines: els.stream.checked ? '1' : '0',
+      field: els.field.value,
+      speed: els.field.value === 'wind' && els.speed.checked ? '1' : '0',
+      streamlines: els.field.value === 'wind' && els.stream.checked ? '1' : '0',
       dpi: '150',
     });
 
@@ -136,7 +201,8 @@
       if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
       currentBlobUrl = URL.createObjectURL(blob);
       els.image.src = currentBlobUrl;
-      els.image.alt = `${model.name}, ${model.resolution}, 10 metre wind forecast at hour ${selectedStep()}`;
+      const selectedField = currentField();
+      els.image.alt = `${model.name}, ${model.resolution}, ${selectedField?.label || 'weather'} forecast at hour ${selectedStep()}`;
       els.image.hidden = false;
       els.loading.hidden = true;
       els.error.hidden = true;
@@ -209,7 +275,7 @@
       const link = document.createElement('a');
       const step = query.get('step') || '000';
       link.href = downloadUrl;
-      link.download = `baywind-${query.get('model')}-f${pad(step)}-300dpi.png`;
+      link.download = `baywind-${query.get('model')}-${query.get('field') || 'wind'}-f${pad(step)}-300dpi.png`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -264,6 +330,7 @@
   els.prev.addEventListener('click', () => moveStep(-1));
   els.next.addEventListener('click', () => moveStep(1));
   els.play.addEventListener('click', () => animationTimer ? stopAnimation() : startAnimation());
+  els.field.addEventListener('change', () => { fitStepToField(); updateFieldControls(); updateLeadLabel(); loadMap(); });
   els.speed.addEventListener('change', loadMap);
   els.stream.addEventListener('change', loadMap);
   els.units.addEventListener('change', loadMap);

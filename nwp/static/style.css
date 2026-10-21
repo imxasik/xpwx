@@ -57,6 +57,8 @@ h1 span{color:#64809f;font-weight:430}
 .play-button svg{height:14px;width:14px;fill:currentColor}
 .layer-row{height:52px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #f0f2f5;cursor:pointer}
 .layer-row:last-of-type{border-bottom:0}
+.layer-row.is-inactive{opacity:.42;cursor:not-allowed}
+.layer-row.is-inactive .switch{cursor:not-allowed}
 .layer-icon{width:30px;height:30px;border-radius:7px;display:grid;place-items:center;flex:0 0 30px}
 .layer-icon svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round}
 .speed-icon{background:#edf4fd;color:#3379cd}

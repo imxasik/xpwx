@@ -56,7 +56,11 @@
         </div>
 
         <div class="divider"></div>
-        <div class="panel-title compact"><span class="section-number">02</span><div><h2>Map layers</h2><p>10 metre wind only</p></div></div>
+        <div class="panel-title compact"><span class="section-number">02</span><div><h2>Map layers</h2><p>Wind and published scalar fields</p></div></div>
+        <div class="select-wrap select-small">
+          <select id="field-select" aria-label="Map parameter"></select>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 6 5 5 5-5"/></svg>
+        </div>
         <label class="layer-row" for="speed-toggle">
           <span class="layer-icon speed-icon"><svg viewBox="0 0 24 24"><path d="M4 18h16M6 14h12M9 10h6M11 6h2"/></svg></span>
           <span class="layer-text"><strong>Wind speed</strong><small>Shaded field</small></span>
@@ -69,7 +73,7 @@
         </label>
 
         <div class="unit-control">
-          <label class="control-label" for="unit-select">WIND SPEED UNITS</label>
+            <label class="control-label" for="unit-select">DISPLAY UNITS</label>
           <div class="select-wrap select-small">
             <select id="unit-select" aria-label="Wind speed units">
               <option value="knots" selected>Knots</option>
@@ -80,7 +84,7 @@
           </div>
         </div>
 
-        <div class="source-note"><span class="source-icon">i</span><p>Forecast variables are limited to <b>10 m U + V wind</b>; DWD grid coordinates are fetched only for remapping. Ensemble means use all published members.</p></div>
+        <div class="source-note"><span class="source-icon">i</span><p id="field-note">Only the selected model, forecast hour, and parameter are fetched. Field availability depends on the official source.</p></div>
       </aside>
 
       <section class="map-panel" aria-label="Generated forecast map">
@@ -96,9 +100,9 @@
           <div class="map-placeholder" id="map-placeholder">
             <div class="placeholder-mark"><svg viewBox="0 0 40 40"><path d="M5 13h19a4 4 0 1 0-4-4M4 20h27a4 4 0 1 1-4 4M7 27h14a4 4 0 1 0-4 4"/></svg></div>
             <strong>Preparing the latest forecast</strong>
-            <span>Only the selected model's 10 m wind fields will be fetched.</span>
+            <span>Only the selected model, forecast hour, and map field will be fetched.</span>
           </div>
-          <div class="map-loading" id="map-loading" hidden><div class="spinner"></div><strong>Building forecast image</strong><span>Fetching the selected official wind data and rendering the regional map…</span></div>
+          <div class="map-loading" id="map-loading" hidden><div class="spinner"></div><strong>Building forecast image</strong><span>Fetching the selected official field and rendering the regional map…</span></div>
           <div class="map-error" id="map-error" hidden><div class="error-icon">!</div><strong>Forecast unavailable</strong><p id="error-message">The selected data is not available right now.</p><button type="button" id="retry-button">Try again</button></div>
         </div>
         <div class="map-caption">
