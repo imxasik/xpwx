@@ -128,7 +128,7 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "source": "noaa_aigfs",
         "source_label": "NOAA NCEP NOMADS",
         "steps": _AIGFS_STEPS,
-        "note": "NCEP AI global forecast; only the two 10 m wind fields are transferred, then cropped to the selected domain.",
+        "note": "Official NOAA AI forecast; surface pressure plus 200/850 hPa U/V fields are available from NOMADS when selected.",
     },
     "gefs_mean": {
         "name": "GEFS",
@@ -192,15 +192,15 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "source": "dwd_icon",
         "source_label": "DWD Open Data",
         "steps": _ICON_STEPS,
-        "note": "Official global ICON 10 m winds; its native unstructured grid is remapped to the Bay domain at 0.1°.",
+        "note": "Official global ICON; 10 m and published pressure-level fields are remapped from DWD’s native grid to the Bay domain.",
     },
     "dwd_aicon": {
-        "name": "DWD AICON",
+        "name": "DWD AI ICON",
         "resolution": "13 km",
         "source": "dwd_aicon",
         "source_label": "DWD Open Data",
         "steps": _AICON_STEPS,
-        "note": "Official global AI forecast. DWD ICON grid coordinates are used as specified by DWD; winds are remapped to the Bay domain at 0.1°.",
+        "note": "Official DWD AI ICON. Its current open product exposes surface winds and pressure but not 200/850 hPa U/V, so upper-air layers stay hidden.",
     },
     "mogreps_g": {
         "name": "MOGREPS-G · Mean",
@@ -219,19 +219,24 @@ FIELD_DEFINITIONS: dict[str, dict[str, Any]] = {
     "precipitation": {"label": "Accumulated Precipitation", "units": [("mm", "mm")]},
     "precipitation_6h": {"label": "6 h Precipitation", "units": [("mm", "mm")]},
     "gust": {"label": "10 m Wind Gust", "units": [("knots", "Knots"), ("m/s", "m/s"), ("km/h", "km/h")]},
+    "wind_200": {"label": "200 hPa Wind", "units": [("knots", "Knots"), ("m/s", "m/s"), ("km/h", "km/h")]},
+    "shear_200_850": {"label": "200–850 hPa Wind Shear", "units": [("knots", "Knots"), ("m/s", "m/s"), ("km/h", "km/h")]},
 }
 
 # Parameter exposure is source-specific: the selector only offers fields that
 # are published by the official endpoint used by that model integration.
 MODEL_FIELD_IDS: dict[str, tuple[str, ...]] = {
-    "ifs_01": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust"),
-    "ifs_025": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust"),
-    "ifs_ens_member01": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust"),
-    "aifs": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h"),
-    "aifs_ens_control": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h"),
-    "gfs": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust"),
+    "ifs_01": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust", "wind_200", "shear_200_850"),
+    "ifs_025": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust", "wind_200", "shear_200_850"),
+    "ifs_ens_member01": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust", "wind_200", "shear_200_850"),
+    "aifs": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "wind_200", "shear_200_850"),
+    "aifs_ens_control": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "wind_200", "shear_200_850"),
+    "gfs": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust", "wind_200", "shear_200_850"),
     "gefs_mean": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h"),
     "naefs_mean": ("wind", "mslp", "temperature"),
+    "aigfs": ("wind", "mslp", "wind_200", "shear_200_850"),
+    "dwd_icon": ("wind", "mslp", "wind_200", "shear_200_850"),
+    "dwd_aicon": ("wind", "mslp"),
 }
 
 NOAA_SCALAR_FIELDS: dict[str, dict[str, str]] = {
@@ -488,6 +493,66 @@ def get_forecast(model_id: str, step: int) -> dict[str, Any]:
                     pass
 
 
+def get_upperair_forecast(model_id: str, step: int, field_id: str) -> dict[str, Any]:
+    """Fetch just the selected official upper-air vector pair(s) for the Bay box."""
+    if model_id not in MODEL_CATALOG:
+        raise ValueError("Unknown model.")
+    if field_id not in {"wind_200", "shear_200_850"} or field_id not in MODEL_FIELD_IDS.get(model_id, ()):
+        raise ValueError("This upper-air parameter is not published for the selected model.")
+    if step not in field_steps(model_id, field_id):
+        raise ValueError("That forecast hour is not available for this upper-air parameter.")
+    started = time.perf_counter()
+    cache = CACHE_ROOT / f"upper-v1-{model_id}-{field_id}-f{step:03d}.npz"
+    if _valid_cache(cache):
+        with np.load(cache, allow_pickle=False) as archive:
+            result = {key: archive[key] for key in archive.files}
+        result.update({"init": str(result["init"].item()), "_cache_status": "hit", "_timings": {"field_cache_read_ms": (time.perf_counter()-started)*1000.0, "fetch_ms": 0.0, "decode_ms": 0.0, "save_ms": 0.0}})
+        return result
+    with _CACHE_LOCK:
+        if _valid_cache(cache):
+            with np.load(cache, allow_pickle=False) as archive:
+                result = {key: archive[key] for key in archive.files}
+            result.update({"init": str(result["init"].item()), "_cache_status": "hit", "_timings": {"field_cache_read_ms": (time.perf_counter()-started)*1000.0, "fetch_ms": 0.0, "decode_ms": 0.0, "save_ms": 0.0}})
+            return result
+        descriptor = MODEL_CATALOG[model_id]
+        with tempfile.NamedTemporaryFile(prefix="baywind-upper-", suffix=".grib2", dir=CACHE_ROOT, delete=False) as handle:
+            grib_path = Path(handle.name)
+        try:
+            fetch_started = time.perf_counter()
+            if descriptor["source"] == "ecmwf":
+                init = _fetch_ecmwf_upper(descriptor, step, field_id, grib_path)
+            elif descriptor["source"] == "noaa_gfs":
+                init = _fetch_gfs_upper(step, field_id, grib_path)
+            elif descriptor["source"] == "noaa_aigfs":
+                init = _fetch_aigfs_upper(step, field_id, grib_path)
+            elif descriptor["source"] == "dwd_icon":
+                init = _fetch_dwd_upper(step, field_id, grib_path)
+            else:
+                raise RuntimeError("Upper-air vectors are not configured for this official source.")
+            fetch_ms = (time.perf_counter()-fetch_started)*1000.0
+            decode_started = time.perf_counter()
+            if descriptor["source"] == "dwd_icon":
+                fields = _decode_dwd_upper(grib_path, init, field_id)
+            else:
+                fields = _decode_regular_upper(grib_path, field_id)
+            decode_ms = (time.perf_counter()-decode_started)*1000.0
+            if field_id == "shear_200_850":
+                shear = np.hypot(fields["u200"]-fields["u850"], fields["v200"]-fields["v850"]).astype(np.float32)
+                fields = {"lons": fields["lons"], "lats": fields["lats"], "values": shear, "units": "m/s", "init": fields.get("init") or init}
+            else:
+                fields = {"lons": fields["lons"], "lats": fields["lats"], "u": fields["u200"], "v": fields["v200"], "units": "m/s", "init": fields.get("init") or init}
+            save_started = time.perf_counter()
+            temp = cache.with_suffix(".tmp")
+            with temp.open("wb") as out:
+                np.savez_compressed(out, **{key: np.asarray(value) for key, value in fields.items()})
+            temp.replace(cache)
+            save_ms = (time.perf_counter()-save_started)*1000.0
+            fields.update({"model_id": model_id, "field": field_id, "_cache_status": "miss", "_timings": {"field_cache_read_ms": 0.0, "fetch_ms": fetch_ms, "decode_ms": decode_ms, "save_ms": save_ms}})
+            return fields
+        finally:
+            grib_path.unlink(missing_ok=True)
+
+
 def get_scalar_forecast(model_id: str, step: int, field_id: str) -> dict[str, Any]:
     """Fetch one selected scalar parameter; no other field or model is prefetched."""
     if model_id not in MODEL_CATALOG:
@@ -498,7 +563,7 @@ def get_scalar_forecast(model_id: str, step: int, field_id: str) -> dict[str, An
         raise ValueError("That forecast hour is not available for this parameter.")
 
     total_started = time.perf_counter()
-    field_cache = CACHE_ROOT / f"scalar-v3-{model_id}-{field_id}-f{step:03d}.npz"
+    field_cache = CACHE_ROOT / f"scalar-v4-{model_id}-{field_id}-f{step:03d}.npz"
 
     def load_cached() -> dict[str, Any]:
         cache_started = time.perf_counter()
@@ -528,7 +593,10 @@ def get_scalar_forecast(model_id: str, step: int, field_id: str) -> dict[str, An
                 init = _fetch_scalar(descriptor, step, field_id, grib_path)
                 fetch_ms = (time.perf_counter() - fetch_started) * 1000.0
                 decode_started = time.perf_counter()
-                fields = _decode_scalar_grib(grib_path, field_id)
+                if descriptor["source"] in {"dwd_icon", "dwd_aicon"} and field_id == "mslp":
+                    fields = _decode_dwd_mslp(grib_path, init)
+                else:
+                    fields = _decode_scalar_grib(grib_path, field_id)
                 decode_ms = (time.perf_counter() - decode_started) * 1000.0
             fields.update({
                 "init": init or fields.get("init") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
@@ -553,6 +621,104 @@ def get_scalar_forecast(model_id: str, step: int, field_id: str) -> dict[str, An
             return fields
         finally:
             grib_path.unlink(missing_ok=True)
+
+
+def get_track_series(model_id: str) -> dict[str, Any]:
+    """Build a compact 24-hourly Bay-sector low track from one official model run."""
+    track_models = {"ifs_025", "aifs", "gfs", "aigfs", "dwd_icon", "dwd_aicon"}
+    if model_id not in track_models:
+        raise ValueError("Cyclone tracks are available for ECMWF IFS, AIFS, GFS, AIGFS, ICON, and AI ICON only.")
+    cache = CACHE_ROOT / f"track-v3-{model_id}.json"
+    if _valid_cache(cache):
+        try:
+            with cache.open(encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            pass
+    model = MODEL_CATALOG[model_id]
+    max_step = min(240, max(model["steps"]))
+    steps = list(range(0, max_step + 1, 24))
+    if model_id == "dwd_aicon":
+        steps = [3] + [step for step in steps if step > 0]
+    if not steps or steps[-1] != max_step:
+        steps.append(max_step)
+    points = []
+    run = None
+    previous = None
+    for step in steps:
+        if step not in model["steps"]:
+            continue
+        wind = get_forecast(model_id, step)
+        pressure = get_scalar_forecast(model_id, step, "mslp")
+        init = str(wind.get("init") or "")
+        if init != str(pressure.get("init") or init):
+            if points:
+                break
+            raise RuntimeError("Wind and pressure were returned from different model initializations; refusing to mix cyclone-track data.")
+        if run is None:
+            run = init
+        elif init != run:
+            # Some providers publish different horizons by cycle. Keep the
+            # coherent section of the selected run instead of blending cycles.
+            break
+        lons = np.asarray(pressure["lons"], dtype=np.float64)
+        lats = np.asarray(pressure["lats"], dtype=np.float64)
+        mslp = np.asarray(pressure["values"], dtype=np.float32)
+        u = np.asarray(wind["u"], dtype=np.float32)
+        v = np.asarray(wind["v"], dtype=np.float32)
+        if mslp.shape != (len(lats), len(lons)) or u.shape != mslp.shape or v.shape != mslp.shape:
+            raise RuntimeError("Official wind and pressure fields do not share the same Bay grid.")
+        lon_grid, lat_grid = np.meshgrid(lons, lats)
+        valid = np.isfinite(mslp)
+        valid &= (lon_grid >= DOMAIN["west"]) & (lon_grid <= DOMAIN["east"])
+        valid &= (lat_grid >= DOMAIN["south"]) & (lat_grid <= DOMAIN["north"])
+        if not valid.any():
+            continue
+        # Follow the Bay-sector pressure minimum, preferring a nearby center to
+        # prevent a one-step jump between unrelated lows when a prior center exists.
+        if previous is not None:
+            near = (np.abs(lon_grid-previous[0]) <= 10.0) & (np.abs(lat_grid-previous[1]) <= 10.0) & valid
+            candidate = np.where(near, mslp, np.nan)
+            if np.isfinite(candidate).any():
+                selected = candidate
+            else:
+                selected = np.where(valid, mslp, np.nan)
+        else:
+            selected = np.where(valid, mslp, np.nan)
+        row, col = np.unravel_index(np.nanargmin(selected), selected.shape)
+        lon, lat = float(lons[col]), float(lats[row])
+        previous = (lon, lat)
+        lon_grid, lat_grid = np.meshgrid(lons, lats)
+        lat0 = np.deg2rad(lat)
+        dlat = np.deg2rad(lat_grid-lat)
+        dlon = np.deg2rad(lon_grid-lon)
+        a = np.sin(dlat/2.0)**2 + np.cos(lat0)*np.cos(np.deg2rad(lat_grid))*np.sin(dlon/2.0)**2
+        distance_km = 6371.0*2.0*np.arcsin(np.sqrt(np.clip(a,0.0,1.0)))
+        local = (distance_km <= 300.0) & np.isfinite(u) & np.isfinite(v)
+        max_wind_ms = float(np.nanmax(np.hypot(u[local],v[local]))) if local.any() else 0.0
+        wind_kt = max_wind_ms / 0.514444
+        if wind_kt < 34: category = "TD"
+        elif wind_kt < 64: category = "TS"
+        elif wind_kt < 83: category = "CAT 1"
+        elif wind_kt < 96: category = "CAT 2"
+        elif wind_kt < 113: category = "CAT 3"
+        elif wind_kt < 137: category = "CAT 4"
+        else: category = "CAT 5"
+        valid_time = datetime.fromisoformat(init.replace("Z", "+00:00")) + timedelta(hours=step)
+        points.append({"step": int(step), "time": valid_time.strftime("%Y-%m-%dT%H:%MZ"),
+                       "label": valid_time.strftime("%d %b"), "lon": round(lon,2), "lat": round(lat,2),
+                       "mslp_hpa": round(float(mslp[row,col]),1), "wind_kt": round(wind_kt,1), "category": category})
+    if len(points) < 2:
+        raise RuntimeError("The selected official model did not provide enough complete forecast hours for a cyclone track.")
+    peak = max(points,key=lambda item:item["wind_kt"])
+    horizon = int(points[-1]["step"])
+    payload = {"model": model_id, "model_name": model["name"], "init": run, "points": points,
+               "peak": peak, "horizon": horizon,
+               "note": f"24-hour track samples through +{horizon} h; peak is the strongest sampled point, not a full-resolution intensity scan."}
+    temp = cache.with_suffix(".tmp")
+    temp.write_text(json.dumps(payload,separators=(",",":")),encoding="utf-8")
+    temp.replace(cache)
+    return payload
 
 
 def _fetch_eccc_deterministic(model_source: str, step: int, target: Path) -> str:
@@ -668,6 +834,145 @@ def _fetch_ecmwf(descriptor: dict[str, Any], step: int, target: Path) -> str | N
     return None
 
 
+def _fetch_ecmwf_upper(descriptor: dict[str, Any], step: int, field_id: str, target: Path) -> str | None:
+    try:
+        from ecmwf.opendata import Client
+    except ImportError as exc:
+        raise RuntimeError("ECMWF downloader is not installed; install requirements.txt first.") from exc
+    client = Client(source="ecmwf", model=descriptor["ecmwf_model"], resol=descriptor["resol"], infer_stream_keyword=False)
+    levels = [200] if field_id == "wind_200" else [200, 850]
+    request = {"stream": descriptor["stream"], "type": descriptor["type"], "step": step,
+               "param": ["u", "v"], "levtype": "pl", "levelist": levels, "target": str(target)}
+    if "number" in descriptor:
+        request["number"] = descriptor["number"]
+    try:
+        result = client.retrieve(**request)
+    except Exception as exc:
+        raise RuntimeError(f"ECMWF Open Data did not return {field_id} at F{step:03d}: {exc}") from exc
+    if not target.exists() or target.stat().st_size < 16:
+        raise RuntimeError("ECMWF returned an empty pressure-level GRIB file.")
+    result_date = getattr(result, "datetime", None)
+    try:
+        return result_date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ") if result_date else None
+    except Exception:
+        return None
+
+
+def _fetch_gfs_upper(step: int, field_id: str, target: Path) -> str:
+    failures = []
+    session = _request_session()
+    levels = (200,) if field_id == "wind_200" else (200, 850)
+    for cycle in _candidate_cycles():
+        date, hh = _cycle_parts(cycle)
+        params = {"file": f"gfs.t{hh}z.pgrb2.0p25.f{step:03d}", "var_UGRD": "on", "var_VGRD": "on",
+                  "subregion": "", "leftlon": str(DOMAIN["west"]), "rightlon": str(DOMAIN["east"]),
+                  "toplat": str(DOMAIN["north"]), "bottomlat": str(DOMAIN["south"]), "dir": f"/gfs.{date}/{hh}/atmos"}
+        for level in levels:
+            params[f"lev_{level}_mb"] = "on"
+        try:
+            response = session.get("https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl", params=params, timeout=HTTP_TIMEOUT)
+            if response.ok and response.content.startswith(b"GRIB"):
+                target.write_bytes(response.content)
+                return cycle.strftime("%Y-%m-%dT%H:%MZ")
+            failures.append(f"{cycle:%H}z HTTP {response.status_code}")
+        except requests.RequestException as exc:
+            failures.append(f"{cycle:%H}z {exc.__class__.__name__}")
+    raise RuntimeError("NOAA NOMADS did not return the requested GFS pressure-level wind: " + ", ".join(failures[-4:]))
+
+
+def _index_pressure_winds(index_text: str, levels: tuple[int, ...]) -> dict[tuple[int, str], tuple[int, int]]:
+    records = []
+    for line in index_text.splitlines():
+        parts = line.strip().split(":")
+        if len(parts) < 5:
+            continue
+        try:
+            offset = int(parts[1])
+        except ValueError:
+            continue
+        upper = line.upper()
+        level = next((lev for lev in levels if f":{lev} MB:" in upper), None)
+        component = "u" if ":UGRD:" in upper else ("v" if ":VGRD:" in upper else None)
+        if level is not None and component:
+            records.append((offset, level, component))
+    all_offsets = []
+    for line in index_text.splitlines():
+        parts = line.strip().split(":")
+        if len(parts) >= 2:
+            try: all_offsets.append(int(parts[1]))
+            except ValueError: pass
+    found = {}
+    sorted_offsets = sorted(set(all_offsets))
+    for offset, level, component in records:
+        later = [item for item in sorted_offsets if item > offset]
+        end = (later[0]-1) if later else None
+        if end is not None and end >= offset:
+            found[(level, component)] = (offset, end)
+    return found
+
+
+def _fetch_aigfs_upper(step: int, field_id: str, target: Path) -> str:
+    levels = (200,) if field_id == "wind_200" else (200, 850)
+    needed = [(level, comp) for level in levels for comp in ("u", "v")]
+    failures = []
+    session = _request_session()
+    for cycle in _candidate_cycles():
+        date, hh = _cycle_parts(cycle)
+        base = f"https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/aigfs.{date}/{hh}/model/atmos/grib2/aigfs.t{hh}z.pres.f{step:03d}.grib2"
+        try:
+            idx = session.get(base+".idx", timeout=HTTP_TIMEOUT)
+            if not idx.ok:
+                failures.append(f"{hh}z index HTTP {idx.status_code}")
+                continue
+            bounds = _index_pressure_winds(idx.text, levels)
+            if not set(needed).issubset(bounds):
+                failures.append(f"{hh}z pressure wind messages absent")
+                continue
+            by_offset = sorted(((key, bounds[key]) for key in needed), key=lambda item:item[1][0])
+            payloads = {}
+            for start in range(0, len(by_offset), 2):
+                chunk = by_offset[start:start+2]
+                pair = _download_pair({f"{lev}_{comp}":base for (lev,comp),_ in chunk},
+                    headers={f"{lev}_{comp}":{"Range":f"bytes={bounds[(lev,comp)][0]}-{bounds[(lev,comp)][1]}"} for (lev,comp),_ in chunk},
+                    expected_status={f"{lev}_{comp}":206 for (lev,comp),_ in chunk})
+                payloads.update(pair)
+            with target.open("wb") as out:
+                for (level,comp),_ in by_offset:
+                    out.write(payloads[f"{level}_{comp}"])
+            return cycle.strftime("%Y-%m-%dT%H:%MZ")
+        except (requests.RequestException, RuntimeError) as exc:
+            failures.append(f"{hh}z {exc}")
+    raise RuntimeError("NOAA NOMADS did not return the requested AIGFS pressure-level wind: "+"; ".join(failures[-4:]))
+
+
+def _fetch_dwd_upper(step: int, field_id: str, target: Path) -> str:
+    levels = (200,) if field_id == "wind_200" else (200, 850)
+    failures = []
+    model = "icon"
+    for cycle in _candidate_cycles():
+        valid_hours = (0, 12) if step > 120 else (0, 6, 12, 18)
+        if cycle.hour not in valid_hours:
+            continue
+        run = cycle.strftime("%Y-%m-%dT%H:00").replace(":", "%3A")
+        lead = f"PT{step:03d}H00M"
+        urls = {}
+        for level in levels:
+            for component in ("U", "V"):
+                urls[f"{level}_{component}"] = (f"https://opendata.dwd.de/weather/nwp/v1/m/{model}/p/{component}/lvt1/100/lv1/{level*100}/r/{run}/s/{lead}.grib2")
+        try:
+            payloads = {}
+            for group in (list(urls.items())[:2], list(urls.items())[2:]):
+                if group:
+                    payloads.update(_download_pair(dict(group)))
+            with target.open("wb") as out:
+                for key in urls:
+                    out.write(payloads[key])
+            return cycle.strftime("%Y-%m-%dT%H:%MZ")
+        except (requests.RequestException, RuntimeError) as exc:
+            failures.append(f"{cycle:%Y-%m-%d %H}Z {exc}")
+    raise RuntimeError("DWD ICON pressure-level wind is unavailable for this forecast hour: "+"; ".join(failures[-3:]))
+
+
 def _fetch_scalar(descriptor: dict[str, Any], step: int, field_id: str, target: Path) -> str | None:
     if descriptor["source"] == "ecmwf":
         try:
@@ -703,6 +1008,55 @@ def _fetch_scalar(descriptor: dict[str, Any], step: int, field_id: str, target: 
         return None
 
     source = descriptor["source"]
+    if source in {"dwd_icon", "dwd_aicon"}:
+        model = "icon" if source == "dwd_icon" else "aicon"
+        failures = []
+        for cycle in _candidate_cycles():
+            run = cycle.strftime("%Y-%m-%dT%H:00").replace(":", "%3A")
+            url = f"https://opendata.dwd.de/weather/nwp/v1/m/{model}/p/PMSL/r/{run}/s/PT{step:03d}H00M.grib2"
+            try:
+                payload = _download_one_grib(url)
+                target.write_bytes(payload)
+                return cycle.strftime("%Y-%m-%dT%H:%MZ")
+            except Exception as exc:
+                failures.append(f"{cycle:%H}z {exc}")
+        raise RuntimeError("DWD ICON did not return the selected mean sea-level pressure field: "+"; ".join(failures[-3:]))
+    if source == "noaa_aigfs":
+        failures = []
+        session = _request_session()
+        for cycle in _candidate_cycles():
+            date, hh = _cycle_parts(cycle)
+            base = f"https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/aigfs.{date}/{hh}/model/atmos/grib2/aigfs.t{hh}z.sfc.f{step:03d}.grib2"
+            try:
+                idx = session.get(base+".idx", timeout=HTTP_TIMEOUT)
+                if not idx.ok:
+                    failures.append(f"{hh}z index HTTP {idx.status_code}")
+                    continue
+                records = []
+                for line in idx.text.splitlines():
+                    parts = line.strip().split(":")
+                    if len(parts) >= 5 and (":PRMSL:" in line.upper() or ":MSLP:" in line.upper()):
+                        try: records.append(int(parts[1]))
+                        except ValueError: pass
+                if not records:
+                    failures.append(f"{hh}z PRMSL not listed")
+                    continue
+                start = records[0]
+                later = []
+                for line in idx.text.splitlines():
+                    parts=line.strip().split(":")
+                    try:
+                        offset=int(parts[1])
+                        if offset>start: later.append(offset)
+                    except (ValueError,IndexError): pass
+                end=min(later)-1 if later else None
+                byte_range = f"bytes={start}-{end}" if end is not None else f"bytes={start}-"
+                payload=_download_one_grib(base,headers={"Range":byte_range},expected_status=206)
+                target.write_bytes(payload)
+                return cycle.strftime("%Y-%m-%dT%H:%MZ")
+            except Exception as exc:
+                failures.append(f"{hh}z {exc}")
+        raise RuntimeError("NOAA NOMADS did not return the AIGFS sea-level pressure field: "+"; ".join(failures[-3:]))
     variable = NOAA_SCALAR_FIELDS[field_id]
     params_base = {
         f"var_{variable['variable']}": "on",
@@ -1336,6 +1690,103 @@ def _decode_wind(path: Path) -> dict[str, Any]:
     return {"lons": lon_u.astype(np.float64), "lats": lat_u.astype(np.float64), "u": u.astype(np.float32), "v": v.astype(np.float32), "init": init}
 
 
+def _decode_dwd_mslp(path: Path, init: str | None) -> dict[str, Any]:
+    remap = _load_dwd_regrid_map(init)
+    chosen = None
+    raw_units = ""
+    with path.open("rb") as handle:
+        while True:
+            gid = codes_grib_new_from_file(handle)
+            if gid is None:
+                break
+            try:
+                if not _scalar_field_matches(gid, "mslp"):
+                    continue
+                if str(_safe_get(gid, "gridType", "")) != "unstructured_grid":
+                    raise RuntimeError("DWD pressure field grid layout changed; refusing stale remapping.")
+                actual = str(_safe_get(gid, "uuidOfHGrid", ""))
+                expected = str(np.asarray(remap["grid_uuid"]).item())
+                if not actual or actual != expected:
+                    raise RuntimeError("DWD ICON grid UUID changed; refusing stale remapping.")
+                raw = np.asarray(codes_get_array(gid, "values"), dtype=np.float32)
+                if raw.size <= int(remap["indices"].max()):
+                    raise RuntimeError("DWD pressure field and ICON grid sizes do not match.")
+                chosen = np.sum(raw[remap["indices"]] * remap["weights"], axis=-1, dtype=np.float32)
+                raw_units = str(_safe_get(gid, "units", ""))
+                break
+            finally:
+                codes_release(gid)
+    if chosen is None:
+        raise RuntimeError("DWD ICON GRIB did not contain mean sea-level pressure.")
+    values, units = _canonicalize_scalar(chosen, "mslp", raw_units)
+    return {"lons": remap["lons"], "lats": remap["lats"], "values": values, "units": units, "init": init}
+
+
+def _decode_regular_upper(path: Path, field_id: str) -> dict[str, Any]:
+    wanted_levels = {200} if field_id == "wind_200" else {200, 850}
+    components = {}
+    init = None
+    with path.open("rb") as handle:
+        while True:
+            gid = codes_grib_new_from_file(handle)
+            if gid is None: break
+            try:
+                short = str(_safe_get(gid,"shortName","")).lower()
+                level = int(_safe_get(gid,"level",-1) or -1)
+                comp = "u" if short in {"u","ugrd"} else ("v" if short in {"v","vgrd"} else None)
+                if comp is None or level not in wanted_levels or (comp,level) in components:
+                    continue
+                date=int(_safe_get(gid,"dataDate",0) or 0); clock=int(_safe_get(gid,"dataTime",0) or 0)
+                if date:
+                    init=f"{datetime.strptime(str(date), '%Y%m%d'):%Y-%m-%d}T{clock//100:02d}:{clock%100:02d}Z"
+                values=np.asarray(codes_get_array(gid,"values"),dtype=np.float32)
+                components[(comp,level)] = _crop_regular_grid(gid,values)
+            finally:
+                codes_release(gid)
+    expected={(comp,lev) for comp in ("u","v") for lev in wanted_levels}
+    if set(components) != expected:
+        raise RuntimeError(f"The official GRIB did not contain both U/V components at {', '.join(map(str,sorted(wanted_levels)))} hPa.")
+    first=components[("u",200)]
+    output={"lons":first[0],"lats":first[1],"init":init}
+    for level in wanted_levels:
+        lu,la,u=components[("u",level)]; lv,lb,v=components[("v",level)]
+        if u.shape!=v.shape or not np.array_equal(lu,lv) or not np.array_equal(la,lb):
+            raise RuntimeError("Upper-air U/V components do not share the same regular grid.")
+        output[f"u{level}"]=u.astype(np.float32); output[f"v{level}"]=v.astype(np.float32)
+    if 850 in wanted_levels and (not np.array_equal(components[("u",200)][0],components[("u",850)][0]) or not np.array_equal(components[("u",200)][1],components[("u",850)][1])):
+        raise RuntimeError("The 200 and 850 hPa wind grids do not match.")
+    return output
+
+
+def _decode_dwd_upper(path: Path, init: str | None, field_id: str) -> dict[str, Any]:
+    remap=_load_dwd_regrid_map(init)
+    wanted={200} if field_id=="wind_200" else {200,850}
+    values_by_key={}
+    with path.open("rb") as handle:
+        while True:
+            gid=codes_grib_new_from_file(handle)
+            if gid is None: break
+            try:
+                short=str(_safe_get(gid,"shortName","")).lower()
+                name=str(_safe_get(gid,"name","")).lower()
+                level=int(_safe_get(gid,"level",-1) or -1)
+                component="u" if short in {"u","ugrd"} or "u-component" in name else ("v" if short in {"v","vgrd"} or "v-component" in name else None)
+                if component is None or level not in wanted or (component,level) in values_by_key: continue
+                if str(_safe_get(gid,"gridType",""))!="unstructured_grid":
+                    raise RuntimeError("DWD pressure-level grid layout changed; refusing stale remapping.")
+                actual=str(_safe_get(gid,"uuidOfHGrid","")); expected=str(np.asarray(remap["grid_uuid"]).item())
+                if not actual or actual!=expected: raise RuntimeError("DWD ICON grid UUID changed; refusing stale remapping.")
+                raw=np.asarray(codes_get_array(gid,"values"),dtype=np.float32)
+                if raw.size<=int(remap["indices"].max()): raise RuntimeError("DWD pressure field and ICON grid sizes do not match.")
+                values_by_key[(component,level)]=np.sum(raw[remap["indices"]]*remap["weights"],axis=-1,dtype=np.float32)
+            finally: codes_release(gid)
+    expected={(c,l) for c in ("u","v") for l in wanted}
+    if set(values_by_key)!=expected:
+        raise RuntimeError("DWD ICON GRIB did not contain all requested pressure-level U/V components.")
+    return {"lons":remap["lons"],"lats":remap["lats"],"init":init,
+            **{f"{c}{level}":values_by_key[(c,level)] for c,level in expected}}
+
+
 def _scalar_field_matches(gid: Any, field_id: str) -> bool:
     field_id = field_id.removesuffix("_6h")
     short = str(_safe_get(gid, "shortName", "")).lower()
@@ -1344,7 +1795,7 @@ def _scalar_field_matches(gid: Any, field_id: str) -> bool:
     level = _safe_get(gid, "level")
     level_type = str(_safe_get(gid, "typeOfLevel", "")).lower()
     if field_id == "mslp":
-        return short in {"msl", "prmsl"} or param_id == 151 or "mean sea level pressure" in name
+        return short in {"msl", "prmsl", "pmsl"} or param_id == 151 or "mean sea level pressure" in name or "pressure reduced to msl" in name
     if field_id == "temperature":
         is_temp = short in {"2t", "tmp"} or param_id == 167 or "2 metre temperature" in name or "2 meter temperature" in name
         return bool(is_temp and (level in (2, 2.0) or "heightaboveground" in level_type or short == "2t"))

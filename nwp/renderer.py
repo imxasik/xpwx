@@ -119,6 +119,7 @@ def render_map(
     show_speed: bool = True,
     show_streamlines: bool = True,
     dpi: int = 150,
+    field_id: str = "wind",
 ) -> bytes:
     factor, unit_label, short_unit = UNIT_INFO[units]
     lons = np.asarray(fields["lons"], dtype=np.float64)
@@ -220,12 +221,13 @@ def render_map(
     )
 
     display_unit = {"knots": "Knots", "m/s": "m/s", "km/h": "km/h"}[units]
+    level_label = "200 hPa" if field_id == "wind_200" else "10 m"
     if show_speed and show_streamlines:
-        layer_label = f"10m Wind Speed ({display_unit}) & Streamline"
+        layer_label = f"{level_label} Wind Speed ({display_unit}) & Streamlines"
     elif show_speed:
-        layer_label = f"10m Wind Speed ({display_unit})"
+        layer_label = f"{level_label} Wind Speed ({display_unit})"
     else:
-        layer_label = "10m Streamline"
+        layer_label = f"{level_label} Streamlines"
     left_parts = [
         (model["name"], True),
         ("•", True),
@@ -311,10 +313,10 @@ def render_map(
             bbox={"boxstyle": "round,pad=0.34", "facecolor": "#ffffff", "edgecolor": "#45515c", "linewidth": 0.55, "alpha": 0.88},
         )
         attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
-        fig.text(0.085, 0.018, f"10 m wind speed · {unit_label} · Streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
+        fig.text(0.085, 0.018, f"{level_label} wind speed · {unit_label} · Streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
     else:
         attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
-        fig.text(0.085, 0.018, f"10 m wind streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
+        fig.text(0.085, 0.018, f"{level_label} wind streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
 
     output = BytesIO()
     fig.savefig(output, format="png", dpi=dpi, facecolor="white", bbox_inches=None)
@@ -415,6 +417,17 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
         layer_label = f"10 m Wind Gust ({units})"
         unit_label = units
         extend = "max"
+    elif field_id == "shear_200_850":
+        factor, _, short_unit = UNIT_INFO[units]
+        display = plot_values * factor
+        scale = WIND_LEVELS_KN * (factor / KNOT_FACTOR)
+        cmap_obj = WIND_CMAP
+        norm = BoundaryNorm(scale, WIND_CMAP.N, extend="max")
+        colorbar_ticks = WIND_TICKS_KN * (factor / KNOT_FACTOR)
+        major_lines = np.array([])
+        layer_label = f"200–850 hPa Wind Shear ({units})"
+        unit_label = units
+        extend = "max"
     else:
         raise ValueError(f"Unsupported scalar map parameter: {field_id}")
 
@@ -513,20 +526,21 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
     colorbar.ax.tick_params(axis="x", top=False, labeltop=False, bottom=True, labelbottom=True,
                             labelsize=6.5, length=1.8, pad=1.0, colors="#24282a")
     colorbar.outline.set_linewidth(0.45)
-    if field_id == "gust":
+    if field_id in {"gust", "shear_200_850"}:
+        ticks_kn = [5, 10, 20, 30, 40, 50, 70, 90, 120] if field_id == "gust" else WIND_TICKS_KN
         if units == "m/s":
-            tick_labels = [f"{x * 0.514444:.0f}" for x in [5, 10, 20, 30, 40, 50, 70, 90, 120]]
+            tick_labels = [f"{x * 0.514444:.0f}" for x in ticks_kn]
         elif units == "km/h":
-            tick_labels = [f"{x * 1.852:.0f}" for x in [5, 10, 20, 30, 40, 50, 70, 90, 120]]
+            tick_labels = [f"{x * 1.852:.0f}" for x in ticks_kn]
         else:
-            tick_labels = [str(x) for x in [5, 10, 20, 30, 40, 50, 70, 90, 120]]
+            tick_labels = [str(int(x)) for x in ticks_kn]
         colorbar.ax.set_xticklabels(tick_labels)
     elif field_id in {"precipitation", "precipitation_6h"}:
         colorbar.ax.set_xticklabels(["0.1", "1", "5", "10", "20", "50", "100", "200"])
     attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
     interval_text = fields.get("interval", "")
     footer_label = layer_label + (f" · {interval_text}" if interval_text else "")
-    fig.text(0.085, 0.018, f"{footer_label} · {unit_label}  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
+   # fig.text(0.085, 0.018, f"{footer_label} · {unit_label}  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
     output = BytesIO()
     fig.savefig(output, format="png", dpi=dpi, facecolor="white", bbox_inches=None)
     plt.close(fig)

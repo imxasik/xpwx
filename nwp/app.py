@@ -10,15 +10,20 @@ from pathlib import Path
 from flask import Flask, jsonify, make_response, render_template, request, send_file
 
 from renderer import render_map, render_scalar_map
-from weather import FIELD_DEFINITIONS, MODEL_CATALOG, get_forecast, get_scalar_forecast, model_fields
+from weather import FIELD_DEFINITIONS, MODEL_CATALOG, get_forecast, get_scalar_forecast, get_track_series, get_upperair_forecast, model_fields
 
 app = Flask(__name__)
 app.config["JSON_SORT_KEYS"] = False
 PNG_CACHE_DIR = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 PNG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PNG_CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
-RENDER_VERSION = 11  # rounded MSLP labels and centered, transparent minimum value
+RENDER_VERSION = 12  # adds source-gated 200 hPa wind and 200–850 hPa shear
 _RENDER_LOCK = threading.RLock()
+
+
+def _safe_header(value: object) -> str:
+    text = str(value).replace("–", "-").replace("—", "-")
+    return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
 @app.get("/")
@@ -48,9 +53,24 @@ def models():
             }
             for model_id, item in MODEL_CATALOG.items()
         ],
-        "layers": ["10 m wind speed", "Streamlines"],
+        "layers": ["10 m wind speed", "Streamlines", "200 hPa wind", "200–850 hPa wind shear", "Cyclone track overlay"],
         "units": ["knots", "m/s", "km/h"],
     })
+
+
+@app.get("/api/track.json")
+def track_json():
+    model_id = request.args.get("model", "")
+    try:
+        result = get_track_series(model_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception("Cyclone track generation failed for %s", model_id)
+        return jsonify({"error": str(exc) or "Could not retrieve this cyclone track."}), 502
+    response = jsonify(result)
+    response.headers["Cache-Control"] = "public, max-age=900"
+    return response
 
 
 @app.get("/api/map.png")
@@ -72,7 +92,7 @@ def map_png():
     if step not in model["steps"] or step not in model_field_options[field_id].get("steps", model["steps"]):
         return jsonify({"error": "That forecast hour is not available for this parameter on this model."}), 400
 
-    default_units = "knots" if field_id in {"wind", "gust"} else ("°C" if field_id == "temperature" else ("hPa" if field_id == "mslp" else "mm"))
+    default_units = "knots" if field_id in {"wind", "wind_200", "shear_200_850", "gust"} else ("°C" if field_id == "temperature" else ("hPa" if field_id == "mslp" else "mm"))
     units = request.args.get("units", default_units)
     allowed_units = {item["id"] for item in model_field_options[field_id]["units"]}
     if units not in allowed_units:
@@ -85,9 +105,10 @@ def map_png():
     if dpi not in {120, 150, 300}:
         return jsonify({"error": "DPI must be 120, 150, or 300."}), 400
 
-    speed_layer = request.args.get("speed", "1") == "1" if field_id == "wind" else False
-    stream_layer = request.args.get("streamlines", "1") == "1" if field_id == "wind" else False
-    if field_id == "wind" and not speed_layer and not stream_layer:
+    vector_field = field_id in {"wind", "wind_200"}
+    speed_layer = request.args.get("speed", "1") == "1" if vector_field else False
+    stream_layer = request.args.get("streamlines", "1") == "1" if vector_field else False
+    if vector_field and not speed_layer and not stream_layer:
         return jsonify({"error": "Turn on at least one wind layer."}), 400
 
     image_name = f"baywind-{model_id}-{field_id}-f{step:03d}-{dpi}dpi.png"
@@ -132,6 +153,12 @@ def map_png():
                     if field_id == "wind":
                         fields = get_forecast(model_id, step)
                         render_function = lambda: render_map(fields, model, step, units, speed_layer, stream_layer, dpi=dpi)
+                    elif field_id == "wind_200":
+                        fields = get_upperair_forecast(model_id, step, field_id)
+                        render_function = lambda: render_map(fields, model, step, units, speed_layer, stream_layer, dpi=dpi, field_id=field_id)
+                    elif field_id == "shear_200_850":
+                        fields = get_upperair_forecast(model_id, step, field_id)
+                        render_function = lambda: render_scalar_map(fields, model, step, field_id, units, dpi=dpi)
                     else:
                         fields = get_scalar_forecast(model_id, step, field_id)
                         render_function = lambda: render_scalar_map(fields, model, step, field_id, units, dpi=dpi)
@@ -155,14 +182,14 @@ def map_png():
 
     response = make_response(send_file(BytesIO(png), mimetype="image/png", download_name=image_name))
     response.headers["Cache-Control"] = "public, max-age=900"
-    response.headers["X-Model-Name"] = model["name"]
+    response.headers["X-Model-Name"] = _safe_header(model["name"])
     response.headers["X-Model-Run"] = init_time
     init_dt = datetime.fromisoformat(init_time.replace("Z", "+00:00")).astimezone(timezone.utc)
     response.headers["X-Valid-Time"] = (init_dt + timedelta(hours=step)).strftime("%Y-%m-%d %H:%M UTC")
     response.headers["X-Forecast-Hour"] = str(step)
-    response.headers["X-Data-Source"] = model["source_label"]
-    response.headers["X-Parameter"] = FIELD_DEFINITIONS[field_id]["label"]
-    response.headers["X-Display-Units"] = units
+    response.headers["X-Data-Source"] = _safe_header(model["source_label"])
+    response.headers["X-Parameter"] = _safe_header(FIELD_DEFINITIONS[field_id]["label"])
+    response.headers["X-Display-Units"] = _safe_header(units)
     response.headers["X-Render-DPI"] = str(dpi)
     total_ms = (time.perf_counter() - request_started) * 1000.0
     field_cache_read_ms = float(field_timings.get("field_cache_read_ms", 0.0))

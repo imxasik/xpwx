@@ -1,6 +1,6 @@
 # Baywind — Bay of Bengal model wind viewer
 
-A Render-ready Flask application that retrieves one selected forecast parameter from official model-data providers, crops it to the Bay of Bengal domain, and renders a weather-chart-style PNG. Supported charts include 10 m wind, mean sea-level pressure, 2 m temperature, accumulated precipitation, and 10 m gust where the official source publishes them. It does not fetch or reuse WeatherBell images, scrape its account area, or call third-party weather APIs.
+A Render-ready Flask application that retrieves one selected forecast parameter from official model-data providers, crops it to the Bay of Bengal domain, and renders a weather-chart-style PNG. Supported charts include 10 m wind, 200 hPa wind, 200–850 hPa wind shear, mean sea-level pressure, 2 m temperature, accumulated precipitation, and 10 m gust where the official source publishes them. An optional, lazy-loaded cyclone-track overlay is available for ECMWF IFS, AIFS, GFS, AIGFS, DWD ICON, and DWD AI ICON. It does not fetch or reuse WeatherBell images, scrape its account area, or call third-party weather APIs.
 
 The map presentation follows the supplied reference's clean forecast-chart layout (taller regional field, domain graticule, coastlines, streamlines, a smooth extended 135-knot legend, and in-map Max/@XP WEATHER labels), with original styling. Coarse official ensemble grids are bilinearly interpolated for display; forecast information itself remains sourced from the original model grid. Scalar charts retain the same 10 × 8 inch figure, domain, typography, map frame, source attribution, and bottom-centered legend; they add parameter-appropriate contours and units without changing the existing wind chart. It does not reuse WeatherBell artwork or branding.
 
@@ -11,13 +11,17 @@ The Map Layers selector exposes only parameters published by the selected model'
 | Chart | Display | Currently enabled model families |
 |---|---|---|
 | 10 m Wind | Wind-speed shading and streamlines | All existing wind integrations |
-| Mean Sea-Level Pressure | Shaded hPa field with labelled isobars; rounded lower-left Min/Max and a bold, centered minimum value with no callout box | ECMWF IFS/ENS, NOAA GFS/GEFS/NAEFS |
+| 200 hPa Wind | Pressure-level speed shading and streamlines | ECMWF IFS/ENS/AIFS, NOAA GFS/AIGFS, DWD ICON |
+| 200–850 hPa Wind Shear | Magnitude of the vector difference between 200 and 850 hPa winds | ECMWF IFS/ENS/AIFS, NOAA GFS/AIGFS, DWD ICON |
+| Mean Sea-Level Pressure | Shaded hPa field with labelled isobars; rounded lower-left Min/Max and a bold, centered minimum value with no callout box | ECMWF IFS/ENS/AIFS, NOAA GFS/GEFS/NAEFS/AIGFS, DWD ICON/AI ICON |
 | 2 m Temperature | Fixed °C/°F colour scale with temperature contours | ECMWF IFS/ENS/AIFS, NOAA GFS/GEFS/NAEFS |
 | Accumulated Precipitation | Fixed mm palette; GRIB accumulation interval is shown on the chart | ECMWF IFS/ENS/AIFS, NOAA GFS/GEFS |
 | 6 h Precipitation | Exact six-hour amount in mm; cumulative ECMWF fields are differenced, adjacent NOAA 3 h intervals are summed only after their metadata is checked | ECMWF IFS/ENS/AIFS, NOAA GFS/GEFS |
 | 10 m Wind Gust | Gust shading using the existing wind-speed units and colour language; ECMWF IFS uses `10fg3` while the indexed ENS member uses `10fg` | ECMWF IFS/ENS and NOAA GFS |
 
-Availability is field- and lead-specific: ECMWF gust is limited to published short-interval leads; accumulations are not offered at forecast hour zero. ARPEGE stays disabled without the Météo-France credential and live coverage validation; MOGREPS-G's configured public NetCDF feed currently exposes the two 10 m wind variables only. Other models remain wind-only until a suitable official field, grid, lead range, and regional retrieval are verified. The selector never implies that an unverified parameter exists.
+Availability is field- and lead-specific: ECMWF gust is limited to published short-interval leads; accumulations are not offered at forecast hour zero. ARPEGE stays disabled without the Météo-France credential and live coverage validation; MOGREPS-G's configured public NetCDF feed currently exposes the two 10 m wind variables only. DWD AI ICON currently has no verified pressure-level U/V fields, so upper-air controls are hidden for it. Other model/field combinations remain hidden until a suitable official field, grid, lead range, and regional retrieval are verified. The selector never implies that an unverified parameter exists.
+
+Cyclone tracks are computed from official model sea-level pressure minima and 10 m winds, sampled every 24 hours through the longest horizon available from one consistent run, up to +240 h. The switch fetches only the chosen track model on demand. Dates are connected to their markers; marker colors indicate approximate TD/TS/CAT 1–5 wind bands. The displayed peak is the strongest 24-hour sample from a coherent run (some cycles only publish 120 h), not a full-resolution intensity scan or an official warning category.
 
 For speed, the app fetches only the selected model, forecast hour, and parameter. ECMWF uses a single-parameter Open Data request; NOAA scalar requests use NOMADS' regional filter. Scalar field and rendered-image caches include model, lead, and parameter. No model-wide prefetch, all-member calculation, or parameter batch is performed. Provider delays are outside the app's control, so one-minute rendering is an engineering target rather than a provider-time guarantee.
 
@@ -32,7 +36,7 @@ For speed, the app fetches only the selected model, forecast hour, and parameter
 | ECMWF AIFS 0.25° | ECMWF Open Data | Operational deterministic AI forecast. |
 | AIFS ENS · Control 0.25° | ECMWF Open Data | Control member only, **not** an ensemble mean. Clearly labelled to avoid presenting one member as consensus. |
 | GFS 0.25° | NCEP NOMADS | 10 m wind plus supported scalar fields; each NOMADS filter request is regional and single-parameter. |
-| AIGFS | NCEP NOMADS | Downloads only the 10 m U/V GRIB messages using the official index and HTTP byte ranges, then crops locally. |
+| AIGFS | NCEP NOMADS | Downloads only selected 10 m or pressure-level U/V GRIB messages using official indexes and HTTP byte ranges; mean sea-level pressure is supported for track calculation. |
 | GEFS 0.5° ENS | NCEP NOMADS | Official precomputed ensemble-mean wind; MSLP, 2 m temperature, and precipitation are separately regional-filtered scalar fields. |
 | NAEFS 0.5° ENS Mean | NCEP NOMADS | Official bias-corrected NAEFS mean wind, MSLP, and 2 m temperature, fetched through regional filters. |
 | AIGEFS AI ENS | NCEP NOMADS | AI ensemble-mean 10 m wind messages fetched through official GRIB indexes and byte ranges. |
@@ -40,13 +44,13 @@ For speed, the app fetches only the selected model, forecast hour, and parameter
 | GDPS 15 km | ECCC MSC Datamart (HPFX) | Official global deterministic 10 m U/V, cropped to the Bay after decode. |
 | GEML 25 km | ECCC MSC Datamart (HPFX) | Official global AI-model 10 m U/V. |
 | GEPS 0.5° ENS | ECCC MSC Datamart (HPFX) | Downloads the two all-member 10 m U/V files; computes the mean of control plus 20 perturbed members locally. |
-| DWD ICON 13 km | DWD Open Data | Global triangular-grid 10 m winds; remapped to the map grid using DWD CLAT/CLON coordinates. |
-| DWD AICON 13 km | DWD Open Data | Official global AI forecast; uses the ICON CLAT/CLON coordinates as specified by DWD, then regrids for display. |
+| DWD ICON 13 km | DWD Open Data | Global triangular-grid 10 m and 200/850 hPa winds; remapped to the map grid using DWD CLAT/CLON coordinates. |
+| DWD AICON 13 km | DWD Open Data | Official global AI forecast; surface winds and pressure support track overlays, but its current public product does not expose upper-air U/V. |
 | MOGREPS-G 20 km ENS Mean | Met Office public AWS/ASDI | Reads the two 10 m NetCDF variables, converts each member's wind speed/direction to U/V, and averages all 18 vectors. The public AWS copy has about 24-hour latency. |
 
-All charts cover the Bay of Bengal. Wind charts use only the selected model's 10 m U/V; scalar charts use only their selected scalar field. NOAA GFS/GEFS/NAEFS use regional NOMADS filters. MOGREPS-G publishes 10 m speed and direction rather than vector components in the public NetCDF files; Baywind converts each of the 18 members to U/V and takes the vector mean, reading only the Bay crop after downloading the two required NetCDF files. The ECMWF ENS wind selector fetches one official perturbed member (`enfo`/`pf`, member 1), explicitly not an ensemble mean; it does not download all 50 members. Forecast lead-hour choices are configured per model family and validated on the server.
+All charts cover the Bay of Bengal. Wind charts use only the selected model's requested U/V layer; scalar charts use only their selected scalar field. The track overlay is separate from the selected chart layer and draws one chosen official model at a time. NOAA GFS/GEFS/NAEFS use regional NOMADS filters. MOGREPS-G publishes 10 m speed and direction rather than vector components in the public NetCDF files; Baywind converts each of the 18 members to U/V and takes the vector mean, reading only the Bay crop after downloading the two required NetCDF files. The ECMWF ENS wind selector fetches one official perturbed member (`enfo`/`pf`, member 1), explicitly not an ensemble mean; it does not download all 50 members. Forecast lead-hour choices are configured per model family and validated on the server.
 
-Performance safeguards: repeated PNG and decoded-field requests use the existing 90-minute cache; model/parameter selection remains lazy, and only the selected model, lead, and field are fetched. The service records fetch/decode/save/render timings in response headers and logs. Independent paired downloads stay under the shared two-request cap; NOAA scalar filter requests ask only for one parameter and the Bay domain. ECMWF wind remains one combined `ecmwf-opendata` retrieval for 10u+10v, while a scalar chart makes one separate request for its chosen parameter. ARPEGE wind requests use Bay-bounded WCS coverages; its small capabilities response is cached for five minutes. MOGREPS-G downloads just the two required wind NetCDF files concurrently, then caches the cropped vector mean; its public AWS copy is delayed by about 24 hours, so it is not presented as a current-cycle feed.
+Performance safeguards: repeated PNG and decoded-field requests use the existing 90-minute cache; model/parameter selection remains lazy, and only the selected model, lead, and field are fetched. Track sampling is opt-in and its generated series is cached separately. The service records fetch/decode/save/render timings in response headers and logs. Independent paired downloads stay under the shared two-request cap; NOAA scalar filter requests ask only for one parameter and the Bay domain. ECMWF wind remains one combined `ecmwf-opendata` retrieval for 10u+10v, while a scalar chart makes one separate request for its chosen parameter. ARPEGE wind requests use Bay-bounded WCS coverages; its small capabilities response is cached for five minutes. MOGREPS-G downloads just the two required wind NetCDF files concurrently, then caches the cropped vector mean; its public AWS copy is delayed by about 24 hours, so it is not presented as a current-cycle feed.
 
 ## Run locally
 
@@ -88,7 +92,7 @@ Google WeatherNext 3 is not connected: live data access requires [Google allowli
 
 ```text
 app.py                  Flask routes and forecast image API
-weather.py              official-source retrieval, GRIB decoding, regional crop, cache
+weather.py              official-source retrieval, GRIB decoding, track analysis, regional crop, cache
 renderer.py             forecast graphic renderer
 templates/index.html    viewer page
 static/style.css        responsive UI
@@ -100,9 +104,9 @@ render.yaml             Render Blueprint service
 ## Important notes
 
 - Image is newly rendered from GRIB vectors; this is not a pixel-for-pixel copy of WeatherBell's proprietary map or branding.
-- Forecast wind speed is computed from the selected model's 10 m U/V components. Streamline direction is integrated from those same components.
+- Forecast wind speed is computed from the selected model's U/V components at the chosen level. The shear field is the vector difference between 200 and 850 hPa. Streamline direction uses the displayed vector layer.
 - The longitude/latitude crop is 70°E–110°E, 0°–30°N. Adjust `DOMAIN` in `weather.py` and `WEST/EAST/SOUTH/NORTH` in `renderer.py` together if you want a different extent.
-- NOAA GFS/GEFS/NAEFS supported scalar products are subset at NOMADS. ECMWF scalar charts request one official parameter at a time. ARPEGE uses regional WCS subsetting for its currently configured wind layer. ECCC/DWD integrations remain 10 m U/V-only. MOGREPS-G's public NetCDF distribution is global, so the app downloads only the two 10 m wind variables and crops them to the Bay before calculation.
+- NOAA GFS/GEFS/NAEFS supported scalar products are subset at NOMADS. ECMWF scalar charts request one official parameter at a time. ARPEGE uses regional WCS subsetting for its currently configured wind layer. ECCC and MOGREPS-G integrations remain 10 m U/V-only. DWD ICON pressure-level winds and DWD ICON/AICON mean sea-level pressure are available through the verified official product paths; AICON upper-air winds are intentionally not offered.
 - DWD AICON starts at forecast hour +3 (there is no PT0 forecast file); DWD ICON provides hourly steps through +78 h and then 3-hourly steps. The catalog exposes the corresponding model-specific lead hours.
 - Google WeatherNext access and a live GraphCastGFS source are not configured; no NOAA product is mislabeled as a Google model.
 - Do not commit credentials. ARPEGE is the only newly added selector item that requires a secret (`METEOFRANCE_API_KEY` or `METEOFRANCE_BEARER_TOKEN`); the other new sources use public open-data endpoints.
