@@ -78,7 +78,7 @@ def track_png():
 
     cache_key = "-".join(model_ids)
     image_name = f"baywind-cyclone-track-{cache_key}-{dpi}dpi.png"
-    image_cache = PNG_CACHE_DIR / f"track-v5-{cache_key}-d{dpi}.png"
+    image_cache = PNG_CACHE_DIR / f"track-v7-{cache_key}-d{dpi}.png"
     metadata_cache = image_cache.with_suffix(".json")
     def cached_track_map():
         try:

@@ -625,11 +625,11 @@ def get_scalar_forecast(model_id: str, step: int, field_id: str) -> dict[str, An
 
 
 def get_track_series(model_id: str) -> dict[str, Any]:
-    """Build a continuous 12-hourly Bay-sector low track from one official model run."""
+    """Track one cyclone using a look-ahead, motion-balanced path through one official run."""
     track_models = {"ifs_025", "aifs", "gfs", "aigfs", "dwd_icon", "dwd_aicon"}
     if model_id not in track_models:
         raise ValueError("Cyclone tracks are available for ECMWF IFS, AIFS, GFS, AIGFS, ICON, and AI ICON only.")
-    cache = CACHE_ROOT / f"track-v11-{model_id}.json"
+    cache = CACHE_ROOT / f"track-v13-{model_id}.json"
     if _valid_cache(cache):
         try:
             with cache.open(encoding="utf-8") as handle:
@@ -637,8 +637,7 @@ def get_track_series(model_id: str) -> dict[str, Any]:
         except (OSError, ValueError):
             pass
     model = MODEL_CATALOG[model_id]
-    # Respect the full selected run where published, with explicit product caps
-    # required for the IFS and GFS track products.
+    # Respect coherent model runs and explicit IFS/GFS product caps.
     track_caps = {"ifs_025": 240, "gfs": 240}
     max_step = min(track_caps.get(model_id, max(model["steps"])), max(model["steps"]))
     steps = list(range(0, max_step + 1, 12))
@@ -646,12 +645,21 @@ def get_track_series(model_id: str) -> dict[str, Any]:
         steps = [3] + [step for step in range(12, max_step + 1, 12)]
     if not steps or steps[-1] != max_step:
         steps.append(max_step)
-    points = []
+
     run = None
-    previous = None
-    centers: list[tuple[float, float]] = []
+    beam: list[dict[str, Any]] | None = None
+    beam_width = 32
     end_note = ""
-    max_displacement_km = 500.0
+    last_processed_step = 0
+    max_displacement_km = 400.0
+
+    def distance_km(lon0: float, lat0: float, lon1: float, lat1: float) -> float:
+        lat0_rad = np.deg2rad(lat0)
+        dlat = np.deg2rad(lat1-lat0)
+        dlon = np.deg2rad(lon1-lon0)
+        hav = np.sin(dlat/2.0)**2 + np.cos(lat0_rad)*np.cos(np.deg2rad(lat1))*np.sin(dlon/2.0)**2
+        return float(6371.0*2.0*np.arcsin(np.sqrt(np.clip(hav, 0.0, 1.0))))
+
     for step in steps:
         if step not in model["steps"]:
             continue
@@ -659,26 +667,23 @@ def get_track_series(model_id: str) -> dict[str, Any]:
             wind = get_forecast(model_id, step)
             pressure = get_scalar_forecast(model_id, step, "mslp")
         except Exception as exc:
-            if points:
-                # The selected run's last complete wind/pressure pair defines
-                # its actual available horizon; do not fall back to a newer or
-                # older initialization when the next lead is absent.
+            if beam:
                 end_note = f"Stopped at the last complete sample because the next lead was unavailable: {exc}"
                 break
             raise
+
         init = str(wind.get("init") or "")
         if init != str(pressure.get("init") or init):
-            if points:
+            if beam:
                 end_note = "Stopped before wind and pressure changed to different model initializations."
                 break
             raise RuntimeError("Wind and pressure were returned from different model initializations; refusing to mix cyclone-track data.")
         if run is None:
             run = init
         elif init != run:
-            # Some providers publish different horizons by cycle. Keep the
-            # coherent section of the selected run instead of blending cycles.
             end_note = "Stopped at the end of the coherent model run; later leads belonged to a different cycle."
             break
+
         lons = np.asarray(pressure["lons"], dtype=np.float64)
         lats = np.asarray(pressure["lats"], dtype=np.float64)
         mslp = np.asarray(pressure["values"], dtype=np.float32)
@@ -686,116 +691,152 @@ def get_track_series(model_id: str) -> dict[str, Any]:
         v = np.asarray(wind["v"], dtype=np.float32)
         if mslp.shape != (len(lats), len(lons)) or u.shape != mslp.shape or v.shape != mslp.shape:
             raise RuntimeError("Official wind and pressure fields do not share the same Bay grid.")
+
         lon_grid, lat_grid = np.meshgrid(lons, lats)
         valid = np.isfinite(mslp)
         valid &= (lon_grid >= DOMAIN["west"]) & (lon_grid <= DOMAIN["east"])
         valid &= (lat_grid >= DOMAIN["south"]) & (lat_grid <= DOMAIN["north"])
         if not valid.any():
             continue
-        # Search all closed local lows and evaluate their nearby wind, rather
-        # than following the domain-wide MSLP minimum. Seed only when a plausible
-        # tropical low appears; after seeding, link it only to a nearby center.
         finite_pressure = np.where(valid, mslp, np.inf)
         neighborhood_min = minimum_filter(finite_pressure, size=5, mode="nearest")
         neighborhood_max = maximum_filter(np.where(valid, mslp, -np.inf), size=5, mode="nearest")
-        center_candidates = valid & np.isfinite(mslp) & (mslp <= neighborhood_min + 0.05)
-        center_candidates &= (neighborhood_max-mslp) >= 0.15
-        # Avoid selecting an open-domain-edge trough as a cyclone center.
-        center_candidates &= (lon_grid > DOMAIN["west"]+1.0) & (lon_grid < DOMAIN["east"]-1.0)
-        center_candidates &= (lat_grid > DOMAIN["south"]+1.0) & (lat_grid < DOMAIN["north"]-1.0)
-        if not center_candidates.any():
-            if previous is None:
-                continue
-            end_note = f"Track stopped after +{points[-1]['step']} h because the next field contained no closed low-pressure center."
-            break
+        center_mask = valid & np.isfinite(mslp) & (mslp <= neighborhood_min + 0.05)
+        center_mask &= (neighborhood_max-mslp) >= 0.15
+        center_mask &= (lon_grid > DOMAIN["west"]+1.0) & (lon_grid < DOMAIN["east"]-1.0)
+        center_mask &= (lat_grid > DOMAIN["south"]+1.0) & (lat_grid < DOMAIN["north"]-1.0)
+        if not center_mask.any():
+            if beam:
+                end_note = f"Track stopped after +{last_processed_step} h because the next field contained no closed low-pressure center."
+                break
+            continue
 
-        components, component_count = label(center_candidates, structure=np.ones((3, 3), dtype=np.uint8))
-        candidate_cells = []
+        components, component_count = label(center_mask, structure=np.ones((3, 3), dtype=np.uint8))
+        component_centers = []
         for component_id in range(1, component_count+1):
             rows, cols = np.where(components == component_id)
             if rows.size:
-                index = int(np.nanargmin(mslp[rows, cols]))
-                candidate_cells.append((int(rows[index]), int(cols[index])))
+                local_index = int(np.nanargmin(mslp[rows, cols]))
+                component_centers.append((int(rows[local_index]), int(cols[local_index])))
 
         wind_speed = np.hypot(u, v)
-        candidate_info = []
-        predicted = previous
-        if previous is not None and len(centers) >= 2:
-            predicted = (previous[0] + 0.5*(centers[-1][0]-centers[-2][0]),
-                         previous[1] + 0.5*(centers[-1][1]-centers[-2][1]))
-
-        def gc_distance_km(lon_values: np.ndarray, lat_values: np.ndarray, lon0: float, lat0: float) -> np.ndarray:
-            lat0_rad = np.deg2rad(lat0)
-            dlat = np.deg2rad(lat_values-lat0)
-            dlon = np.deg2rad(lon_values-lon0)
-            hav = np.sin(dlat/2.0)**2 + np.cos(lat0_rad)*np.cos(np.deg2rad(lat_values))*np.sin(dlon/2.0)**2
-            return 6371.0*2.0*np.arcsin(np.sqrt(np.clip(hav, 0.0, 1.0)))
-
-        for row, col in candidate_cells:
+        candidates = []
+        for row, col in component_centers:
             lon, lat = float(lons[col]), float(lats[row])
-            distance_from_previous = float(gc_distance_km(np.asarray(lon), np.asarray(lat), *previous)) if previous is not None else 0.0
-            if previous is not None and distance_from_previous > max_displacement_km:
-                continue
-            distance_grid = gc_distance_km(lon_grid, lat_grid, lon, lat)
-            local_wind = (distance_grid <= 300.0) & np.isfinite(wind_speed)
-            max_wind_ms = float(np.nanmax(wind_speed[local_wind])) if local_wind.any() else 0.0
-            wind_kt = max_wind_ms / 0.514444
+            dlon = np.deg2rad(lon_grid-lon)
+            dlat = np.deg2rad(lat_grid-lat)
+            hav = np.sin(dlat/2.0)**2 + np.cos(np.deg2rad(lat))*np.cos(np.deg2rad(lat_grid))*np.sin(dlon/2.0)**2
+            radius_grid = 6371.0*2.0*np.arcsin(np.sqrt(np.clip(hav, 0.0, 1.0)))
+            local_wind = (radius_grid <= 300.0) & np.isfinite(wind_speed)
+            wind_kt = (float(np.nanmax(wind_speed[local_wind]))/0.514444
+                       if local_wind.any() else 0.0)
             pressure_hpa = float(mslp[row, col])
-            distance_from_prediction = (float(gc_distance_km(np.asarray(lon), np.asarray(lat), *predicted))
-                                        if predicted is not None else 0.0)
-            # Wind intensity identifies a tropical system; pressure is a modest
-            # tie-breaker, while motion keeps the path attached to that system.
-            score = wind_kt + 0.35*(1005.0-pressure_hpa) - 0.04*distance_from_prediction
-            candidate_info.append({"row": row, "col": col, "lon": lon, "lat": lat,
-                                   "wind_kt": wind_kt, "mslp_hpa": pressure_hpa,
-                                   "distance": distance_from_previous, "score": score})
+            # During continuation, reject shallow weak troughs that are unlikely
+            # to be the same cyclone after its circulation has dissipated.
+            if beam is not None and wind_kt < 18.0 and pressure_hpa > 1008.0:
+                continue
+            valid_time = datetime.fromisoformat(init.replace("Z", "+00:00")) + timedelta(hours=step)
+            candidates.append({
+                "step": int(step), "time": valid_time.strftime("%Y-%m-%dT%H:%MZ"),
+                "lon": lon, "lat": lat, "mslp_hpa": pressure_hpa, "wind_kt": wind_kt,
+            })
 
-        if previous is None:
-            # Do not label a weak regional pressure minimum as a cyclone.
-            seeds = [item for item in candidate_info
+        if beam is None:
+            seeds = [item for item in candidates
                      if item["wind_kt"] >= 34.0
                      or (item["wind_kt"] >= 20.0 and item["mslp_hpa"] <= 1007.0)
                      or item["mslp_hpa"] <= 1000.0]
             if not seeds:
                 continue
-            chosen = max(seeds, key=lambda item: item["score"])
-        else:
-            if not candidate_info:
-                end_note = (f"Track stopped after +{points[-1]['step']} h: no closed pressure center remained "
-                            f"within {int(max_displacement_km)} km at the next 12-hour sample; avoided a jump to another low.")
-                break
-            chosen = max(candidate_info, key=lambda item: item["score"])
+            # Keep several credible starting lows alive. The subsequent path
+            # determines which seed belongs to a persistent cyclone, rather
+            # than locking onto the strongest isolated minimum at the first hit.
+            seeds.sort(key=lambda item: -(0.08*item["wind_kt"] + 0.30*(1000.0-item["mslp_hpa"])))
+            beam = [{
+                "path": [item],
+                "cost": -(0.08*item["wind_kt"] + 0.30*(1000.0-item["mslp_hpa"])),
+            } for item in seeds[:beam_width]]
+            last_processed_step = step
+            continue
 
-        row, col = chosen["row"], chosen["col"]
-        lon, lat = chosen["lon"], chosen["lat"]
-        wind_kt = chosen["wind_kt"]
-        previous = (lon, lat)
-        centers.append(previous)
-        if wind_kt < 34: category = "TD"
-        elif wind_kt < 64: category = "TS"
-        elif wind_kt < 83: category = "CAT 1"
-        elif wind_kt < 96: category = "CAT 2"
-        elif wind_kt < 113: category = "CAT 3"
-        elif wind_kt < 137: category = "CAT 4"
-        else: category = "CAT 5"
-        valid_time = datetime.fromisoformat(init.replace("Z", "+00:00")) + timedelta(hours=step)
-        date_label = valid_time.strftime("%d %b") if (not points or step % 24 == 0) else ""
-        points.append({"step": int(step), "time": valid_time.strftime("%Y-%m-%dT%H:%MZ"),
-                       "label": date_label, "lon": round(lon,2), "lat": round(lat,2),
-                       "mslp_hpa": round(float(mslp[row,col]),1), "wind_kt": round(wind_kt,1), "category": category})
-    if not points:
+        extensions = []
+        for state in beam:
+            path = state["path"]
+            previous = path[-1]
+            if len(path) >= 2:
+                prior = path[-2]
+                predicted_lon = previous["lon"] + 0.75*(previous["lon"]-prior["lon"])
+                predicted_lat = previous["lat"] + 0.75*(previous["lat"]-prior["lat"])
+            else:
+                predicted_lon, predicted_lat = previous["lon"], previous["lat"]
+            for item in candidates:
+                displacement = distance_km(previous["lon"], previous["lat"], item["lon"], item["lat"])
+                if displacement > max_displacement_km:
+                    continue
+                predicted_distance = distance_km(predicted_lon, predicted_lat, item["lon"], item["lat"])
+                # The path cost is dominated by continuity and a modest look-ahead
+                # velocity projection. Intensity/pressure are small tie-breakers.
+                node_credit = 0.08*item["wind_kt"] + 0.30*(1000.0-item["mslp_hpa"])
+                increment = 0.35*displacement + 0.65*predicted_distance - node_credit
+                new_path = path + [item]
+                extensions.append({"path": new_path, "cost": state["cost"]+increment})
+
+        if not extensions:
+            end_note = (f"Track stopped after +{last_processed_step} h: no closed pressure center remained "
+                        f"within {int(max_displacement_km)} km at the next 12-hour sample; avoided a jump to another low.")
+            break
+
+        extensions.sort(key=lambda state: state["cost"])
+        # Retain the best complete histories while avoiding redundant copies
+        # that end at the same two centers; the next step only depends on those.
+        next_beam = []
+        seen = set()
+        for state in extensions:
+            path = state["path"]
+            previous = path[-1]
+            prior = path[-2]
+            key = (round(previous["lon"], 2), round(previous["lat"], 2),
+                   round(prior["lon"], 2), round(prior["lat"], 2))
+            if key in seen:
+                continue
+            seen.add(key)
+            next_beam.append(state)
+            if len(next_beam) >= beam_width:
+                break
+        beam = next_beam
+        last_processed_step = step
+
+    if not beam:
         raise RuntimeError("No cyclone-strength local low (34 kt nearby, or at least 20 kt with MSLP at/below 1007 hPa, or MSLP at/below 1000 hPa) was detected in this run; refusing to plot a regional pressure minimum as a cyclone.")
+
+    best_path = min(beam, key=lambda state: state["cost"])["path"]
+    points = []
+    for item in best_path:
+        valid_time = datetime.fromisoformat(item["time"].replace("Z", "+00:00"))
+        step = item["step"]
+        if item["wind_kt"] < 34: category = "TD"
+        elif item["wind_kt"] < 64: category = "TS"
+        elif item["wind_kt"] < 83: category = "CAT 1"
+        elif item["wind_kt"] < 96: category = "CAT 2"
+        elif item["wind_kt"] < 113: category = "CAT 3"
+        elif item["wind_kt"] < 137: category = "CAT 4"
+        else: category = "CAT 5"
+        date_label = valid_time.strftime("%d %b") if (not points or step % 24 == 0) else ""
+        points.append({"step": step, "time": item["time"], "label": date_label,
+                       "lon": round(item["lon"],2), "lat": round(item["lat"],2),
+                       "mslp_hpa": round(item["mslp_hpa"],1), "wind_kt": round(item["wind_kt"],1),
+                       "category": category})
     if len(points) < 2:
         raise RuntimeError("The selected official model did not provide enough continuous forecast points for a cyclone track.")
-    peak = max(points,key=lambda item:item["wind_kt"])
+    peak = max(points, key=lambda item: item["wind_kt"])
     horizon = int(points[-1]["step"])
-    note = f"12-hour track samples through +{horizon} h; peak is the strongest sampled point, not a full-resolution intensity scan."
+    note = f"12-hour balanced track samples through +{horizon} h; peak is the strongest sampled point, not a full-resolution intensity scan."
     if end_note:
         note += " " + end_note
     payload = {"model": model_id, "model_name": model["name"], "init": run, "points": points,
                "peak": peak, "horizon": horizon, "note": note, "track_note": end_note}
     temp = cache.with_suffix(".tmp")
-    temp.write_text(json.dumps(payload,separators=(",",":")),encoding="utf-8")
+    temp.write_text(json.dumps(payload, separators=(",",":")), encoding="utf-8")
     temp.replace(cache)
     return payload
 
