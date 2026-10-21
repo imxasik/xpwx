@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import os
 import threading
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, make_response, render_template, request, send_file
@@ -16,7 +17,7 @@ app.config["JSON_SORT_KEYS"] = False
 PNG_CACHE_DIR = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 PNG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PNG_CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
-RENDER_VERSION = 6  # separate fast preview images from 300-DPI exports
+RENDER_VERSION = 7  # model labels and performance instrumentation
 _RENDER_LOCK = threading.RLock()
 
 
@@ -52,6 +53,7 @@ def models():
 
 @app.get("/api/map.png")
 def map_png():
+    request_started = time.perf_counter()
     model_id = request.args.get("model", "ifs_01")
     model = MODEL_CATALOG.get(model_id)
     if model is None:
@@ -96,22 +98,37 @@ def map_png():
         except (OSError, ValueError):
             return None
 
+    cache_status = "miss"
+    field_cache_status = "not-read"
+    field_timings: dict[str, float] = {}
+    render_ms = 0.0
+    png_cache_read_ms = 0.0
     try:
         # A cached PNG includes its run-time sidecar, so repeat views skip both
         # GRIB loading and rendering without losing the response time headers.
+        png_cache_started = time.perf_counter()
         cached = cached_png()
+        png_cache_read_ms = (time.perf_counter() - png_cache_started) * 1000.0
         if cached is not None:
+            cache_status = "png-hit"
             png, init_time = cached
         else:
             with _RENDER_LOCK:
+                png_cache_started = time.perf_counter()
                 cached = cached_png()
+                png_cache_read_ms += (time.perf_counter() - png_cache_started) * 1000.0
                 if cached is not None:
+                    cache_status = "png-hit-after-wait"
                     png, init_time = cached
                 else:
                     fields = get_forecast(model_id, step)
+                    field_cache_status = str(fields.get("_cache_status", "unknown"))
+                    field_timings = dict(fields.get("_timings", {}))
                     init_time = str(fields.get("init") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"))
                     datetime.fromisoformat(init_time.replace("Z", "+00:00"))
+                    render_started = time.perf_counter()
                     png = render_map(fields, model, step, units, speed_layer, stream_layer, dpi=dpi)
+                    render_ms = (time.perf_counter() - render_started) * 1000.0
                     thread_tag = threading.get_ident()
                     image_tmp = image_cache.with_name(image_cache.stem + f"-img-{thread_tag}.tmp")
                     meta_tmp = metadata_cache.with_name(metadata_cache.stem + f"-meta-{thread_tag}.tmp")
@@ -132,6 +149,38 @@ def map_png():
     response.headers["X-Forecast-Hour"] = str(step)
     response.headers["X-Data-Source"] = model["source_label"]
     response.headers["X-Render-DPI"] = str(dpi)
+    total_ms = (time.perf_counter() - request_started) * 1000.0
+    field_cache_read_ms = float(field_timings.get("field_cache_read_ms", 0.0))
+    fetch_ms = float(field_timings.get("fetch_ms", 0.0))
+    decode_ms = float(field_timings.get("decode_ms", 0.0))
+    save_ms = float(field_timings.get("save_ms", 0.0))
+    response.headers["X-Baywind-PNG-Cache"] = cache_status
+    response.headers["X-Baywind-Field-Cache"] = field_cache_status
+    response.headers["X-Baywind-Timing-ms"] = (
+        f"png-cache={png_cache_read_ms:.1f};field-cache-read={field_cache_read_ms:.1f};"
+        f"fetch={fetch_ms:.1f};decode={decode_ms:.1f};field-save={save_ms:.1f};"
+        f"render={render_ms:.1f};total={total_ms:.1f}"
+    )
+    response.headers["Server-Timing"] = (
+        f"total;dur={total_ms:.1f}, png-cache;dur={png_cache_read_ms:.1f}, "
+        f"field-cache-read;dur={field_cache_read_ms:.1f}, fetch;dur={fetch_ms:.1f}, "
+        f"decode;dur={decode_ms:.1f}, render;dur={render_ms:.1f}"
+    )
+    app.logger.info(
+        "map_timing model=%s step=%03d dpi=%d png_cache=%s field_cache=%s "
+        "field_cache_read_ms=%.1f fetch_ms=%.1f decode_ms=%.1f field_save_ms=%.1f render_ms=%.1f total_ms=%.1f",
+        model_id,
+        step,
+        dpi,
+        cache_status,
+        field_cache_status,
+        field_cache_read_ms,
+        fetch_ms,
+        decode_ms,
+        save_ms,
+        render_ms,
+        total_ms,
+    )
     return response
 
 

@@ -10,20 +10,22 @@ The map presentation follows the supplied reference's clean forecast-chart layou
 |---|---|---|
 | ECMWF IFS 0.1° | ECMWF Open Data | Highest-resolution IFS surface winds; the 0.1° tier may be published later than 0.25°. |
 | ECMWF IFS 0.25° | ECMWF Open Data | Lighter, standard open-data grid; selected by default for quicker uncached loads. |
-| ECMWF AIFS Single 0.25° | ECMWF Open Data | Operational deterministic AI forecast. |
-| ECMWF AIFS ENS Control 0.25° | ECMWF Open Data | Control member only, **not** an ensemble mean. Clearly labelled to avoid presenting one member as consensus. |
-| NOAA GFS 0.25° | NCEP NOMADS | Requests only 10 m UGRD/VGRD and asks NOMADS' GRIB filter for the regional subset. |
-| NOAA AIGFS | NCEP NOMADS | Downloads only the 10 m U/V GRIB messages using the official index and HTTP byte ranges, then crops locally. |
-| NOAA GEFS Mean 0.5° | NCEP NOMADS | Uses the official precomputed ensemble-mean 10 m U/V fields; no local member averaging. |
-| NOAA AIGEFS Mean | NCEP NOMADS | AI ensemble-mean 10 m wind messages fetched through official GRIB indexes and byte ranges. |
-| NOAA HGEFS Mean | NCEP NOMADS | Hybrid ensemble-mean 10 m wind messages; shorter published forecast-hour range. |
-| ECCC GDPS 15 km | ECCC MSC Datamart (HPFX) | Official global deterministic 10 m U/V, cropped to the Bay after decode. |
-| ECCC GDPS-GEML 25 km | ECCC MSC Datamart (HPFX) | Official global AI-model 10 m U/V. |
-| ECCC GEPS Mean 0.5° | ECCC MSC Datamart (HPFX) | Downloads the two all-member 10 m U/V files; computes the mean of control plus 20 perturbed members locally. |
-| DWD ICON Global | DWD Open Data | Global triangular-grid 10 m winds; remapped to the map grid using DWD CLAT/CLON coordinates. |
-| DWD AICON Global | DWD Open Data | Official global AI forecast; uses the ICON CLAT/CLON coordinates as specified by DWD, then regrids for display. |
+| ECMWF AIFS 0.25° | ECMWF Open Data | Operational deterministic AI forecast. |
+| AIFS ENS · Control 0.25° | ECMWF Open Data | Control member only, **not** an ensemble mean. Clearly labelled to avoid presenting one member as consensus. |
+| GFS 0.25° | NCEP NOMADS | Requests only 10 m UGRD/VGRD and asks NOMADS' GRIB filter for the regional subset. |
+| AIGFS | NCEP NOMADS | Downloads only the 10 m U/V GRIB messages using the official index and HTTP byte ranges, then crops locally. |
+| GEFS 0.5° ENS | NCEP NOMADS | Uses the official precomputed ensemble-mean 10 m U/V fields; no local member averaging. |
+| AIGEFS AI ENS | NCEP NOMADS | AI ensemble-mean 10 m wind messages fetched through official GRIB indexes and byte ranges. |
+| HGEFS HYBRID ENS | NCEP NOMADS | Hybrid ensemble-mean 10 m wind messages; shorter published forecast-hour range. |
+| GDPS 15 km | ECCC MSC Datamart (HPFX) | Official global deterministic 10 m U/V, cropped to the Bay after decode. |
+| GEML 25 km | ECCC MSC Datamart (HPFX) | Official global AI-model 10 m U/V. |
+| GEPS 0.5° ENS | ECCC MSC Datamart (HPFX) | Downloads the two all-member 10 m U/V files; computes the mean of control plus 20 perturbed members locally. |
+| DWD ICON 13 km | DWD Open Data | Global triangular-grid 10 m winds; remapped to the map grid using DWD CLAT/CLON coordinates. |
+| DWD AICON 13 km | DWD Open Data | Official global AI forecast; uses the ICON CLAT/CLON coordinates as specified by DWD, then regrids for display. |
 
 All added products are official global fields that cover the Bay of Bengal. Fetching is limited to 10 m U/V wind products (and the DWD ICON coordinate fields needed for native-grid remapping). Regional cropping follows decode; ECCC GEPS is the exception to single-message products because the official all-member GRIB files contain all 21 ensemble members, which are averaged locally to avoid mislabeling a single member. Forecast lead-hour choices are configured per model family and validated on the server.
+
+Performance safeguards: repeated PNG and decoded-field requests use the existing 90-minute cache. The service records fetch/decode/save/render timings in response headers and logs. Independent U/V files from ECCC, DWD, and NOAA byte-range products use a shared maximum of two concurrent requests; cycle fallback remains sequential (ECCC uses its dated retention tree when a fallback run belongs to a previous UTC date). ECMWF continues to use one `ecmwf-opendata` retrieval for both 10u and 10v, with no parallel ECMWF calls or added cycle probing. NOAA regional filters and indexed byte ranges continue to request only the required 10 m U/V fields.
 
 ## Run locally
 
@@ -47,7 +49,7 @@ python app.py
 
 For a repository where this project is stored in `baywind/`, create **New → Web Service**, select the repository and branch, set **Root Directory** to `baywind`, choose **Docker**, and confirm **Free** before creating the service. The included `render.yaml` also specifies `plan: free` if you choose to use a Blueprint.
 
-The existing map design is retained with a 10 × 8 inch figure (`figsize=(10, 8)`). The on-screen preview renders at 150 DPI for quicker display; the **HD PNG** button creates a separate 300-DPI export only when requested. The first uncached map still has to download the selected official model fields; ECMWF 0.1° is heavier, so IFS 0.25° is selected by default for quicker loads. Rendered PNGs are checked first and returned without reopening GRIB-derived arrays; map and cropped-field caches last 90 minutes. Coarse forecast fields are interpolated only for display, and DWD's triangular grid is remapped to a regional 0.1° grid from the official ICON CLAT/CLON coordinate fields. The cached remap table is reused. Streamlines are integrated on a coarser mesh. Render's ephemeral filesystem clears the cache after a restart, and forecast animation loads frames lazily rather than prefetching a large sequence.
+The existing map design is retained with a 10 × 8 inch figure (`figsize=(10, 8)`). The on-screen preview renders at 150 DPI for quicker display; the **HD PNG** button creates a separate 300-DPI export only when requested. The first uncached map still has to download the selected official model fields; ECMWF 0.1° is heavier, so IFS 0.25° is selected by default for quicker loads. Rendered PNGs are checked first and returned without reopening GRIB-derived arrays; map and cropped-field caches last 90 minutes. Coarse forecast fields are interpolated only for display, and DWD's triangular grid is remapped to a regional 0.1° grid from the official ICON CLAT/CLON coordinate fields. The remap table is bundled from the official DWD ICON coordinate fields and reused, avoiding large coordinate downloads/tree construction on a Render cold start. Streamlines are integrated on a coarser mesh. Render's ephemeral filesystem clears the cache after a restart, and forecast animation loads frames lazily rather than prefetching a large sequence.
 
 ## Data and attribution
 
@@ -57,7 +59,7 @@ The existing map design is retained with a 10 × 8 inch figure (`figsize=(10, 8)
 - **Deutscher Wetterdienst:** `https://opendata.dwd.de/weather/nwp/` (ICON and AICON). Follow DWD's Open Data terms and attribution requirements.
 - Geographic outlines are Natural Earth 1:50m shapefiles bundled with the project; weather fields come only from the official providers listed above.
 
-Google WeatherNext 3 is not connected: direct forecast access requires [Google allowlisting](https://developers.google.com/weathernext/guides/access-forecast) and a requester-pays [Cloud Storage project](https://developers.google.com/weathernext/guides/gcs) with billing, which is not configured here. NOAA's [GraphCastGFS registry](https://registry.opendata.aws/noaa-nws-graphcastgfs-pds/) does not provide a verified current operational feed for this app. NOAA AIGFS remains correctly labeled as NOAA AIGFS and is not presented as Google GraphCast. If a run/step is not available, the viewer shows a provider error instead of silently substituting a model or forecast hour.
+Google WeatherNext 3 is not connected: live data access requires [Google allowlisting](https://developers.google.com/weathernext/guides/access-forecast). A paid Cloud contract is not required for allowlisting; downloading the full raw ensemble from [Cloud Storage](https://developers.google.com/weathernext/guides/gcs) is requester-pays, so it is intentionally not fetched by this app. NOAA's [GraphCastGFS registry](https://registry.opendata.aws/noaa-nws-graphcastgfs-pds/) does not provide a verified current operational feed for this app. The selector label AIGFS retains NOAA NCEP attribution and is not presented as a Google product. If a run/step is not available, the viewer shows a provider error instead of silently substituting a model or forecast hour.
 
 ## Project structure
 

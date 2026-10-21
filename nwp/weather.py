@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -172,6 +176,15 @@ CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
 HTTP_TIMEOUT = (8, int(os.environ.get("BAYWIND_HTTP_TIMEOUT", "45")))
 USER_AGENT = "BaywindModelViewer/1.0 (official open model-data visualization)"
 _CACHE_LOCK = threading.RLock()
+# A shared two-slot pool bounds concurrent downloads across all paired
+# non-ECMWF fields in this worker. ECMWF remains one Client.retrieve request.
+MAX_PARALLEL_FIELD_DOWNLOADS = 2
+_PAIR_DOWNLOAD_POOL = ThreadPoolExecutor(
+    max_workers=MAX_PARALLEL_FIELD_DOWNLOADS,
+    thread_name_prefix="baywind-field-download",
+)
+_DOWNLOAD_LOCAL = threading.local()
+_PERF_LOG = logging.getLogger("baywind.performance")
 
 
 def _valid_cache(path: Path) -> bool:
@@ -189,25 +202,111 @@ def _cycle_parts(cycle: datetime) -> tuple[str, str]:
     return cycle.strftime("%Y%m%d"), cycle.strftime("%H")
 
 
+def _eccc_cycle_root(cycle: datetime) -> str:
+    """Use the Datamart's current-day alias or its dated retention tree."""
+    if cycle.date() == datetime.now(timezone.utc).date():
+        return "today"
+    return f"{cycle:%Y%m%d}/WXO-DD"
+
+
 def _request_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT, "Accept": "*/*"})
     return session
 
 
+def _download_session() -> requests.Session:
+    """One reusable Requests session per bounded downloader thread."""
+    session = getattr(_DOWNLOAD_LOCAL, "session", None)
+    if session is None:
+        session = _request_session()
+        _DOWNLOAD_LOCAL.session = session
+    return session
+
+
+def _download_one_grib(
+    url: str,
+    headers: dict[str, str] | None = None,
+    expected_status: int = 200,
+) -> bytes:
+    response = _download_session().get(url, headers=headers, timeout=HTTP_TIMEOUT)
+    if response.status_code != expected_status or not response.content.startswith(b"GRIB"):
+        raise RuntimeError(f"HTTP {response.status_code}; response was not the expected GRIB field")
+    return response.content
+
+
+def _download_pair(
+    urls: dict[str, str],
+    *,
+    headers: dict[str, dict[str, str]] | None = None,
+    expected_status: dict[str, int] | None = None,
+) -> dict[str, bytes]:
+    """Download only a small pair of required fields with a global cap of two."""
+    if not urls or len(urls) > MAX_PARALLEL_FIELD_DOWNLOADS:
+        raise ValueError("Paired field download must contain one or two required files.")
+    headers = headers or {}
+    expected_status = expected_status or {}
+    futures = {
+        key: _PAIR_DOWNLOAD_POOL.submit(
+            _download_one_grib,
+            url,
+            headers.get(key),
+            expected_status.get(key, 200),
+        )
+        for key, url in urls.items()
+    }
+    payloads: dict[str, bytes] = {}
+    errors: list[str] = []
+    for key, future in futures.items():
+        try:
+            payloads[key] = future.result()
+        except Exception as exc:
+            errors.append(f"{key}: {exc}")
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    return payloads
+
+
 def get_forecast(model_id: str, step: int) -> dict[str, Any]:
     if model_id not in MODEL_CATALOG:
         raise ValueError("Unknown model.")
+    total_started = time.perf_counter()
     field_cache = CACHE_ROOT / f"fields-v{FIELD_CACHE_VERSION}-{model_id}-f{step:03d}.npz"
+
+    def load_cached() -> dict[str, Any]:
+        cache_started = time.perf_counter()
+        fields = _load_fields(field_cache)
+        fields["_cache_status"] = "hit"
+        fields["_timings"] = {
+            "field_cache_read_ms": (time.perf_counter() - cache_started) * 1000.0,
+            "fetch_ms": 0.0,
+            "decode_ms": 0.0,
+            "save_ms": 0.0,
+        }
+        _PERF_LOG.info(
+            "fields model=%s step=%03d cache=hit total_ms=%.1f",
+            model_id,
+            step,
+            (time.perf_counter() - total_started) * 1000.0,
+        )
+        return fields
+
+    if _valid_cache(field_cache):
+        return load_cached()
+
+    # Coalesce simultaneous misses and avoid duplicate downloads/decodes.
     with _CACHE_LOCK:
         if _valid_cache(field_cache):
-            return _load_fields(field_cache)
+            return load_cached()
 
         descriptor = MODEL_CATALOG[model_id]
         with tempfile.NamedTemporaryFile(prefix="baywind-", suffix=".grib2", dir=CACHE_ROOT, delete=False) as handle:
             grib_path = Path(handle.name)
         try:
+            fetch_started = time.perf_counter()
             if descriptor["source"] == "ecmwf":
+                # Deliberately one ECMWF Open Data client request for both
+                # required parameters; do not fan out or probe fallback cycles.
                 init = _fetch_ecmwf(descriptor, step, grib_path)
             elif descriptor["source"] == "noaa_gfs":
                 init = _fetch_gfs(step, grib_path)
@@ -227,7 +326,9 @@ def get_forecast(model_id: str, step: int) -> dict[str, Any]:
                 init = _fetch_dwd_global(descriptor["source"], step, grib_path)
             else:
                 raise ValueError("This model source is not configured.")
+            fetch_ms = (time.perf_counter() - fetch_started) * 1000.0
 
+            decode_started = time.perf_counter()
             if descriptor["source"] in {"dwd_icon", "dwd_aicon"}:
                 fields = _decode_dwd_unstructured(grib_path, init)
             elif descriptor["source"] == "eccc_geps_mean":
@@ -237,7 +338,27 @@ def get_forecast(model_id: str, step: int) -> dict[str, Any]:
             fields["init"] = init or fields.get("init") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
             fields["model_id"] = model_id
             fields["source"] = descriptor["source_label"]
+            decode_ms = (time.perf_counter() - decode_started) * 1000.0
+
+            save_started = time.perf_counter()
             _save_fields(field_cache, fields)
+            save_ms = (time.perf_counter() - save_started) * 1000.0
+            fields["_cache_status"] = "miss"
+            fields["_timings"] = {
+                "field_cache_read_ms": 0.0,
+                "fetch_ms": fetch_ms,
+                "decode_ms": decode_ms,
+                "save_ms": save_ms,
+            }
+            _PERF_LOG.info(
+                "fields model=%s step=%03d cache=miss fetch_ms=%.1f decode_ms=%.1f save_ms=%.1f total_ms=%.1f",
+                model_id,
+                step,
+                fetch_ms,
+                decode_ms,
+                save_ms,
+                (time.perf_counter() - total_started) * 1000.0,
+            )
             return fields
         finally:
             try:
@@ -248,7 +369,6 @@ def get_forecast(model_id: str, step: int) -> dict[str, Any]:
 
 def _fetch_eccc_deterministic(model_source: str, step: int, target: Path) -> str:
     """Fetch exactly the 10 m U and V files from the official ECCC HPFX mirror."""
-    session = _request_session()
     if model_source == "eccc_gdps":
         folder, resolution, model_name = "model_gdps", "15km", "GDPS"
     else:
@@ -260,56 +380,46 @@ def _fetch_eccc_deterministic(model_source: str, step: int, target: Path) -> str
             continue
         date_text, hour = _cycle_parts(cycle)
         lead = f"{step:03d}"
-        payloads = []
+        root = _eccc_cycle_root(cycle)
+        urls = {}
         for component, variable in (("u", "WindU"), ("v", "WindV")):
             name = f"{date_text}T{hour}Z_MSC_{model_name}_{variable}_AGL-10m_LatLon{grid_tag}_PT{lead}H.grib2"
-            url = f"https://hpfx.collab.science.gc.ca/today/{folder}/{resolution}/{hour}/{lead}/{name}"
-            try:
-                response = session.get(url, timeout=HTTP_TIMEOUT)
-                if response.status_code != 200 or not response.content.startswith(b"GRIB"):
-                    raise RuntimeError(f"HTTP {response.status_code}; not a GRIB response")
-                payloads.append(response.content)
-            except Exception as exc:
-                failures.append(f"{cycle:%Y-%m-%d %H} {variable}: {exc}")
-                break
-        if len(payloads) == 2:
-            target.write_bytes(payloads[0] + payloads[1])
+            urls[component] = f"https://hpfx.collab.science.gc.ca/{root}/{folder}/{resolution}/{hour}/{lead}/{name}"
+        try:
+            payloads = _download_pair(urls)
+            target.write_bytes(payloads["u"] + payloads["v"])
             return cycle.strftime("%Y-%m-%dT%H:%MZ")
+        except Exception as exc:
+            failures.append(f"{cycle:%Y-%m-%d %H} U/V pair: {exc}")
     detail = failures[-1] if failures else "no recent 00/12 UTC run was found"
     raise RuntimeError(f"ECCC {model_name} 10 m wind files are not currently available for lead {step} h. Try a different forecast hour. Latest check: {detail}")
 
 
 def _fetch_eccc_geps_mean(step: int, target: Path) -> str:
     """Fetch two official all-member files; the decoder averages their 21 members."""
-    session = _request_session()
     failures: list[str] = []
     for cycle in _candidate_cycles():
         if cycle.hour not in (0, 12):
             continue
         date_text, hour = _cycle_parts(cycle)
         lead = f"{step:03d}"
-        payloads = []
-        for component in ("UGRD", "VGRD"):
+        root = _eccc_cycle_root(cycle)
+        urls = {}
+        for key, component in (("u", "UGRD"), ("v", "VGRD")):
             name = f"CMC_geps-raw_{component}_TGL_10m_latlon0p5x0p5_{date_text}{hour}_P{lead}_allmbrs.grib2"
-            url = f"https://hpfx.collab.science.gc.ca/today/ensemble/geps/grib2/raw/{hour}/{lead}/{name}"
-            try:
-                response = session.get(url, timeout=HTTP_TIMEOUT)
-                if response.status_code != 200 or not response.content.startswith(b"GRIB"):
-                    raise RuntimeError(f"HTTP {response.status_code}; not a GRIB response")
-                payloads.append(response.content)
-            except Exception as exc:
-                failures.append(f"{cycle:%Y-%m-%d %H} {component}: {exc}")
-                break
-        if len(payloads) == 2:
-            target.write_bytes(payloads[0] + payloads[1])
+            urls[key] = f"https://hpfx.collab.science.gc.ca/{root}/ensemble/geps/grib2/raw/{hour}/{lead}/{name}"
+        try:
+            payloads = _download_pair(urls)
+            target.write_bytes(payloads["u"] + payloads["v"])
             return cycle.strftime("%Y-%m-%dT%H:%MZ")
+        except Exception as exc:
+            failures.append(f"{cycle:%Y-%m-%d %H} U/V pair: {exc}")
     detail = failures[-1] if failures else "no recent 00/12 UTC ensemble run was found"
     raise RuntimeError(f"ECCC GEPS all-member 10 m winds are not currently available for lead {step} h. Try a different forecast hour. Latest check: {detail}")
 
 
 def _fetch_dwd_global(model_source: str, step: int, target: Path) -> str:
     """Fetch only the 10 m U/V GRIB files from DWD's current global NWP tree."""
-    session = _request_session()
     model = "icon" if model_source == "dwd_icon" else "aicon"
     valid_hours = (0, 12) if step > 120 else (0, 6, 12, 18)
     failures: list[str] = []
@@ -318,20 +428,16 @@ def _fetch_dwd_global(model_source: str, step: int, target: Path) -> str:
             continue
         run = cycle.strftime("%Y-%m-%dT%H:00")
         lead = f"PT{step:03d}H00M"
-        payloads = []
-        for component in ("U_10M", "V_10M"):
-            url = f"https://opendata.dwd.de/weather/nwp/v1/m/{model}/p/{component}/r/{run}/s/{lead}.grib2"
-            try:
-                response = session.get(url, timeout=HTTP_TIMEOUT)
-                if response.status_code != 200 or not response.content.startswith(b"GRIB"):
-                    raise RuntimeError(f"HTTP {response.status_code}; not a GRIB response")
-                payloads.append(response.content)
-            except Exception as exc:
-                failures.append(f"{run} {component}: {exc}")
-                break
-        if len(payloads) == 2:
-            target.write_bytes(payloads[0] + payloads[1])
+        urls = {
+            component: f"https://opendata.dwd.de/weather/nwp/v1/m/{model}/p/{component}/r/{run}/s/{lead}.grib2"
+            for component in ("U_10M", "V_10M")
+        }
+        try:
+            payloads = _download_pair(urls)
+            target.write_bytes(payloads["U_10M"] + payloads["V_10M"])
             return cycle.strftime("%Y-%m-%dT%H:%MZ")
+        except Exception as exc:
+            failures.append(f"{run} U/V pair: {exc}")
     detail = failures[-1] if failures else "no recent compatible cycle was found"
     raise RuntimeError(f"DWD {model.upper()} 10 m U/V fields are not available for lead {step} h. Try another lead hour. Latest check: {detail}")
 
@@ -478,15 +584,16 @@ def _fetch_noaa_indexed_mean(model_key: str, step: int, target: Path) -> str:
             if set(bounds) != {"u", "v"}:
                 failures.append(f"{hh}z index: 10 m U/V mean fields not listed")
                 continue
-            pieces: list[tuple[int, bytes]] = []
-            for key, (start, end) in bounds.items():
-                response = session.get(base, headers={"Range": f"bytes={start}-{end}"}, timeout=HTTP_TIMEOUT)
-                if response.status_code != 206 or response.content[:4] != b"GRIB":
-                    raise RuntimeError(f"Could not range-download the {model_key.upper()} {key.upper()} mean wind field (HTTP {response.status_code}).")
-                pieces.append((start, response.content))
+            ordered_bounds = sorted(bounds.items(), key=lambda item: item[1][0])
+            range_headers = {key: {"Range": f"bytes={start}-{end}"} for key, (start, end) in ordered_bounds}
+            range_payloads = _download_pair(
+                {key: base for key, _ in ordered_bounds},
+                headers=range_headers,
+                expected_status={key: 206 for key, _ in ordered_bounds},
+            )
             with target.open("wb") as handle:
-                for _, content in sorted(pieces):
-                    handle.write(content)
+                for key, _ in ordered_bounds:
+                    handle.write(range_payloads[key])
             return cycle.strftime("%Y-%m-%dT%H:%MZ")
         except requests.RequestException as exc:
             failures.append(f"{hh}z: {exc.__class__.__name__}")
@@ -510,15 +617,16 @@ def _fetch_aigfs(step: int, target: Path) -> str:
             if set(bounds) != {"u", "v"}:
                 failures.append(f"{hh}z index: 10 m U/V fields not listed")
                 continue
-            pieces: list[tuple[int, bytes]] = []
-            for key, (start, end) in bounds.items():
-                response = session.get(base, headers={"Range": f"bytes={start}-{end}"}, timeout=HTTP_TIMEOUT)
-                if response.status_code != 206 or response.content[:4] != b"GRIB":
-                    raise RuntimeError(f"Could not range-download the AIGFS {key.upper()} wind field (HTTP {response.status_code}); server must honor byte ranges to avoid a full-file transfer.")
-                pieces.append((start, response.content))
+            ordered_bounds = sorted(bounds.items(), key=lambda item: item[1][0])
+            range_headers = {key: {"Range": f"bytes={start}-{end}"} for key, (start, end) in ordered_bounds}
+            range_payloads = _download_pair(
+                {key: base for key, _ in ordered_bounds},
+                headers=range_headers,
+                expected_status={key: 206 for key, _ in ordered_bounds},
+            )
             with target.open("wb") as handle:
-                for _, content in sorted(pieces):
-                    handle.write(content)
+                for key, _ in ordered_bounds:
+                    handle.write(range_payloads[key])
             return cycle.strftime("%Y-%m-%dT%H:%MZ")
         except requests.RequestException as exc:
             failures.append(f"{hh}z: {exc.__class__.__name__}")
@@ -694,7 +802,8 @@ def _decode_geps_mean(path: Path) -> dict[str, Any]:
             codes_release(gid)
 
 
-_ICON_REGRID_PATH = CACHE_ROOT / "dwd-icon-bay-regrid-v1.npz"
+_ICON_REGRID_PATH = CACHE_ROOT / "dwd-icon-bay-regrid-v2.npz"
+_ICON_REGRID_BUNDLED_PATH = Path(__file__).parent / "static" / "geodata" / "dwd-icon-bay-regrid-v2.npz"
 _ICON_REGRID_LOCK = threading.RLock()
 
 
@@ -705,19 +814,20 @@ def _unit_sphere_xyz(latitudes: np.ndarray, longitudes: np.ndarray) -> np.ndarra
     return np.column_stack((cos_lat * np.cos(lon_rad), cos_lat * np.sin(lon_rad), np.sin(lat_rad)))
 
 
-def _read_dwd_coordinate_field(session: requests.Session, url: str) -> np.ndarray:
-    response = session.get(url, timeout=HTTP_TIMEOUT)
-    if response.status_code != 200 or not response.content.startswith(b"GRIB"):
-        raise RuntimeError(f"DWD ICON grid-coordinate field unavailable (HTTP {response.status_code}).")
+def _decode_dwd_coordinate_payload(payload: bytes) -> tuple[np.ndarray, str]:
     with tempfile.NamedTemporaryFile(prefix="baywind-coordinate-", suffix=".grib2", dir=CACHE_ROOT) as temp:
-        temp.write(response.content)
+        temp.write(payload)
         temp.flush()
         with open(temp.name, "rb") as handle:
             gid = codes_grib_new_from_file(handle)
             if gid is None:
                 raise RuntimeError("DWD returned an unreadable ICON grid-coordinate GRIB.")
             try:
-                return np.asarray(codes_get_array(gid, "values"), dtype=np.float32)
+                grid_uuid = str(_safe_get(gid, "uuidOfHGrid", ""))
+                if not grid_uuid:
+                    raise RuntimeError("DWD ICON coordinate GRIB did not include its grid UUID.")
+                values = np.asarray(codes_get_array(gid, "values"), dtype=np.float32)
+                return values, grid_uuid
             finally:
                 codes_release(gid)
 
@@ -727,16 +837,33 @@ def _load_dwd_regrid_map(init: str | None) -> dict[str, np.ndarray]:
     with _ICON_REGRID_LOCK:
         if _ICON_REGRID_PATH.exists():
             with np.load(_ICON_REGRID_PATH, allow_pickle=False) as archive:
-                return {key: archive[key] for key in ("lons", "lats", "indices", "weights")}
+                return {key: archive[key] for key in ("lons", "lats", "indices", "weights", "grid_uuid")}
+
+        # The grid mapping is static for this DWD global mesh/domain. Bundle the
+        # small derived lookup so Render cold starts do not re-download full
+        # CLAT/CLON fields and rebuild the tree for every fresh instance.
+        if _ICON_REGRID_BUNDLED_PATH.is_file():
+            with np.load(_ICON_REGRID_BUNDLED_PATH, allow_pickle=False) as archive:
+                result = {key: archive[key] for key in ("lons", "lats", "indices", "weights", "grid_uuid")}
+            try:
+                shutil.copyfile(_ICON_REGRID_BUNDLED_PATH, _ICON_REGRID_PATH)
+            except OSError:
+                pass
+            return result
 
         if not init:
             raise RuntimeError("The DWD run time is missing; cannot request its ICON grid coordinates.")
         cycle = datetime.strptime(init, "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
         run = cycle.strftime("%Y-%m-%dT%H:00")
-        session = _request_session()
-        root = f"https://opendata.dwd.de/weather/nwp/v1/m/icon/p"
-        clat = _read_dwd_coordinate_field(session, f"{root}/CLAT/r/{run}/s/PT000H00M.grib2")
-        clon = _read_dwd_coordinate_field(session, f"{root}/CLON/r/{run}/s/PT000H00M.grib2")
+        root = "https://opendata.dwd.de/weather/nwp/v1/m/icon/p"
+        coordinate_payloads = _download_pair({
+            "clat": f"{root}/CLAT/r/{run}/s/PT000H00M.grib2",
+            "clon": f"{root}/CLON/r/{run}/s/PT000H00M.grib2",
+        })
+        clat, clat_uuid = _decode_dwd_coordinate_payload(coordinate_payloads["clat"])
+        clon, clon_uuid = _decode_dwd_coordinate_payload(coordinate_payloads["clon"])
+        if clat_uuid != clon_uuid:
+            raise RuntimeError("DWD ICON latitude/longitude fields use different native-grid UUIDs.")
         if clat.shape != clon.shape:
             raise RuntimeError("DWD ICON latitude/longitude fields have different native-grid sizes.")
         clon = ((clon + 180.0) % 360.0) - 180.0
@@ -764,7 +891,13 @@ def _load_dwd_regrid_map(init: str | None) -> dict[str, np.ndarray]:
         weights /= weights.sum(axis=1, keepdims=True)
         indices = source_indices[local_indices].astype(np.int32).reshape((*target_lat.shape, 4))
         weights = weights.astype(np.float32).reshape((*target_lat.shape, 4))
-        result = {"lons": lons, "lats": lats, "indices": indices, "weights": weights}
+        result = {
+            "lons": lons,
+            "lats": lats,
+            "indices": indices,
+            "weights": weights,
+            "grid_uuid": np.array(clat_uuid),
+        }
         temp = _ICON_REGRID_PATH.with_suffix(".tmp")
         with temp.open("wb") as handle:
             np.savez_compressed(handle, **result)
@@ -785,6 +918,10 @@ def _decode_dwd_unstructured(path: Path, init: str | None) -> dict[str, Any]:
                 if component and component not in components:
                     if str(_safe_get(gid, "gridType", "")) != "unstructured_grid":
                         raise RuntimeError("DWD global field grid layout changed; refusing to apply the ICON coordinate map.")
+                    actual_uuid = str(_safe_get(gid, "uuidOfHGrid", ""))
+                    expected_uuid = str(np.asarray(remap["grid_uuid"]).item())
+                    if not actual_uuid or actual_uuid != expected_uuid:
+                        raise RuntimeError("DWD ICON grid UUID changed; refusing to use a stale remapping table.")
                     values = np.asarray(codes_get_array(gid, "values"), dtype=np.float32)
                     if values.size <= int(remap["indices"].max()):
                         raise RuntimeError("DWD wind field and ICON grid-coordinate sizes do not match.")
