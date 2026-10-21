@@ -275,9 +275,10 @@
       currentDownload = {path: '/api/track.png', query};
       const horizons = response.headers.get('X-Track-Horizons') || 'Full available runs';
       const unavailable = response.headers.get('X-Track-Unavailable');
-      els.trackStatus.className = unavailable ? 'track-status is-warning' : 'track-status';
-      els.trackStatus.textContent = `24 h samples · ${horizons}${unavailable ? ` · Unavailable now: ${unavailable}` : ''}`;
-      els.trackStatus.title = 'Each track uses one coherent model run and ends at that run’s actual available horizon (IFS and GFS capped at +240 h).';
+      const trackNotes = response.headers.get('X-Track-Notes');
+      els.trackStatus.className = (unavailable || trackNotes) ? 'track-status is-warning' : 'track-status';
+      els.trackStatus.textContent = `12 h samples · ${horizons}${unavailable ? ` · Unavailable now: ${unavailable}` : ''}${trackNotes ? ` · ${trackNotes}` : ''}`;
+      els.trackStatus.title = 'Each track uses one coherent model run. It stops if no continuous pressure center can be followed; IFS and GFS track caps are +240 h.';
       els.valid.textContent = 'Full available forecast runs';
       els.init.textContent = response.headers.get('X-Model-Run') === 'Multiple model cycles'
         ? 'Run stamps shown on map' : (response.headers.get('X-Model-Run') || 'Latest available');

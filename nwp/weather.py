@@ -15,6 +15,7 @@ from typing import Any
 
 import h5py
 import numpy as np
+from scipy.ndimage import label, maximum_filter, minimum_filter
 import requests
 import xml.etree.ElementTree as ET
 from eccodes import (
@@ -624,11 +625,11 @@ def get_scalar_forecast(model_id: str, step: int, field_id: str) -> dict[str, An
 
 
 def get_track_series(model_id: str) -> dict[str, Any]:
-    """Build a compact 24-hourly Bay-sector low track from one official model run."""
+    """Build a continuous 12-hourly Bay-sector low track from one official model run."""
     track_models = {"ifs_025", "aifs", "gfs", "aigfs", "dwd_icon", "dwd_aicon"}
     if model_id not in track_models:
         raise ValueError("Cyclone tracks are available for ECMWF IFS, AIFS, GFS, AIGFS, ICON, and AI ICON only.")
-    cache = CACHE_ROOT / f"track-v5-{model_id}.json"
+    cache = CACHE_ROOT / f"track-v11-{model_id}.json"
     if _valid_cache(cache):
         try:
             with cache.open(encoding="utf-8") as handle:
@@ -640,15 +641,17 @@ def get_track_series(model_id: str) -> dict[str, Any]:
     # required for the IFS and GFS track products.
     track_caps = {"ifs_025": 240, "gfs": 240}
     max_step = min(track_caps.get(model_id, max(model["steps"])), max(model["steps"]))
-    steps = list(range(0, max_step + 1, 24))
+    steps = list(range(0, max_step + 1, 12))
     if model_id == "dwd_aicon":
-        steps = [3] + [step for step in steps if step > 0]
+        steps = [3] + [step for step in range(12, max_step + 1, 12)]
     if not steps or steps[-1] != max_step:
         steps.append(max_step)
     points = []
     run = None
     previous = None
+    centers: list[tuple[float, float]] = []
     end_note = ""
+    max_displacement_km = 500.0
     for step in steps:
         if step not in model["steps"]:
             continue
@@ -689,29 +692,85 @@ def get_track_series(model_id: str) -> dict[str, Any]:
         valid &= (lat_grid >= DOMAIN["south"]) & (lat_grid <= DOMAIN["north"])
         if not valid.any():
             continue
-        # Follow the Bay-sector pressure minimum, preferring a nearby center to
-        # prevent a one-step jump between unrelated lows when a prior center exists.
-        if previous is not None:
-            near = (np.abs(lon_grid-previous[0]) <= 10.0) & (np.abs(lat_grid-previous[1]) <= 10.0) & valid
-            candidate = np.where(near, mslp, np.nan)
-            if np.isfinite(candidate).any():
-                selected = candidate
-            else:
-                selected = np.where(valid, mslp, np.nan)
+        # Search all closed local lows and evaluate their nearby wind, rather
+        # than following the domain-wide MSLP minimum. Seed only when a plausible
+        # tropical low appears; after seeding, link it only to a nearby center.
+        finite_pressure = np.where(valid, mslp, np.inf)
+        neighborhood_min = minimum_filter(finite_pressure, size=5, mode="nearest")
+        neighborhood_max = maximum_filter(np.where(valid, mslp, -np.inf), size=5, mode="nearest")
+        center_candidates = valid & np.isfinite(mslp) & (mslp <= neighborhood_min + 0.05)
+        center_candidates &= (neighborhood_max-mslp) >= 0.15
+        # Avoid selecting an open-domain-edge trough as a cyclone center.
+        center_candidates &= (lon_grid > DOMAIN["west"]+1.0) & (lon_grid < DOMAIN["east"]-1.0)
+        center_candidates &= (lat_grid > DOMAIN["south"]+1.0) & (lat_grid < DOMAIN["north"]-1.0)
+        if not center_candidates.any():
+            if previous is None:
+                continue
+            end_note = f"Track stopped after +{points[-1]['step']} h because the next field contained no closed low-pressure center."
+            break
+
+        components, component_count = label(center_candidates, structure=np.ones((3, 3), dtype=np.uint8))
+        candidate_cells = []
+        for component_id in range(1, component_count+1):
+            rows, cols = np.where(components == component_id)
+            if rows.size:
+                index = int(np.nanargmin(mslp[rows, cols]))
+                candidate_cells.append((int(rows[index]), int(cols[index])))
+
+        wind_speed = np.hypot(u, v)
+        candidate_info = []
+        predicted = previous
+        if previous is not None and len(centers) >= 2:
+            predicted = (previous[0] + 0.5*(centers[-1][0]-centers[-2][0]),
+                         previous[1] + 0.5*(centers[-1][1]-centers[-2][1]))
+
+        def gc_distance_km(lon_values: np.ndarray, lat_values: np.ndarray, lon0: float, lat0: float) -> np.ndarray:
+            lat0_rad = np.deg2rad(lat0)
+            dlat = np.deg2rad(lat_values-lat0)
+            dlon = np.deg2rad(lon_values-lon0)
+            hav = np.sin(dlat/2.0)**2 + np.cos(lat0_rad)*np.cos(np.deg2rad(lat_values))*np.sin(dlon/2.0)**2
+            return 6371.0*2.0*np.arcsin(np.sqrt(np.clip(hav, 0.0, 1.0)))
+
+        for row, col in candidate_cells:
+            lon, lat = float(lons[col]), float(lats[row])
+            distance_from_previous = float(gc_distance_km(np.asarray(lon), np.asarray(lat), *previous)) if previous is not None else 0.0
+            if previous is not None and distance_from_previous > max_displacement_km:
+                continue
+            distance_grid = gc_distance_km(lon_grid, lat_grid, lon, lat)
+            local_wind = (distance_grid <= 300.0) & np.isfinite(wind_speed)
+            max_wind_ms = float(np.nanmax(wind_speed[local_wind])) if local_wind.any() else 0.0
+            wind_kt = max_wind_ms / 0.514444
+            pressure_hpa = float(mslp[row, col])
+            distance_from_prediction = (float(gc_distance_km(np.asarray(lon), np.asarray(lat), *predicted))
+                                        if predicted is not None else 0.0)
+            # Wind intensity identifies a tropical system; pressure is a modest
+            # tie-breaker, while motion keeps the path attached to that system.
+            score = wind_kt + 0.35*(1005.0-pressure_hpa) - 0.04*distance_from_prediction
+            candidate_info.append({"row": row, "col": col, "lon": lon, "lat": lat,
+                                   "wind_kt": wind_kt, "mslp_hpa": pressure_hpa,
+                                   "distance": distance_from_previous, "score": score})
+
+        if previous is None:
+            # Do not label a weak regional pressure minimum as a cyclone.
+            seeds = [item for item in candidate_info
+                     if item["wind_kt"] >= 34.0
+                     or (item["wind_kt"] >= 20.0 and item["mslp_hpa"] <= 1007.0)
+                     or item["mslp_hpa"] <= 1000.0]
+            if not seeds:
+                continue
+            chosen = max(seeds, key=lambda item: item["score"])
         else:
-            selected = np.where(valid, mslp, np.nan)
-        row, col = np.unravel_index(np.nanargmin(selected), selected.shape)
-        lon, lat = float(lons[col]), float(lats[row])
+            if not candidate_info:
+                end_note = (f"Track stopped after +{points[-1]['step']} h: no closed pressure center remained "
+                            f"within {int(max_displacement_km)} km at the next 12-hour sample; avoided a jump to another low.")
+                break
+            chosen = max(candidate_info, key=lambda item: item["score"])
+
+        row, col = chosen["row"], chosen["col"]
+        lon, lat = chosen["lon"], chosen["lat"]
+        wind_kt = chosen["wind_kt"]
         previous = (lon, lat)
-        lon_grid, lat_grid = np.meshgrid(lons, lats)
-        lat0 = np.deg2rad(lat)
-        dlat = np.deg2rad(lat_grid-lat)
-        dlon = np.deg2rad(lon_grid-lon)
-        a = np.sin(dlat/2.0)**2 + np.cos(lat0)*np.cos(np.deg2rad(lat_grid))*np.sin(dlon/2.0)**2
-        distance_km = 6371.0*2.0*np.arcsin(np.sqrt(np.clip(a,0.0,1.0)))
-        local = (distance_km <= 300.0) & np.isfinite(u) & np.isfinite(v)
-        max_wind_ms = float(np.nanmax(np.hypot(u[local],v[local]))) if local.any() else 0.0
-        wind_kt = max_wind_ms / 0.514444
+        centers.append(previous)
         if wind_kt < 34: category = "TD"
         elif wind_kt < 64: category = "TS"
         elif wind_kt < 83: category = "CAT 1"
@@ -720,18 +779,21 @@ def get_track_series(model_id: str) -> dict[str, Any]:
         elif wind_kt < 137: category = "CAT 4"
         else: category = "CAT 5"
         valid_time = datetime.fromisoformat(init.replace("Z", "+00:00")) + timedelta(hours=step)
+        date_label = valid_time.strftime("%d %b") if (not points or step % 24 == 0) else ""
         points.append({"step": int(step), "time": valid_time.strftime("%Y-%m-%dT%H:%MZ"),
-                       "label": valid_time.strftime("%d %b"), "lon": round(lon,2), "lat": round(lat,2),
+                       "label": date_label, "lon": round(lon,2), "lat": round(lat,2),
                        "mslp_hpa": round(float(mslp[row,col]),1), "wind_kt": round(wind_kt,1), "category": category})
+    if not points:
+        raise RuntimeError("No cyclone-strength local low (34 kt nearby, or at least 20 kt with MSLP at/below 1007 hPa, or MSLP at/below 1000 hPa) was detected in this run; refusing to plot a regional pressure minimum as a cyclone.")
     if len(points) < 2:
-        raise RuntimeError("The selected official model did not provide enough complete forecast hours for a cyclone track.")
+        raise RuntimeError("The selected official model did not provide enough continuous forecast points for a cyclone track.")
     peak = max(points,key=lambda item:item["wind_kt"])
     horizon = int(points[-1]["step"])
-    note = f"24-hour track samples through +{horizon} h; peak is the strongest sampled point, not a full-resolution intensity scan."
+    note = f"12-hour track samples through +{horizon} h; peak is the strongest sampled point, not a full-resolution intensity scan."
     if end_note:
         note += " " + end_note
     payload = {"model": model_id, "model_name": model["name"], "init": run, "points": points,
-               "peak": peak, "horizon": horizon, "note": note}
+               "peak": peak, "horizon": horizon, "note": note, "track_note": end_note}
     temp = cache.with_suffix(".tmp")
     temp.write_text(json.dumps(payload,separators=(",",":")),encoding="utf-8")
     temp.replace(cache)

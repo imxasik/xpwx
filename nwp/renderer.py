@@ -639,43 +639,42 @@ def render_track_map(track_sets: list[dict[str, Any]], models: list[dict[str, An
         for point_index, point in enumerate(points):
             x, y = float(point["lon"]), float(point["lat"])
             category = str(point.get("category", "TD"))
-            category_color = TRACK_CATEGORY_COLORS.get(category, "#74a9cf")
+            category_color = TRACK_CATEGORY_COLORS.get(category, "#667890")
             ax.scatter([x], [y], s=30 if point_index % 4 == 0 else 23,
                        facecolor=category_color, edgecolor="white", linewidth=0.9, zorder=9)
-            point_time = _init_time(str(point.get("time", series.get("init", ""))))
-            date_label = str(point.get("label") or point_time.strftime("%d %b"))
-            # Place each boxed date around its marker while avoiding neighboring
-            # labels and keeping the full callout inside the plotted region.
-            px, py = ax.transData.transform((x, y))
-            xpt, ypt = px * 72.0 / dpi, py * 72.0 / dpi
-            label_w = max(27.0, len(date_label) * 4.0 + 5.0)
-            label_h = 12.5
-            ax_bounds = ax.get_window_extent().bounds
-            left, bottom, width, height = [value * 72.0 / dpi for value in ax_bounds]
-            best = None
-            for candidate_index, (dx, dy) in enumerate(label_offsets):
-                cx, cy = xpt + dx, ypt + dy
-                box = (cx-label_w/2, cy-label_h/2, cx+label_w/2, cy+label_h/2)
-                outside = max(0.0, left-box[0]) + max(0.0, box[2]-(left+width))
-                outside += max(0.0, bottom-box[1]) + max(0.0, box[3]-(bottom+height))
-                overlap = 0.0
-                for other in placed_label_boxes:
-                    iw = max(0.0, min(box[2], other[2])-max(box[0], other[0]))
-                    ih = max(0.0, min(box[3], other[3])-max(box[1], other[1]))
-                    overlap += iw * ih
-                score = outside * 100.0 + overlap * 8.0 + (dx*dx + dy*dy) ** 0.5 * 0.06 + candidate_index * 0.001
-                if best is None or score < best[0]:
-                    best = (score, dx, dy, box)
-            _, dx, dy, box = best
-            placed_label_boxes.append(box)
-            ann = ax.annotate(date_label, xy=(x, y), xytext=(dx, dy), textcoords="offset points",
-                              ha="center", va="center", fontsize=7.0, fontweight="bold", color="#1a2734",
-                              zorder=11, annotation_clip=True,
-                              bbox={"boxstyle": "square,pad=0.18", "facecolor": "white",
-                                    "edgecolor": category_color, "linewidth": 0.72, "alpha": 0.98},
-                              arrowprops={"arrowstyle": "-", "color": category_color, "lw": 0.64,
-                                          "shrinkA": 1.2, "shrinkB": 2.2})
-
+            date_label = str(point.get("label") or "")
+            if date_label:
+                # Place each boxed date around its marker while avoiding neighboring
+                # labels and keeping the full callout inside the plotted region.
+                px, py = ax.transData.transform((x, y))
+                xpt, ypt = px * 72.0 / dpi, py * 72.0 / dpi
+                label_w = max(27.0, len(date_label) * 4.0 + 5.0)
+                label_h = 12.5
+                ax_bounds = ax.get_window_extent().bounds
+                left, bottom, width, height = [value * 72.0 / dpi for value in ax_bounds]
+                best = None
+                for candidate_index, (dx, dy) in enumerate(label_offsets):
+                    cx, cy = xpt + dx, ypt + dy
+                    box = (cx-label_w/2, cy-label_h/2, cx+label_w/2, cy+label_h/2)
+                    outside = max(0.0, left-box[0]) + max(0.0, box[2]-(left+width))
+                    outside += max(0.0, bottom-box[1]) + max(0.0, box[3]-(bottom+height))
+                    overlap = 0.0
+                    for other in placed_label_boxes:
+                        iw = max(0.0, min(box[2], other[2])-max(box[0], other[0]))
+                        ih = max(0.0, min(box[3], other[3])-max(box[1], other[1]))
+                        overlap += iw * ih
+                    score = outside * 100.0 + overlap * 8.0 + (dx*dx + dy*dy) ** 0.5 * 0.06 + candidate_index * 0.001
+                    if best is None or score < best[0]:
+                        best = (score, dx, dy, box)
+                _, dx, dy, box = best
+                placed_label_boxes.append(box)
+                ax.annotate(date_label, xy=(x, y), xytext=(dx, dy), textcoords="offset points",
+                            ha="center", va="center", fontsize=7.0, fontweight="bold", color="#1a2734",
+                            zorder=11, annotation_clip=True,
+                            bbox={"boxstyle": "square,pad=0.18", "facecolor": "white",
+                                  "edgecolor": category_color, "linewidth": 0.72, "alpha": 0.98},
+                            arrowprops={"arrowstyle": "-", "color": category_color, "lw": 0.64,
+                                        "shrinkA": 1.2, "shrinkB": 2.2})
         # Ring the final valid point to make the forecast endpoint immediately clear.
         ax.scatter([lons[-1]], [lats[-1]], s=88, facecolors="none", edgecolors="#203a55",
                    linewidths=1.15, zorder=10)

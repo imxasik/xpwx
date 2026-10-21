@@ -78,7 +78,7 @@ def track_png():
 
     cache_key = "-".join(model_ids)
     image_name = f"baywind-cyclone-track-{cache_key}-{dpi}dpi.png"
-    image_cache = PNG_CACHE_DIR / f"track-v3-{cache_key}-d{dpi}.png"
+    image_cache = PNG_CACHE_DIR / f"track-v5-{cache_key}-d{dpi}.png"
     metadata_cache = image_cache.with_suffix(".json")
     def cached_track_map():
         try:
@@ -121,7 +121,8 @@ def track_png():
                     png = render_track_map(track_sets, model_specs, dpi=dpi)
                     metadata = {
                         "requested": model_ids,
-                        "tracks": [{"model": item["model"], "init": item["init"], "horizon": item["horizon"]} for item in track_sets],
+                        "tracks": [{"model": item["model"], "init": item["init"], "horizon": item["horizon"],
+                                    "track_note": item.get("track_note", "")} for item in track_sets],
                         "unavailable": unavailable,
                     }
                     temp_png = image_cache.with_name(image_cache.stem + f"-img-{threading.get_ident()}.tmp")
@@ -146,6 +147,10 @@ def track_png():
     response.headers["X-Track-Count"] = str(len(tracks_meta))
     if metadata.get("unavailable"):
         response.headers["X-Track-Unavailable"] = _safe_header(", ".join(metadata["unavailable"]))
+    track_notes = [f"{MODEL_CATALOG[item['model']]['name']}: {item['track_note']}"
+                   for item in tracks_meta if item.get("track_note")]
+    if track_notes:
+        response.headers["X-Track-Notes"] = _safe_header("; ".join(track_notes)[:900])
     response.headers["X-Render-DPI"] = str(dpi)
     return response
 
