@@ -217,19 +217,20 @@ FIELD_DEFINITIONS: dict[str, dict[str, Any]] = {
     "mslp": {"label": "Mean Sea-Level Pressure", "units": [("hPa", "hPa")]},
     "temperature": {"label": "2 m Temperature", "units": [("°C", "°C"), ("°F", "°F")]},
     "precipitation": {"label": "Accumulated Precipitation", "units": [("mm", "mm")]},
+    "precipitation_6h": {"label": "6 h Precipitation", "units": [("mm", "mm")]},
     "gust": {"label": "10 m Wind Gust", "units": [("knots", "Knots"), ("m/s", "m/s"), ("km/h", "km/h")]},
 }
 
 # Parameter exposure is source-specific: the selector only offers fields that
 # are published by the official endpoint used by that model integration.
 MODEL_FIELD_IDS: dict[str, tuple[str, ...]] = {
-    "ifs_01": ("wind", "mslp", "temperature", "precipitation", "gust"),
-    "ifs_025": ("wind", "mslp", "temperature", "precipitation", "gust"),
-    "ifs_ens_member01": ("wind", "mslp", "temperature", "precipitation", "gust"),
-    "aifs": ("wind", "mslp", "temperature", "precipitation"),
-    "aifs_ens_control": ("wind", "mslp", "temperature", "precipitation"),
-    "gfs": ("wind", "mslp", "temperature", "precipitation", "gust"),
-    "gefs_mean": ("wind", "mslp", "temperature", "precipitation"),
+    "ifs_01": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust"),
+    "ifs_025": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust"),
+    "ifs_ens_member01": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust"),
+    "aifs": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h"),
+    "aifs_ens_control": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h"),
+    "gfs": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h", "gust"),
+    "gefs_mean": ("wind", "mslp", "temperature", "precipitation", "precipitation_6h"),
     "naefs_mean": ("wind", "mslp", "temperature"),
 }
 
@@ -237,6 +238,7 @@ NOAA_SCALAR_FIELDS: dict[str, dict[str, str]] = {
     "mslp": {"variable": "PRMSL", "level": "mean_sea_level"},
     "temperature": {"variable": "TMP", "level": "2_m_above_ground"},
     "precipitation": {"variable": "APCP", "level": "surface"},
+    "precipitation_6h": {"variable": "APCP", "level": "surface"},
     "gust": {"variable": "GUST", "level": "surface"},
 }
 
@@ -247,9 +249,13 @@ def field_steps(model_id: str, field_id: str) -> list[int]:
     if field_id == "gust" and model.get("source") == "ecmwf":
         # ECMWF publishes the short-interval 10 m gust field through +144 h.
         steps = [step for step in steps if 0 < step <= 144]
-    elif field_id == "precipitation":
-        # A forecast accumulation has no useful interval at initialization.
+    elif field_id in {"precipitation", "precipitation_6h"}:
+        # Accumulations have no useful interval at initialization. The fixed
+        # six-hour product additionally requires a published start lead.
         steps = [step for step in steps if step > 0]
+        if field_id == "precipitation_6h":
+            model_steps = set(model["steps"])
+            steps = [step for step in steps if step % 6 == 0 and step - 6 in model_steps]
     return steps
 
 
@@ -492,7 +498,7 @@ def get_scalar_forecast(model_id: str, step: int, field_id: str) -> dict[str, An
         raise ValueError("That forecast hour is not available for this parameter.")
 
     total_started = time.perf_counter()
-    field_cache = CACHE_ROOT / f"scalar-v2-{model_id}-{field_id}-f{step:03d}.npz"
+    field_cache = CACHE_ROOT / f"scalar-v3-{model_id}-{field_id}-f{step:03d}.npz"
 
     def load_cached() -> dict[str, Any]:
         cache_started = time.perf_counter()
@@ -515,18 +521,21 @@ def get_scalar_forecast(model_id: str, step: int, field_id: str) -> dict[str, An
         with tempfile.NamedTemporaryFile(prefix="baywind-scalar-", suffix=".grib2", dir=CACHE_ROOT, delete=False) as handle:
             grib_path = Path(handle.name)
         try:
-            fetch_started = time.perf_counter()
-            init = _fetch_scalar(descriptor, step, field_id, grib_path)
-            fetch_ms = (time.perf_counter() - fetch_started) * 1000.0
-            decode_started = time.perf_counter()
-            fields = _decode_scalar_grib(grib_path, field_id)
+            if field_id == "precipitation_6h":
+                init, fields, fetch_ms, decode_ms = _fetch_decode_precipitation_6h(descriptor, step, grib_path)
+            else:
+                fetch_started = time.perf_counter()
+                init = _fetch_scalar(descriptor, step, field_id, grib_path)
+                fetch_ms = (time.perf_counter() - fetch_started) * 1000.0
+                decode_started = time.perf_counter()
+                fields = _decode_scalar_grib(grib_path, field_id)
+                decode_ms = (time.perf_counter() - decode_started) * 1000.0
             fields.update({
                 "init": init or fields.get("init") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
                 "model_id": model_id,
                 "source": descriptor["source_label"],
                 "field": field_id,
             })
-            decode_ms = (time.perf_counter() - decode_started) * 1000.0
             save_started = time.perf_counter()
             _save_scalar_fields(field_cache, fields)
             save_ms = (time.perf_counter() - save_started) * 1000.0
@@ -665,13 +674,18 @@ def _fetch_scalar(descriptor: dict[str, Any], step: int, field_id: str, target: 
             from ecmwf.opendata import Client
         except ImportError as exc:
             raise RuntimeError("ECMWF downloader is not installed; install requirements.txt first.") from exc
-        parameter = {"mslp": "msl", "temperature": "2t", "precipitation": "tp", "gust": "10fg"}[field_id]
+        parameter = {"mslp": "msl", "temperature": "2t", "precipitation": "tp", "precipitation_6h": "tp", "gust": "10fg"}[field_id]
+        if field_id == "gust" and descriptor.get("type") == "fc":
+            parameter = "10fg3"  # Operational IFS F144 uses this indexed ECMWF short name.
         client = Client(
             source="ecmwf", model=descriptor["ecmwf_model"], resol=descriptor["resol"],
             infer_stream_keyword=False,
         )
+        requested_steps: int | list[int] = step
+        if field_id == "precipitation_6h" and step > 6:
+            requested_steps = [step - 6, step]
         request = {
-            "stream": descriptor["stream"], "type": descriptor["type"], "step": step,
+            "stream": descriptor["stream"], "type": descriptor["type"], "step": requested_steps,
             "param": [parameter], "target": str(target),
         }
         if "number" in descriptor:
@@ -1323,6 +1337,7 @@ def _decode_wind(path: Path) -> dict[str, Any]:
 
 
 def _scalar_field_matches(gid: Any, field_id: str) -> bool:
+    field_id = field_id.removesuffix("_6h")
     short = str(_safe_get(gid, "shortName", "")).lower()
     name = str(_safe_get(gid, "name", "")).lower()
     param_id = _safe_get(gid, "paramId")
@@ -1341,6 +1356,7 @@ def _scalar_field_matches(gid: Any, field_id: str) -> bool:
 
 
 def _canonicalize_scalar(values: np.ndarray, field_id: str, units: str) -> tuple[np.ndarray, str]:
+    field_id = field_id.removesuffix("_6h")
     values = np.asarray(values, dtype=np.float32)
     unit = units.strip().lower().replace(" ", "")
     if field_id == "mslp":
@@ -1364,11 +1380,13 @@ def _canonicalize_scalar(values: np.ndarray, field_id: str, units: str) -> tuple
     raise ValueError(f"Unsupported scalar parameter: {field_id}")
 
 
-def _decode_scalar_grib(path: Path, field_id: str) -> dict[str, Any]:
+def _decode_scalar_grib(path: Path, field_id: str, match_end_step: int | None = None) -> dict[str, Any]:
     chosen: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
     init = None
     raw_units = ""
     interval = ""
+    start_value: int | None = None
+    end_value: int | None = None
     with path.open("rb") as handle:
         while True:
             gid = codes_grib_new_from_file(handle)
@@ -1376,6 +1394,9 @@ def _decode_scalar_grib(path: Path, field_id: str) -> dict[str, Any]:
                 break
             try:
                 if chosen is not None or not _scalar_field_matches(gid, field_id):
+                    continue
+                candidate_end = _safe_get(gid, "endStep")
+                if match_end_step is not None and (candidate_end is None or int(candidate_end) != match_end_step):
                     continue
                 data_date = int(_safe_get(gid, "dataDate", 0) or 0)
                 data_time = int(_safe_get(gid, "dataTime", 0) or 0)
@@ -1385,7 +1406,7 @@ def _decode_scalar_grib(path: Path, field_id: str) -> dict[str, Any]:
                 raw_units = str(_safe_get(gid, "units", ""))
                 start_step = _safe_get(gid, "startStep")
                 end_step = _safe_get(gid, "endStep")
-                if field_id == "precipitation" and end_step is not None:
+                if field_id.removesuffix("_6h") == "precipitation" and end_step is not None:
                     start_value = int(start_step or 0)
                     end_value = int(end_step)
                     interval = f"Accumulation F{start_value:03d}–F{end_value:03d}"
@@ -1410,8 +1431,86 @@ def _decode_scalar_grib(path: Path, field_id: str) -> dict[str, Any]:
         "values": values.astype(np.float32),
         "units": canonical_units,
         "interval": interval,
+        "start_step": start_value,
+        "end_step": end_value,
         "init": init,
     }
+
+
+def _finalize_6h_precipitation(fields: dict[str, Any], start_step: int, end_step: int) -> dict[str, Any]:
+    if end_step - start_step != 6:
+        raise RuntimeError("The official precipitation intervals did not combine to exactly six hours.")
+    fields["values"] = np.maximum(np.asarray(fields["values"], dtype=np.float32), 0.0)
+    fields["start_step"] = start_step
+    fields["end_step"] = end_step
+    fields["interval"] = f"6 h accumulation F{start_step:03d}–F{end_step:03d}"
+    return fields
+
+
+def _fetch_decode_precipitation_6h(descriptor: dict[str, Any], step: int, target: Path) -> tuple[str | None, dict[str, Any], float, float]:
+    """Return a verified six-hour total; ECMWF cumulative fields are differenced in one request."""
+    source = descriptor["source"]
+    fetch_ms = 0.0
+    decode_ms = 0.0
+    started = time.perf_counter()
+    init = _fetch_scalar(descriptor, step, "precipitation_6h", target)
+    fetch_ms += (time.perf_counter() - started) * 1000.0
+
+    started = time.perf_counter()
+    current = _decode_scalar_grib(target, "precipitation_6h", match_end_step=step)
+    decode_ms += (time.perf_counter() - started) * 1000.0
+    if current.get("end_step") != step or current.get("start_step") is None:
+        raise RuntimeError("The precipitation GRIB did not identify the requested forecast interval.")
+    current_duration = step - int(current["start_step"])
+    if current_duration == 6:
+        return init, _finalize_6h_precipitation(current, int(current["start_step"]), step), fetch_ms, decode_ms
+
+    if source == "ecmwf":
+        if step == 6:
+            raise RuntimeError("ECMWF did not publish the expected F000–F006 precipitation accumulation.")
+        started = time.perf_counter()
+        previous = _decode_scalar_grib(target, "precipitation_6h", match_end_step=step - 6)
+        decode_ms += (time.perf_counter() - started) * 1000.0
+        if previous.get("end_step") != step - 6 or previous.get("start_step") is None:
+            raise RuntimeError("ECMWF did not return the preceding precipitation accumulation needed for a six-hour total.")
+        if not np.array_equal(current["lons"], previous["lons"]) or not np.array_equal(current["lats"], previous["lats"]):
+            raise RuntimeError("ECMWF cumulative precipitation fields use different grids.")
+        if int(current["start_step"]) == int(previous["start_step"]):
+            values = current["values"] - previous["values"]
+            combined = {**current, "values": np.maximum(values, 0.0)}
+            return init, _finalize_6h_precipitation(combined, step - 6, step), fetch_ms, decode_ms
+        previous_duration = (step - 6) - int(previous["start_step"])
+        if int(previous["end_step"]) == int(current["start_step"]) and previous_duration + current_duration == 6:
+            combined = {**current, "values": previous["values"] + current["values"]}
+            return init, _finalize_6h_precipitation(combined, int(previous["start_step"]), step), fetch_ms, decode_ms
+        raise RuntimeError("ECMWF precipitation intervals could not be combined into an exact six-hour amount.")
+
+    # NOMADS products generally provide an interval accumulation. Where the
+    # selected lead is a three-hour chunk, retrieve just the immediately
+    # preceding chunk and verify adjacency before summing the pair.
+    if current_duration != 3:
+        raise RuntimeError(f"The provider returned a {current_duration}-hour precipitation interval, not a six-hour amount.")
+    start_step = int(current["start_step"])
+    with tempfile.NamedTemporaryFile(prefix="baywind-precip-previous-", suffix=".grib2", dir=CACHE_ROOT, delete=False) as handle:
+        previous_path = Path(handle.name)
+    try:
+        started = time.perf_counter()
+        previous_init = _fetch_scalar(descriptor, start_step, "precipitation_6h", previous_path)
+        fetch_ms += (time.perf_counter() - started) * 1000.0
+        started = time.perf_counter()
+        previous = _decode_scalar_grib(previous_path, "precipitation_6h", match_end_step=start_step)
+        decode_ms += (time.perf_counter() - started) * 1000.0
+    finally:
+        previous_path.unlink(missing_ok=True)
+    if previous_init != init:
+        raise RuntimeError("NOMADS selected different forecast cycles for adjacent precipitation intervals; refusing to mix runs.")
+    if previous.get("end_step") != start_step or previous.get("start_step") is None:
+        raise RuntimeError("NOMADS did not return an adjacent preceding precipitation interval.")
+    previous_start = int(previous["start_step"])
+    if start_step - previous_start != 3 or not np.array_equal(current["lons"], previous["lons"]) or not np.array_equal(current["lats"], previous["lats"]):
+        raise RuntimeError("NOMADS precipitation intervals are not adjacent three-hour fields on the same grid.")
+    combined = {**current, "values": current["values"] + previous["values"]}
+    return init, _finalize_6h_precipitation(combined, previous_start, step), fetch_ms, decode_ms
 
 
 def _save_scalar_fields(path: Path, fields: dict[str, Any]) -> None:
@@ -1421,6 +1520,8 @@ def _save_scalar_fields(path: Path, fields: dict[str, Any]) -> None:
             handle,
             lons=fields["lons"], lats=fields["lats"], values=fields["values"],
             units=np.array(fields.get("units", "")), interval=np.array(fields.get("interval", "")),
+            start_step=np.array(-1 if fields.get("start_step") is None else fields["start_step"], dtype=np.int32),
+            end_step=np.array(-1 if fields.get("end_step") is None else fields["end_step"], dtype=np.int32),
             init=np.array(fields.get("init") or ""), source=np.array(fields.get("source") or ""),
         )
     temp.replace(path)
@@ -1431,6 +1532,8 @@ def _load_scalar_fields(path: Path) -> dict[str, Any]:
         return {
             "lons": archive["lons"], "lats": archive["lats"], "values": archive["values"],
             "units": str(archive["units"].item()), "interval": str(archive["interval"].item()),
+            "start_step": int(archive["start_step"].item()) if "start_step" in archive and int(archive["start_step"].item()) >= 0 else None,
+            "end_step": int(archive["end_step"].item()) if "end_step" in archive and int(archive["end_step"].item()) >= 0 else None,
             "init": str(archive["init"].item()), "source": str(archive["source"].item()),
         }
 

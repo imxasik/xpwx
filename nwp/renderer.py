@@ -358,8 +358,6 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
     if values.shape != (len(lats), len(lons)):
         raise ValueError("Scalar field array does not match its latitude/longitude grid.")
     plot_lons, plot_lats, plot_values = _smooth_scalar_grid(lons, lats, values)
-    plot_min = float(np.nanmin(plot_values))
-    plot_max = float(np.nanmax(plot_values))
     init = _init_time(fields.get("init", ""))
     valid = init + timedelta(hours=int(step))
     init_label = init.strftime("%Hz %d %b %Y")
@@ -394,7 +392,7 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
         layer_label = "Mean Sea-Level Pressure"
         unit_label = "hPa"
         extend = "both"
-    elif field_id == "precipitation":
+    elif field_id in {"precipitation", "precipitation_6h"}:
         display = plot_values
         levels = SCALAR_PALETTE["precipitation"][1]
         cmap_obj = SCALAR_PALETTE["precipitation"][2]
@@ -402,7 +400,7 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
         norm = BoundaryNorm(scale, cmap_obj.N, extend="max")
         colorbar_ticks = [0.1, 1, 5, 10, 20, 50, 100, 200]
         major_lines = np.array([])
-        layer_label = "Accumulated Precipitation"
+        layer_label = "Accumulated Precipitation" if field_id == "precipitation" else "6 h Precipitation"
         unit_label = "mm"
         extend = "max"
     elif field_id == "gust":
@@ -432,10 +430,7 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
         spine.set_color("#292d2f")
         spine.set_linewidth(0.55)
 
-    if field_id == "precipitation":
-        mesh = ax.pcolormesh(plot_lons, plot_lats, np.ma.masked_invalid(display), cmap=cmap_obj, norm=norm, shading="auto", zorder=1, rasterized=True)
-    else:
-        mesh = ax.pcolormesh(plot_lons, plot_lats, np.ma.masked_invalid(display), cmap=cmap_obj, norm=norm, shading="auto", zorder=1, rasterized=True)
+    mesh = ax.pcolormesh(plot_lons, plot_lats, np.ma.masked_invalid(display), cmap=cmap_obj, norm=norm, shading="auto", zorder=1, rasterized=True)
     if major_lines.size:
         in_range = major_lines[(major_lines >= np.nanmin(display)) & (major_lines <= np.nanmax(display))]
         if in_range.size:
@@ -457,7 +452,29 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
             bbox={"boxstyle": "round,pad=0.34", "facecolor": "#14243a", "edgecolor": "#ffffff", "linewidth": 0.6, "alpha": 0.88})
 
     if field_id == "mslp":
-        extrema = f"Range: {np.nanmin(display):.1f}–{np.nanmax(display):.1f} hPa"
+        minimum = float(np.nanmin(display))
+        maximum = float(np.nanmax(display))
+        extrema = f"Min: {minimum:.1f} hPa | Max: {maximum:.1f} hPa"
+        min_row, min_col = np.unravel_index(np.nanargmin(display), display.shape)
+        min_lon = float(plot_lons[min_col])
+        min_lat = float(plot_lats[min_row])
+        label_dx = 1.4 if min_lon < EAST - 5 else -1.4
+        label_dy = 0.8 if min_lat < NORTH - 3 else -0.8
+        label_ha = "left" if label_dx > 0 else "right"
+        ax.annotate(
+            f"Min {minimum:.1f} hPa",
+            xy=(min_lon, min_lat),
+            xytext=(min_lon + label_dx, min_lat + label_dy),
+            textcoords="data",
+            ha=label_ha,
+            va="center",
+            fontsize=8.2,
+            fontweight="bold",
+            color="#162638",
+            zorder=13,
+            arrowprops={"arrowstyle": "-", "color": "#24364a", "linewidth": 0.8, "shrinkA": 2, "shrinkB": 2},
+            bbox={"boxstyle": "round,pad=0.28", "facecolor": "#ffffff", "edgecolor": "#45515c", "linewidth": 0.65, "alpha": 0.94},
+        )
     elif field_id == "temperature":
         shown_values = display[np.isfinite(display)]
         extrema = f"Min/Max: {np.nanmin(shown_values):.1f}/{np.nanmax(shown_values):.1f} {unit_label}"
@@ -512,7 +529,7 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
         else:
             tick_labels = [str(x) for x in [5, 10, 20, 30, 40, 50, 70, 90, 120]]
         colorbar.ax.set_xticklabels(tick_labels)
-    elif field_id == "precipitation":
+    elif field_id in {"precipitation", "precipitation_6h"}:
         colorbar.ax.set_xticklabels(["0.1", "1", "5", "10", "20", "50", "100", "200"])
     attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
     interval_text = fields.get("interval", "")

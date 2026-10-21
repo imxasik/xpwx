@@ -11,10 +11,11 @@ The Map Layers selector exposes only parameters published by the selected model'
 | Chart | Display | Currently enabled model families |
 |---|---|---|
 | 10 m Wind | Wind-speed shading and streamlines | All existing wind integrations |
-| Mean Sea-Level Pressure | Shaded hPa field with labelled isobars | ECMWF IFS/ENS, NOAA GFS/GEFS/NAEFS |
+| Mean Sea-Level Pressure | Shaded hPa field with labelled isobars; lower-left Min/Max and a bold minimum label at its grid location | ECMWF IFS/ENS, NOAA GFS/GEFS/NAEFS |
 | 2 m Temperature | Fixed °C/°F colour scale with temperature contours | ECMWF IFS/ENS/AIFS, NOAA GFS/GEFS/NAEFS |
 | Accumulated Precipitation | Fixed mm palette; GRIB accumulation interval is shown on the chart | ECMWF IFS/ENS/AIFS, NOAA GFS/GEFS |
-| 10 m Wind Gust | Gust shading using the existing wind-speed units and colour language | ECMWF IFS/ENS and NOAA GFS |
+| 6 h Precipitation | Exact six-hour amount in mm; cumulative ECMWF fields are differenced, adjacent NOAA 3 h intervals are summed only after their metadata is checked | ECMWF IFS/ENS/AIFS, NOAA GFS/GEFS |
+| 10 m Wind Gust | Gust shading using the existing wind-speed units and colour language; ECMWF IFS uses `10fg3` while the indexed ENS member uses `10fg` | ECMWF IFS/ENS and NOAA GFS |
 
 Availability is field- and lead-specific: ECMWF gust is limited to published short-interval leads; accumulations are not offered at forecast hour zero. ARPEGE stays disabled without the Météo-France credential and live coverage validation; MOGREPS-G's configured public NetCDF feed currently exposes the two 10 m wind variables only. Other models remain wind-only until a suitable official field, grid, lead range, and regional retrieval are verified. The selector never implies that an unverified parameter exists.
 

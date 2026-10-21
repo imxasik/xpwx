@@ -17,7 +17,7 @@ app.config["JSON_SORT_KEYS"] = False
 PNG_CACHE_DIR = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 PNG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PNG_CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
-RENDER_VERSION = 9  # adds scalar-field forecast charts without changing the wind layout
+RENDER_VERSION = 10  # pressure extrema, fixed six-hour precipitation, and gust index fix
 _RENDER_LOCK = threading.RLock()
 
 

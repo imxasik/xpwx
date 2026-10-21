@@ -42,10 +42,13 @@
   const pad = (value, length = 3) => String(value).padStart(length, '0');
   const currentModel = () => catalog.find(model => model.id === els.model.value);
   const currentField = () => currentModel()?.fields?.find(field => field.id === els.field.value);
-  const selectedStep = () => {
+  const availableSteps = () => {
     const model = currentModel();
-    return model ? model.steps[Number(els.lead.value)] : 24;
+    const field = currentField();
+    return field?.steps?.length ? field.steps : (model?.steps || []);
   };
+  const selectedStep = () => availableSteps()[Number(els.lead.value)] ?? 24;
+  let lastSelectedStep = 24;
 
   function setState(text, stateClass = '') {
     els.state.className = `render-state ${stateClass}`.trim();
@@ -71,13 +74,14 @@
   }
 
   function fitStepToField() {
-    const model = currentModel();
-    const field = currentField();
-    if (!model || !field || !field.steps?.length) return;
-    const current = selectedStep();
-    if (field.steps.includes(current)) return;
-    const nearest = field.steps.reduce((best, value) => Math.abs(value - current) < Math.abs(best - current) ? value : best, field.steps[0]);
-    els.lead.value = String(Math.max(0, model.steps.indexOf(nearest)));
+    const steps = availableSteps();
+    if (!steps.length) return;
+    const current = lastSelectedStep;
+    const nearest = steps.includes(current) ? current : steps.reduce((best, value) => Math.abs(value - current) < Math.abs(best - current) ? value : best, steps[0]);
+    els.lead.min = '0';
+    els.lead.max = String(steps.length - 1);
+    els.lead.value = String(steps.indexOf(nearest));
+    els.leadEnd.textContent = `+${steps[steps.length - 1]} h`;
   }
 
   function updateFieldControls() {
@@ -108,6 +112,7 @@
       mslp: 'Shaded sea-level pressure with labelled isobars. Only the selected model and lead are fetched.',
       temperature: '2 m air temperature in °C or °F. The map uses a fixed, readable temperature scale.',
       precipitation: 'Accumulation units are mm; the chart also labels the source GRIB accumulation interval.',
+      precipitation_6h: 'A verified six-hour total in mm; source intervals are checked and combined only when adjacent.',
       gust: 'Peak 10 m gust, not sustained wind. ECMWF gust leads are limited to the published range.',
     };
     els.fieldNote.textContent = notes[field.id] || 'Only the selected official model, lead, and parameter are fetched.';
@@ -122,18 +127,20 @@
     els.modelSource.textContent = model.source;
     els.modelNote.textContent = model.note || '';
     els.mapModel.textContent = model.name;
-    els.lead.min = '0';
-    els.lead.max = String(Math.max(0, model.steps.length - 1));
-    els.lead.value = String(Math.max(0, model.steps.indexOf(24) >= 0 ? model.steps.indexOf(24) : 0));
-    els.leadEnd.textContent = `+${model.steps[model.steps.length - 1]} h`;
     populateFields(model, preferredField);
-    fitStepToField();
+    const steps = availableSteps();
+    const initialStep = steps.includes(24) ? 24 : steps[0];
+    els.lead.min = '0';
+    els.lead.max = String(Math.max(0, steps.length - 1));
+    els.lead.value = String(Math.max(0, steps.indexOf(initialStep)));
+    els.leadEnd.textContent = `+${steps[steps.length - 1]} h`;
     updateFieldControls();
     updateLeadLabel();
   }
 
   function updateLeadLabel() {
     const step = selectedStep();
+    lastSelectedStep = step;
     els.leadLabel.textContent = `+${pad(step)} h`;
     els.mapStep.textContent = `F${pad(step)}`;
   }
@@ -229,14 +236,14 @@
   }
 
   function startAnimation() {
-    const model = currentModel();
-    if (!model || model.steps.length < 2) return;
+    const steps = availableSteps();
+    if (steps.length < 2) return;
     els.play.classList.add('is-playing');
     els.play.querySelector('span').textContent = 'Pause animation';
     els.play.querySelector('.play-icon').innerHTML = '<path d="M6 4h3v12H6zM12 4h3v12h-3z"/>';
     let index = Number(els.lead.value);
     animationTimer = window.setInterval(() => {
-      index = (index + 1) % model.steps.length;
+      index = (index + 1) % steps.length;
       els.lead.value = String(index);
       updateLeadLabel();
       loadMap();
@@ -244,9 +251,9 @@
   }
 
   function moveStep(direction) {
-    const model = currentModel();
-    if (!model) return;
-    const next = Math.min(model.steps.length - 1, Math.max(0, Number(els.lead.value) + direction));
+    const steps = availableSteps();
+    if (!steps.length) return;
+    const next = Math.min(steps.length - 1, Math.max(0, Number(els.lead.value) + direction));
     els.lead.value = String(next);
     updateLeadLabel();
     loadMap();
@@ -330,7 +337,7 @@
   els.prev.addEventListener('click', () => moveStep(-1));
   els.next.addEventListener('click', () => moveStep(1));
   els.play.addEventListener('click', () => animationTimer ? stopAnimation() : startAnimation());
-  els.field.addEventListener('change', () => { fitStepToField(); updateFieldControls(); updateLeadLabel(); loadMap(); });
+  els.field.addEventListener('change', () => { stopAnimation(); fitStepToField(); updateFieldControls(); updateLeadLabel(); loadMap(); });
   els.speed.addEventListener('change', loadMap);
   els.stream.addEventListener('change', loadMap);
   els.units.addEventListener('change', loadMap);
