@@ -78,7 +78,7 @@ def track_png():
 
     cache_key = "-".join(model_ids)
     image_name = f"baywind-cyclone-track-{cache_key}-{dpi}dpi.png"
-    image_cache = PNG_CACHE_DIR / f"track-v2-{cache_key}-d{dpi}.png"
+    image_cache = PNG_CACHE_DIR / f"track-v3-{cache_key}-d{dpi}.png"
     metadata_cache = image_cache.with_suffix(".json")
     def cached_track_map():
         try:
@@ -110,7 +110,8 @@ def track_png():
                     for model_id in model_ids:
                         try:
                             track_sets.append(get_track_series(model_id))
-                            model_specs.append({"id": model_id, "name": MODEL_CATALOG[model_id]["name"]})
+                            model_specs.append({"id": model_id, "name": MODEL_CATALOG[model_id]["name"],
+                                                "resolution": MODEL_CATALOG[model_id]["resolution"]})
                         except Exception as model_exc:
                             app.logger.warning("Track unavailable for %s: %s", model_id, model_exc)
                             unavailable.append(MODEL_CATALOG[model_id]["name"])

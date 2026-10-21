@@ -544,126 +544,178 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
 
 TRACK_LINE_COLORS = ["#214f7b", "#00858a", "#7551a5", "#b45c24", "#247a4a", "#b13d67"]
 TRACK_CATEGORY_COLORS = {
-    "TD": "#74a9cf", "TS": "#25a36f", "CAT 1": "#f1d34f", "CAT 2": "#f5a137",
-    "CAT 3": "#ed7136", "CAT 4": "#d94459", "CAT 5": "#8e45bd",
+    "TD": "#667890", "TS": "#168f78", "CAT 1": "#e4b800", "CAT 2": "#f08a12",
+    "CAT 3": "#e84b3c", "CAT 4": "#d63858", "CAT 5": "#65399f",
 }
 
 
 def render_track_map(track_sets: list[dict[str, Any]], models: list[dict[str, Any]], dpi: int = 150) -> bytes:
-    """Render a dedicated full-run cyclone track chart; never overlay another parameter map."""
+    """Render a standalone cyclone chart in the balanced reference-map layout."""
     if not track_sets or len(track_sets) != len(models):
         raise ValueError("At least one matching official model track is required.")
-    init = _init_time(track_sets[0].get("init", ""))
-    init_label = init.strftime("%Hz %d %b %Y")
+    first_init = _init_time(str(track_sets[0].get("init", "")))
+    init_label = first_init.strftime("%Hz %d %b %Y")
+    single = len(track_sets) == 1
+    horizon = int(track_sets[0].get("horizon", track_sets[0]["points"][-1]["step"]))
     fig = plt.figure(figsize=(10, 8), dpi=dpi, facecolor="white")
-    ax = fig.add_axes([0.035, 0.145, 0.93, 0.80])
+    ax = fig.add_axes([0.045, 0.095, 0.91, 0.80])
     ax.set_facecolor("#fbfbf8")
     ax.set_xlim(WEST, EAST)
     ax.set_ylim(SOUTH, NORTH)
     ax.set_xticks(np.arange(70, 111, 5))
     ax.set_yticks(np.arange(0, 31, 5))
-    ax.grid(True, color="#6f777c", alpha=0.40, linewidth=0.42, zorder=1)
+    ax.grid(True, color="#70777b", alpha=0.38, linewidth=0.42, zorder=1)
     ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
     for spine in ax.spines.values():
-        spine.set_color("#292d2f")
-        spine.set_linewidth(0.55)
-    _add_shapefile_lines(ax, "ne_50m_admin_0_boundary_lines_land.shp", "#25292b", 0.48, 4)
-    _add_shapefile_lines(ax, "ne_50m_coastline.shp", "#171a1b", 0.62, 5)
+        spine.set_color("#25292b")
+        spine.set_linewidth(0.6)
+    _add_shapefile_lines(ax, "ne_50m_admin_0_boundary_lines_land.shp", "#222628", 0.56, 4)
+    _add_shapefile_lines(ax, "ne_50m_coastline.shp", "#151819", 0.65, 5)
     for lon in range(75, 110, 5):
-        ax.text(lon, NORTH - 0.12, f"{lon}°E", ha="center", va="top", fontsize=7.4, color="#202426", zorder=8)
-    ax.text(EAST - 0.12, NORTH - 0.12, f"{int(EAST)}°E", ha="right", va="top", fontsize=7.4, color="#202426", zorder=8)
+        ax.text(lon, NORTH - 0.12, f"{lon}°E", ha="center", va="top", fontsize=8.2, color="#202426", zorder=8)
+    ax.text(EAST - 0.12, NORTH - 0.12, f"{int(EAST)}°E", ha="right", va="top", fontsize=8.2, color="#202426", zorder=8)
     for lat in range(5, 30, 5):
-        ax.text(EAST - 0.12, lat, f"{lat}°N", ha="right", va="center", fontsize=7.4, color="#202426", zorder=8)
+        ax.text(EAST - 0.12, lat, f"{lat}°N", ha="right", va="center", fontsize=8.2, color="#202426", zorder=8)
+
+    # Bold, compact top title and run-validity strip, as in the requested reference.
+    if single:
+        model_title = models[0]["name"]
+        title = f"{model_title}  •  BALANCED {horizon}-H CYCLONE TRACK"
+        resolution = models[0].get("resolution", "")
+        through_point = track_sets[0].get("points", [])[-1]
+        through = _init_time(str(through_point.get("time", track_sets[0].get("init", ""))))
+        right_text = f"{resolution}   |   Run: {init_label}   |   Through {through.strftime('%d %b %Y %Hz')}"
+    else:
+        title = f"{len(track_sets)} MODEL COMPARISON  •  CYCLONE TRACKS"
+        right_text = "Run cycles and full horizons shown in track key"
+    fig.text(0.045, 0.976, title, ha="left", va="top", fontsize=10.8,
+             fontweight="bold", color="#171b1e")
+    fig.text(0.955, 0.976, right_text, ha="right", va="top", fontsize=7.3,
+             color="#32383d")
+    fig.add_artist(plt.Line2D([0.045, 0.955], [0.957, 0.957], transform=fig.transFigure,
+                              color="#646a6d", linewidth=0.48))
+
+    # Category key runs along the top edge; segment and marker colors share this palette.
+    category_order = ["TD", "TS", "CAT 1", "CAT 2", "CAT 3", "CAT 4", "CAT 5"]
+    centers = np.linspace(0.09, 0.91, len(category_order))
+    for center, category in zip(centers, category_order):
+        fig.text(center - 0.009, 0.934, "●", ha="center", va="center", fontsize=10.1,
+                 color=TRACK_CATEGORY_COLORS[category])
+        fig.text(center + 0.003, 0.934, category, ha="left", va="center", fontsize=8.4,
+                 fontweight="bold", color="#202a34")
+    fig.add_artist(plt.Line2D([0.045, 0.955], [0.914, 0.914], transform=fig.transFigure,
+                              color="#aeb4b8", linewidth=0.42))
 
     model_handles = []
-    summaries = []
-    # Date labels are offset around their marker and connected back with a fine leader.
-    offsets = [(7, 8), (7, -10), (-7, 8), (-7, -10)]
+    peak_summaries: list[tuple[str, str]] = []
+    placed_label_boxes: list[tuple[float, float, float, float]] = []
+    label_offsets = [(0, 22), (24, 0), (0, -22), (-24, 0), (22, 17), (-22, 17),
+                     (22, -17), (-22, -17), (0, 38), (38, 0), (0, -38), (-38, 0),
+                     (32, 27), (-32, 27), (32, -27), (-32, -27)]
     for model_index, (series, model) in enumerate(zip(track_sets, models)):
         points = series.get("points", [])
         if not points:
             continue
-        line_color = TRACK_LINE_COLORS[model_index % len(TRACK_LINE_COLORS)]
-        lons = [float(point["lon"]) for point in points]
-        lats = [float(point["lat"]) for point in points]
-        ax.plot(lons, lats, color="white", linewidth=3.1, alpha=0.9, zorder=6, solid_capstyle="round")
-        ax.plot(lons, lats, color=line_color, linewidth=1.55, zorder=7, solid_capstyle="round", label=model["name"])
-        series_init_label = _init_time(series.get("init", "")).strftime("%Hz %d %b %Y")
-        model_handles.append(plt.Line2D([0], [0], color=line_color, linewidth=2.0,
-                                        label=f"{model['name']} · {series_init_label} · +{series.get('horizon', points[-1]['step'])} h"))
+        model_color = TRACK_LINE_COLORS[model_index % len(TRACK_LINE_COLORS)]
+        lons = np.asarray([float(point["lon"]) for point in points])
+        lats = np.asarray([float(point["lat"]) for point in points])
+        if len(points) > 1:
+            segments = np.stack([np.column_stack([lons[:-1], lats[:-1]]),
+                                 np.column_stack([lons[1:], lats[1:]])], axis=1)
+            if single:
+                segment_colors = [TRACK_CATEGORY_COLORS.get(str(point.get("category", "TD")), "#71839a")
+                                  for point in points[1:]]
+            else:
+                segment_colors = [model_color] * len(segments)
+            ax.add_collection(LineCollection(segments, colors="white", linewidths=3.6,
+                                             capstyle="round", zorder=6))
+            ax.add_collection(LineCollection(segments, colors=segment_colors, linewidths=2.35,
+                                             capstyle="round", zorder=7))
+        if not single:
+            cycle_text = _init_time(str(series.get("init", ""))).strftime("%Hz %d %b")
+            model_handles.append(plt.Line2D([0], [0], color=model_color, linewidth=2.2,
+                                            label=f"{model['name']} · {cycle_text} · +{series.get('horizon', points[-1]['step'])} h"))
+
         for point_index, point in enumerate(points):
             x, y = float(point["lon"]), float(point["lat"])
             category = str(point.get("category", "TD"))
-            ax.scatter([x], [y], s=29, facecolor=TRACK_CATEGORY_COLORS.get(category, "#74a9cf"),
-                       edgecolor="white", linewidth=0.8, zorder=9)
-            dx, dy = offsets[(point_index + model_index) % len(offsets)]
-            ha = "left" if dx > 0 else "right"
-            ann = ax.annotate(str(point.get("label", "")), xy=(x, y), xytext=(dx, dy),
-                              textcoords="offset points", ha=ha, va="center", fontsize=6.8,
-                              color="#172d47", zorder=10,
-                              arrowprops={"arrowstyle": "-", "color": line_color, "lw": 0.45,
-                                          "shrinkA": 1.5, "shrinkB": 2.4})
-            ann.set_path_effects([path_effects.Stroke(linewidth=1.8, foreground="white"), path_effects.Normal()])
+            category_color = TRACK_CATEGORY_COLORS.get(category, "#74a9cf")
+            ax.scatter([x], [y], s=30 if point_index % 4 == 0 else 23,
+                       facecolor=category_color, edgecolor="white", linewidth=0.9, zorder=9)
+            point_time = _init_time(str(point.get("time", series.get("init", ""))))
+            date_label = str(point.get("label") or point_time.strftime("%d %b"))
+            # Place each boxed date around its marker while avoiding neighboring
+            # labels and keeping the full callout inside the plotted region.
+            px, py = ax.transData.transform((x, y))
+            xpt, ypt = px * 72.0 / dpi, py * 72.0 / dpi
+            label_w = max(27.0, len(date_label) * 4.0 + 5.0)
+            label_h = 12.5
+            ax_bounds = ax.get_window_extent().bounds
+            left, bottom, width, height = [value * 72.0 / dpi for value in ax_bounds]
+            best = None
+            for candidate_index, (dx, dy) in enumerate(label_offsets):
+                cx, cy = xpt + dx, ypt + dy
+                box = (cx-label_w/2, cy-label_h/2, cx+label_w/2, cy+label_h/2)
+                outside = max(0.0, left-box[0]) + max(0.0, box[2]-(left+width))
+                outside += max(0.0, bottom-box[1]) + max(0.0, box[3]-(bottom+height))
+                overlap = 0.0
+                for other in placed_label_boxes:
+                    iw = max(0.0, min(box[2], other[2])-max(box[0], other[0]))
+                    ih = max(0.0, min(box[3], other[3])-max(box[1], other[1]))
+                    overlap += iw * ih
+                score = outside * 100.0 + overlap * 8.0 + (dx*dx + dy*dy) ** 0.5 * 0.06 + candidate_index * 0.001
+                if best is None or score < best[0]:
+                    best = (score, dx, dy, box)
+            _, dx, dy, box = best
+            placed_label_boxes.append(box)
+            ann = ax.annotate(date_label, xy=(x, y), xytext=(dx, dy), textcoords="offset points",
+                              ha="center", va="center", fontsize=7.0, fontweight="bold", color="#1a2734",
+                              zorder=11, annotation_clip=True,
+                              bbox={"boxstyle": "square,pad=0.18", "facecolor": "white",
+                                    "edgecolor": category_color, "linewidth": 0.72, "alpha": 0.98},
+                              arrowprops={"arrowstyle": "-", "color": category_color, "lw": 0.64,
+                                          "shrinkA": 1.2, "shrinkB": 2.2})
+
+        # Ring the final valid point to make the forecast endpoint immediately clear.
+        ax.scatter([lons[-1]], [lats[-1]], s=88, facecolors="none", edgecolors="#203a55",
+                   linewidths=1.15, zorder=10)
         peak = series.get("peak") or max(points, key=lambda item: float(item.get("wind_kt", 0)))
-        peak_time = _init_time(peak.get("time", series.get("init", "")))
+        peak_time = _init_time(str(peak.get("time", series.get("init", ""))))
         peak_date = peak_time.strftime("%d %b %Y")
         peak_wind = int(np.floor(float(peak.get("wind_kt", 0)) + 0.5))
         peak_mslp = int(np.floor(float(peak.get("mslp_hpa", 0)) + 0.5))
-        summaries.append(f"{model['name']}: {peak_wind} kn | {peak_mslp} hPa | {peak.get('category','TD')} | {peak_date}")
+        peak_category = str(peak.get("category", "TD"))
+        peak_category_label = peak_category if peak_category in {"TD", "TS"} else peak_category.title()
+        summary = f"Peak: {peak_wind}kn | {peak_mslp}hPa | {peak_category_label} | {peak_date}"
+        peak_summaries.append((model["name"], summary))
 
     if model_handles:
-        ax.legend(handles=model_handles, loc="upper left", frameon=True, framealpha=0.88,
-                  facecolor="white", edgecolor="#cad3dc", fontsize=6.5, borderpad=0.45,
-                  handlelength=2.0, labelspacing=0.32)
+        ax.legend(handles=model_handles, loc="upper left", frameon=True, framealpha=0.93,
+                  facecolor="white", edgecolor="#c8ced3", fontsize=6.5, borderpad=0.42,
+                  handlelength=1.8, labelspacing=0.30)
 
-    # Brand mark, no callout boxes or pressure labels on the map itself.
+    if peak_summaries:
+        if single:
+            summary_text = peak_summaries[0][1]
+            peak = track_sets[0].get("peak") or max(track_sets[0]["points"], key=lambda item: float(item.get("wind_kt", 0)))
+            edge = TRACK_CATEGORY_COLORS.get(str(peak.get("category", "TD")), "#d86a52")
+            summary_size = 7.7
+        else:
+            summary_text = "\n".join(f"{name}: {text.removeprefix('Peak: ')}" for name, text in peak_summaries)
+            edge = "#9aa5ad"
+            summary_size = 6.6
+        ax.text(WEST + 1.25, SOUTH + 0.78, summary_text, ha="left", va="bottom",
+                fontsize=summary_size, fontweight="bold", color="#1c2a36", zorder=14,
+                linespacing=1.18,
+                bbox={"boxstyle": "round,pad=0.28,rounding_size=0.08", "facecolor": "white",
+                      "edgecolor": edge, "linewidth": 0.88, "alpha": 0.98})
+
+    # Brand mark remains in the lower-right corner, matching the other Baywind maps.
     ax.text(EAST - 0.45, SOUTH + 0.52, "@XP WEATHER", transform=ax.transData,
-            ha="right", va="bottom", fontsize=8.3, fontweight="bold", color="white", zorder=12,
-            bbox={"boxstyle": "round,pad=0.34", "facecolor": "#14243a", "edgecolor": "#ffffff", "linewidth": 0.6, "alpha": 0.88})
+            ha="right", va="bottom", fontsize=8.4, fontweight="bold", color="white", zorder=16,
+            bbox={"boxstyle": "round,pad=0.34", "facecolor": "#14243a", "edgecolor": "#ffffff",
+                  "linewidth": 0.6, "alpha": 0.9})
 
-    header_left = [("CYCLONE TRACK", True), ("•", True),
-                   ((models[0]["name"] if len(models) == 1 else f"{len(models)} model tracks"), False)]
-    header_right = [("Init:", True), (init_label if len(track_sets) == 1 else "See model legend", False),
-                    ("•", True), ("Full available run", False)]
-    def measure(parts: list[tuple[str, bool]], size: float) -> tuple[list[float], float]:
-        widths = [TextPath((0, 0), text, prop=FontProperties(family="DejaVu Sans", size=size,
-                  weight="bold" if bold else "normal")).get_extents().width / (72 * fig.get_figwidth())
-                  for text, bold in parts]
-        return widths, sum(widths) + 0.008 * (len(widths)-1)
-    r_widths, r_total = measure(header_right, 8.3)
-    l_size = 8.3
-    l_widths, l_total = measure(header_left, l_size)
-    while l_total > 0.93 - 0.035 - r_total - 0.02 and l_size > 6.8:
-        l_size -= 0.25
-        l_widths, l_total = measure(header_left, l_size)
-    x = 0.035
-    for (text, bold), width in zip(header_left, l_widths):
-        fig.text(x, 0.979, text, ha="left", va="top", fontsize=l_size,
-                 fontweight="bold" if bold else "normal", color="#141719")
-        x += width + 0.008
-    x = 0.965 - r_total
-    for (text, bold), width in zip(header_right, r_widths):
-        fig.text(x, 0.979, text, ha="left", va="top", fontsize=8.3,
-                 fontweight="bold" if bold else "normal", color="#141719")
-        x += width + 0.008
-    fig.add_artist(plt.Line2D([0.035, 0.965], [0.961, 0.961], transform=fig.transFigure,
-                              color="#6d7172", linewidth=0.45))
-
-    summary_size = 7.0 if len(summaries) <= 2 else 6.2
-    row_step = 0.013
-    for index, summary in enumerate(summaries):
-        y = 0.123 - index * row_step
-        fig.text(0.055, y, summary, ha="left", va="center", fontsize=summary_size,
-                 fontweight="bold", color=TRACK_LINE_COLORS[index % len(TRACK_LINE_COLORS)])
-    category_order = ["TD", "TS", "CAT 1", "CAT 2", "CAT 3", "CAT 4", "CAT 5"]
-    legend_x = 0.22
-    legend_y = max(0.035, 0.043 - max(0, len(summaries)-2) * 0.003)
-    for category in category_order:
-        fig.text(legend_x, legend_y, "●", ha="center", va="center", fontsize=9.0,
-                 color=TRACK_CATEGORY_COLORS[category])
-        fig.text(legend_x + 0.009, legend_y, category, ha="left", va="center", fontsize=6.5,
-                 color="#39495a")
-        legend_x += 0.082
     output = BytesIO()
     fig.savefig(output, format="png", dpi=dpi, facecolor="white", bbox_inches=None)
     plt.close(fig)
