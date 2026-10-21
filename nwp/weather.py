@@ -13,8 +13,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import h5py
 import numpy as np
 import requests
+import xml.etree.ElementTree as ET
 from eccodes import (
     codes_get,
     codes_get_array,
@@ -22,9 +24,9 @@ from eccodes import (
     codes_release,
 )
 
-# A compact set of global deterministic and published ensemble-mean products.
-# All weather fields come from official ECMWF, NOAA/NCEP, ECCC, or DWD
-# distributions; ensemble means are never approximated with a single member.
+# A compact set of official deterministic forecasts, explicitly labelled ENS
+# members, and published ensemble-mean products. Never label a single member as
+# a mean; all rendered fields are sourced from the providers listed per model.
 _IFS_STEPS = list(range(0, 145, 3)) + list(range(150, 361, 6))
 _AIFS_STEPS = list(range(0, 361, 6))
 _GFS_STEPS = list(range(0, 121, 3)) + list(range(126, 385, 6))
@@ -36,6 +38,10 @@ _GEML_STEPS = list(range(0, 241, 6))
 _GEPS_STEPS = list(range(0, 193, 3)) + list(range(198, 385, 6))
 _ICON_STEPS = list(range(0, 79)) + list(range(81, 181, 3))
 _AICON_STEPS = list(range(3, 181, 3))
+_IFS_ENS_STEPS = list(range(0, 145, 3))
+_NAEFS_STEPS = list(range(0, 193, 3)) + list(range(198, 385, 6))
+_ARPEGE_STEPS = list(range(0, 103, 3))
+_MOGREPS_G_STEPS = list(range(0, 133)) + list(range(135, 241, 3))
 
 MODEL_CATALOG: dict[str, dict[str, Any]] = {
     "ifs_01": {
@@ -61,6 +67,19 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "resol": "0p25",
         "stream": "oper",
         "type": "fc",
+    },
+    "ifs_ens_member01": {
+        "name": "ECMWF ENS",
+        "resolution": "0.25° · M1",
+        "source": "ecmwf",
+        "source_label": "ECMWF Open Data",
+        "steps": _IFS_ENS_STEPS,
+        "note": "One official IFS ENS perturbed member, not an ensemble mean or consensus. The precomputed open mean product does not provide 10 m U/V vectors.",
+        "ecmwf_model": "ifs",
+        "resol": "0p25",
+        "stream": "enfo",
+        "type": "pf",
+        "number": 1,
     },
     "aifs": {
         "name": "ECMWF AIFS",
@@ -126,6 +145,23 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "steps": _HGEFS_STEPS,
         "note": "Official hybrid ensemble mean. Product currently provides the listed shorter lead-hour range.",
     },
+    "naefs_mean": {
+        "name": "NAEFS",
+        "resolution": "0.5° ENS",
+        "source": "noaa_naefs_mean",
+        "source_label": "NOAA NCEP NOMADS",
+        "steps": _NAEFS_STEPS,
+        "note": "Official bias-corrected NAEFS ensemble-mean U/V; NOMADS filters the request to the Bay box and 10 m only.",
+    },
+    "arpege": {
+        "name": "ARPEGE",
+        "resolution": "0.25°",
+        "source": "meteo_arpege",
+        "source_label": "Météo-France Open API",
+        "steps": _ARPEGE_STEPS,
+        "note": "Official global ARPEGE; regional WCS requests fetch only 10 m U/V. Requires a Météo-France API key in METEOFRANCE_API_KEY (or a bearer token).",
+        "enabled": bool(os.environ.get("METEOFRANCE_API_KEY") or os.environ.get("METEOFRANCE_BEARER_TOKEN")),
+    },
     "eccc_gdps": {
         "name": "GDPS",
         "resolution": "15 km",
@@ -166,10 +202,18 @@ MODEL_CATALOG: dict[str, dict[str, Any]] = {
         "steps": _AICON_STEPS,
         "note": "Official global AI forecast. DWD ICON grid coordinates are used as specified by DWD; winds are remapped to the Bay domain at 0.1°.",
     },
+    "mogreps_g": {
+        "name": "MOGREPS-G",
+        "resolution": "20km ENS",
+        "source": "met_office_mogrepsg",
+        "source_label": "Met Office Global Ensemble on AWS",
+        "steps": _MOGREPS_G_STEPS,
+        "note": "Official 18-member vector mean from Met Office 10 m speed/direction. Public AWS copy has about 24 h latency; the two required NetCDF fields are cached after first use.",
+    },
 }
 
 DOMAIN = {"west": 70.0, "east": 110.0, "south": 0.0, "north": 30.0}
-FIELD_CACHE_VERSION = 5  # new ECCC/DWD model decoders and regional remapping
+FIELD_CACHE_VERSION = 6  # NAEFS, ECMWF ENS, ARPEGE WCS, and MOGREPS-G decoders
 CACHE_ROOT = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
@@ -302,16 +346,23 @@ def get_forecast(model_id: str, step: int) -> dict[str, Any]:
         descriptor = MODEL_CATALOG[model_id]
         with tempfile.NamedTemporaryFile(prefix="baywind-", suffix=".grib2", dir=CACHE_ROOT, delete=False) as handle:
             grib_path = Path(handle.name)
+        mogreps_paths: dict[str, Path] = {}
         try:
             fetch_started = time.perf_counter()
             if descriptor["source"] == "ecmwf":
                 # Deliberately one ECMWF Open Data client request for both
                 # required parameters; do not fan out or probe fallback cycles.
                 init = _fetch_ecmwf(descriptor, step, grib_path)
+            elif descriptor["source"] == "meteo_arpege":
+                init = _fetch_arpege(step, grib_path)
+            elif descriptor["source"] == "met_office_mogrepsg":
+                init, mogreps_paths = _fetch_mogrepsg(step)
             elif descriptor["source"] == "noaa_gfs":
                 init = _fetch_gfs(step, grib_path)
             elif descriptor["source"] == "noaa_gefs":
                 init = _fetch_gefs_mean(step, grib_path)
+            elif descriptor["source"] == "noaa_naefs_mean":
+                init = _fetch_naefs_mean(step, grib_path)
             elif descriptor["source"] == "noaa_aigefs_mean":
                 init = _fetch_noaa_indexed_mean("aigefs", step, grib_path)
             elif descriptor["source"] == "noaa_hgefs_mean":
@@ -329,7 +380,9 @@ def get_forecast(model_id: str, step: int) -> dict[str, Any]:
             fetch_ms = (time.perf_counter() - fetch_started) * 1000.0
 
             decode_started = time.perf_counter()
-            if descriptor["source"] in {"dwd_icon", "dwd_aicon"}:
+            if descriptor["source"] == "met_office_mogrepsg":
+                fields = _decode_mogrepsg(mogreps_paths["speed"], mogreps_paths["direction"], step)
+            elif descriptor["source"] in {"dwd_icon", "dwd_aicon"}:
                 fields = _decode_dwd_unstructured(grib_path, init)
             elif descriptor["source"] == "eccc_geps_mean":
                 fields = _decode_geps_mean(grib_path)
@@ -365,6 +418,11 @@ def get_forecast(model_id: str, step: int) -> dict[str, Any]:
                 grib_path.unlink(missing_ok=True)
             except OSError:
                 pass
+            for path in mogreps_paths.values():
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 def _fetch_eccc_deterministic(model_source: str, step: int, target: Path) -> str:
@@ -455,13 +513,16 @@ def _fetch_ecmwf(descriptor: dict[str, Any], step: int, target: Path) -> str | N
         infer_stream_keyword=False,
     )
     try:
-        result = client.retrieve(
-            stream=descriptor["stream"],
-            type=descriptor["type"],
-            step=step,
-            param=["10u", "10v"],
-            target=str(target),
-        )
+        request = {
+            "stream": descriptor["stream"],
+            "type": descriptor["type"],
+            "step": step,
+            "param": ["10u", "10v"],
+            "target": str(target),
+        }
+        if "number" in descriptor:
+            request["number"] = descriptor["number"]
+        result = client.retrieve(**request)
     except Exception as exc:
         label = descriptor["name"]
         raise RuntimeError(f"{label} did not return this step from ECMWF Open Data. Try another lead hour or the 0.25° IFS option. Provider said: {exc}") from exc
@@ -474,6 +535,225 @@ def _fetch_ecmwf(descriptor: dict[str, Any], step: int, target: Path) -> str | N
         except Exception:
             pass
     return None
+
+
+_METEOFRANCE_ARPEGE_WCS = (
+    "https://public-api.meteofrance.fr/public/arpege/1.0/wcs/"
+    "MF-NWP-GLOBAL-ARPEGE-025-GLOBE-WCS"
+)
+_METEOFRANCE_CAPABILITIES_CACHE: tuple[float, list[tuple[str, str, datetime]]] | None = None
+_METEOFRANCE_CAPABILITIES_LOCK = threading.RLock()
+_MOGREPS_S3_BASE = "https://met-office-global-ensemble-model-data.s3.eu-west-2.amazonaws.com"
+
+
+def _meteo_france_auth_headers(accept: str = "application/octet-stream") -> dict[str, str]:
+    headers = {"Accept": accept, "User-Agent": USER_AGENT}
+    bearer = os.environ.get("METEOFRANCE_BEARER_TOKEN", "").strip()
+    api_key = os.environ.get("METEOFRANCE_API_KEY", "").strip()
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    elif api_key:
+        headers["apikey"] = api_key
+    else:
+        raise RuntimeError(
+            "ARPEGE requires a Météo-France API subscription and credential. "
+            "Set METEOFRANCE_API_KEY (or METEOFRANCE_BEARER_TOKEN) as a server secret."
+        )
+    return headers
+
+
+def _xml_text(parent: ET.Element, local_name: str) -> str:
+    wanted = local_name.lower()
+    for element in parent.iter():
+        if element.tag.rsplit("}", 1)[-1].lower() == wanted and element.text:
+            return element.text.strip()
+    return ""
+
+
+def _arpege_capabilities() -> list[tuple[str, str, datetime]]:
+    global _METEOFRANCE_CAPABILITIES_CACHE
+    now = time.monotonic()
+    with _METEOFRANCE_CAPABILITIES_LOCK:
+        if _METEOFRANCE_CAPABILITIES_CACHE and now - _METEOFRANCE_CAPABILITIES_CACHE[0] < 300:
+            return _METEOFRANCE_CAPABILITIES_CACHE[1]
+        headers = _meteo_france_auth_headers("application/xml")
+        url = f"{_METEOFRANCE_ARPEGE_WCS}/GetCapabilities"
+        response = _request_session().get(
+            url,
+            params={"service": "WCS", "version": "2.0.1"},
+            headers=headers,
+            timeout=HTTP_TIMEOUT,
+        )
+        if response.status_code in (401, 403):
+            raise RuntimeError(
+                f"Météo-France rejected the ARPEGE credential (HTTP {response.status_code}). "
+                "Confirm that the free ARPEGE API is subscribed and the server secret is current."
+            )
+        if not response.ok:
+            raise RuntimeError(f"Météo-France ARPEGE GetCapabilities returned HTTP {response.status_code}.")
+        try:
+            root = ET.fromstring(response.content)
+        except ET.ParseError as exc:
+            raise RuntimeError("Météo-France ARPEGE returned invalid WCS capabilities XML.") from exc
+
+        coverages: list[tuple[str, str, datetime]] = []
+        run_pattern = re.compile(r"___(\d{4}-\d{2}-\d{2}T\d{2}[.:]\d{2}[.:]\d{2}Z)")
+        for summary in root.iter():
+            if summary.tag.rsplit("}", 1)[-1].lower() != "coveragesummary":
+                continue
+            coverage_id = _xml_text(summary, "CoverageId")
+            title = _xml_text(summary, "Title")
+            match = run_pattern.search(coverage_id)
+            if not coverage_id or not match:
+                continue
+            try:
+                run_text = match.group(1).replace(".", ":")
+                run_time = datetime.strptime(run_text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            coverages.append((coverage_id, title, run_time))
+        if not coverages:
+            raise RuntimeError("ARPEGE WCS did not list forecast coverages for the global 0.25° grid.")
+        _METEOFRANCE_CAPABILITIES_CACHE = (now, coverages)
+        return coverages
+
+
+def _arpege_component(coverage_id: str, title: str) -> str | None:
+    text = f"{coverage_id} {title}".upper().replace("-", "_").replace(" ", "_")
+    if not any(token in text for token in ("SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND", "HEIGHT_LEVEL", "10M")):
+        return None
+    if any(token in text for token in ("U_COMPONENT", "U_WIND", "WIND_U", "UGRD", "COMPOSANTE_U")):
+        return "u"
+    if any(token in text for token in ("V_COMPONENT", "V_WIND", "WIND_V", "VGRD", "COMPOSANTE_V")):
+        return "v"
+    return None
+
+
+def _fetch_arpege(step: int, target: Path) -> str:
+    auth_headers = _meteo_france_auth_headers("application/octet-stream")
+    coverages = _arpege_capabilities()
+    by_component: dict[str, dict[datetime, str]] = {"u": {}, "v": {}}
+    for coverage_id, title, run_time in coverages:
+        component = _arpege_component(coverage_id, title)
+        if component:
+            by_component[component][run_time] = coverage_id
+    shared_runs = sorted(set(by_component["u"]) & set(by_component["v"]), reverse=True)
+    if not shared_runs:
+        raise RuntimeError("ARPEGE global WCS did not advertise matching 10 m U- and V-wind coverages.")
+
+    failures: list[str] = []
+    endpoint = f"{_METEOFRANCE_ARPEGE_WCS}/GetCoverage"
+    for run_time in shared_runs[:3]:
+        valid_time = run_time + timedelta(hours=step)
+        valid_text = valid_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        urls: dict[str, str] = {}
+        for component in ("u", "v"):
+            params = [
+                ("service", "WCS"),
+                ("version", "2.0.1"),
+                ("coverageid", by_component[component][run_time]),
+                ("subset", f"time({valid_text})"),
+                ("subset", "height(10)"),
+                ("subset", f"long({DOMAIN['west']},{DOMAIN['east']})"),
+                ("subset", f"lat({DOMAIN['south']},{DOMAIN['north']})"),
+                ("format", "application/wmo-grib"),
+            ]
+            urls[component] = requests.Request("GET", endpoint, params=params).prepare().url or endpoint
+        try:
+            payloads = _download_pair(
+                urls,
+                headers={component: auth_headers for component in ("u", "v")},
+            )
+            target.write_bytes(payloads["u"] + payloads["v"])
+            return run_time.strftime("%Y-%m-%dT%H:%MZ")
+        except Exception as exc:
+            failures.append(f"{run_time:%Y-%m-%d %H}Z: {exc}")
+    raise RuntimeError(
+        f"Météo-France ARPEGE 10 m U/V were not available at forecast hour {step}. "
+        "The model exposes a live, regional-subset WCS feed; try another lead or check the API subscription. "
+        + "; ".join(failures[-3:])
+    )
+
+
+def _mogreps_urls(cycle: datetime, step: int) -> dict[str, str]:
+    valid = cycle + timedelta(hours=step)
+    prefix = (
+        f"{_MOGREPS_S3_BASE}/global-ensemble/{cycle:%Y/%m/%d}/T{cycle:%H}00Z/"
+        f"{valid:%Y%m%dT%H%MZ}-PT{step:04d}H00M-"
+    )
+    return {
+        "speed": prefix + "wind_speed_at_10m.nc",
+        "direction": prefix + "wind_direction_at_10m.nc",
+    }
+
+
+def _download_one_netcdf(url: str, target: Path) -> None:
+    response = _download_session().get(url, stream=True, timeout=HTTP_TIMEOUT)
+    if response.status_code != 200:
+        raise RuntimeError(f"HTTP {response.status_code}; expected a public Met Office NetCDF file")
+    with response, target.open("wb") as handle:
+        signature = response.raw.read(8)
+        if signature != b"\x89HDF\r\n\x1a\n":
+            raise RuntimeError("The Met Office response was not an HDF5/NetCDF file.")
+        handle.write(signature)
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                handle.write(chunk)
+    if target.stat().st_size < 1024:
+        raise RuntimeError("The Met Office returned an empty NetCDF file.")
+
+
+def _download_mogreps_pair(urls: dict[str, str], paths: dict[str, Path]) -> None:
+    futures = {
+        key: _PAIR_DOWNLOAD_POOL.submit(_download_one_netcdf, url, paths[key])
+        for key, url in urls.items()
+    }
+    errors: list[str] = []
+    for key, future in futures.items():
+        try:
+            future.result()
+        except Exception as exc:
+            errors.append(f"{key}: {exc}")
+    if errors:
+        for path in paths.values():
+            path.unlink(missing_ok=True)
+        raise RuntimeError("; ".join(errors))
+
+
+def _fetch_mogrepsg(step: int) -> tuple[str, dict[str, Path]]:
+    failures: list[str] = []
+    session = _download_session()
+    for cycle in _candidate_cycles():
+        urls = _mogreps_urls(cycle, step)
+        try:
+            probe = session.head(urls["speed"], allow_redirects=True, timeout=HTTP_TIMEOUT)
+            if probe.status_code != 200:
+                failures.append(f"{cycle:%Y-%m-%d %H}Z: HTTP {probe.status_code}")
+                continue
+        except requests.RequestException as exc:
+            failures.append(f"{cycle:%Y-%m-%d %H}Z: {exc.__class__.__name__}")
+            continue
+
+        paths: dict[str, Path] = {}
+        try:
+            for key in ("speed", "direction"):
+                with tempfile.NamedTemporaryFile(prefix="mogrepsg-", suffix=".nc", dir=CACHE_ROOT, delete=False) as handle:
+                    paths[key] = Path(handle.name)
+            _download_mogreps_pair(urls, paths)
+            return cycle.strftime("%Y-%m-%dT%H:%MZ"), paths
+        except Exception as exc:
+            failures.append(f"{cycle:%Y-%m-%d %H}Z pair: {exc}")
+            for path in paths.values():
+                path.unlink(missing_ok=True)
+            # A missing companion file is usually a transient publication delay;
+            # try the previous six-hourly run once, without unbounded probing.
+            if "HTTP 404" not in str(exc):
+                break
+    raise RuntimeError(
+        f"Met Office MOGREPS-G public data are not available for lead {step} h. "
+        "The public AWS copy is delayed by about 24 hours; try a different lead later. "
+        + "; ".join(failures[-4:])
+    )
 
 
 def _fetch_gfs(step: int, target: Path) -> str:
@@ -532,6 +812,40 @@ def _fetch_gefs_mean(step: int, target: Path) -> str:
         except requests.RequestException as exc:
             failures.append(f"{hh}z: {exc.__class__.__name__}")
     raise RuntimeError("NOAA NOMADS did not return the requested GEFS ensemble-mean wind. Latest-cycle attempts: " + ", ".join(failures[-4:]))
+
+
+def _fetch_naefs_mean(step: int, target: Path) -> str:
+    """Use NOMADS' regional GRIB filter for the published NAEFS bias-corrected mean."""
+    session = _request_session()
+    failures: list[str] = []
+    for cycle in _candidate_cycles():
+        date, hh = _cycle_parts(cycle)
+        params = {
+            "file": f"naefs_geavg.t{hh}z.pgrb2a.0p50_bcf{step:03d}",
+            "var_UGRD": "on",
+            "var_VGRD": "on",
+            "lev_10_m_above_ground": "on",
+            "subregion": "",
+            "leftlon": str(DOMAIN["west"]),
+            "rightlon": str(DOMAIN["east"]),
+            "toplat": str(DOMAIN["north"]),
+            "bottomlat": str(DOMAIN["south"]),
+            "dir": f"/naefs.{date}/{hh}/pgrb2ap5_bc",
+        }
+        try:
+            response = session.get(
+                "https://nomads.ncep.noaa.gov/cgi-bin/filter_naefsbc.pl",
+                params=params,
+                timeout=HTTP_TIMEOUT,
+            )
+            if response.ok and response.content[:4] == b"GRIB":
+                target.write_bytes(response.content)
+                return cycle.strftime("%Y-%m-%dT%H:%MZ")
+            failures.append(f"{cycle:%Y-%m-%d %H}Z: HTTP {response.status_code}")
+        except requests.RequestException as exc:
+            failures.append(f"{cycle:%Y-%m-%d %H}Z: {exc.__class__.__name__}")
+    detail = "; ".join(failures[-4:])
+    raise RuntimeError(f"NOAA NOMADS did not return the NAEFS 10 m U/V ensemble mean for lead {step} h. {detail}")
 
 
 def _index_field_bounds(index_text: str) -> dict[str, tuple[int, int]]:
@@ -713,6 +1027,72 @@ def _crop_regular_grid(gid: Any, values: np.ndarray) -> tuple[np.ndarray, np.nda
         np.nanmean(sub_lat, axis=1)[row_order],
         sub_values[np.ix_(row_order, col_order)],
     )
+
+
+def _decode_mogrepsg(speed_path: Path, direction_path: Path, expected_step: int) -> dict[str, Any]:
+    """Read only the Bay window, convert all 18 speed/direction members to U/V, then average vectors."""
+    with h5py.File(speed_path, "r") as speed_file, h5py.File(direction_path, "r") as direction_file:
+        required_speed = {"latitude", "longitude", "realization", "forecast_reference_time", "forecast_period", "wind_speed"}
+        required_direction = {"latitude", "longitude", "realization", "forecast_reference_time", "forecast_period", "wind_from_direction"}
+        if not required_speed.issubset(speed_file.keys()) or not required_direction.issubset(direction_file.keys()):
+            raise RuntimeError("The Met Office MOGREPS-G NetCDF files are missing expected 10 m wind coordinates or variables.")
+
+        lats = np.asarray(speed_file["latitude"], dtype=np.float64)
+        lons = np.asarray(speed_file["longitude"], dtype=np.float64)
+        if not np.array_equal(lats, np.asarray(direction_file["latitude"])) or not np.array_equal(lons, np.asarray(direction_file["longitude"])):
+            raise RuntimeError("MOGREPS-G speed and direction files use different grids.")
+
+        members = np.asarray(speed_file["realization"])
+        other_members = np.asarray(direction_file["realization"])
+        if len(members) != 18 or not np.array_equal(members, other_members):
+            raise RuntimeError("MOGREPS-G did not provide the expected 18 matching ensemble members.")
+
+        reference_time = int(speed_file["forecast_reference_time"][()])
+        if reference_time != int(direction_file["forecast_reference_time"][()]):
+            raise RuntimeError("MOGREPS-G wind component files have different initialization times.")
+        period = int(speed_file["forecast_period"][()])
+        if period != int(direction_file["forecast_period"][()]) or period != expected_step * 3600:
+            raise RuntimeError("MOGREPS-G wind files do not match the selected forecast lead.")
+
+        rows = np.flatnonzero((lats >= DOMAIN["south"] - 0.5) & (lats <= DOMAIN["north"] + 0.5))
+        cols = np.flatnonzero((lons >= DOMAIN["west"] - 0.5) & (lons <= DOMAIN["east"] + 0.5))
+        if not len(rows) or not len(cols):
+            raise RuntimeError("The MOGREPS-G grid does not intersect the Bay of Bengal map domain.")
+        y_slice = slice(int(rows.min()), int(rows.max()) + 1)
+        x_slice = slice(int(cols.min()), int(cols.max()) + 1)
+
+        speed = np.asarray(speed_file["wind_speed"][:, y_slice, x_slice], dtype=np.float32)
+        direction = np.asarray(direction_file["wind_from_direction"][:, y_slice, x_slice], dtype=np.float32)
+
+    if speed.shape != direction.shape or speed.shape[0] != 18:
+        raise RuntimeError("MOGREPS-G 10 m wind component arrays have inconsistent dimensions.")
+    valid = np.isfinite(speed) & np.isfinite(direction) & (speed >= 0.0) & (speed < 150.0) & (direction >= 0.0) & (direction <= 360.0)
+    radians = np.deg2rad(direction)
+    u_members = -speed * np.sin(radians)
+    v_members = -speed * np.cos(radians)
+    count = valid.sum(axis=0)
+    u = np.divide(
+        np.where(valid, u_members, 0.0).sum(axis=0, dtype=np.float64),
+        count,
+        out=np.full(count.shape, np.nan, dtype=np.float64),
+        where=count > 0,
+    ).astype(np.float32)
+    v = np.divide(
+        np.where(valid, v_members, 0.0).sum(axis=0, dtype=np.float64),
+        count,
+        out=np.full(count.shape, np.nan, dtype=np.float64),
+        where=count > 0,
+    ).astype(np.float32)
+    if not np.isfinite(u).any() or not np.isfinite(v).any():
+        raise RuntimeError("MOGREPS-G 10 m winds contained no valid ensemble members over the Bay domain.")
+    init = datetime.fromtimestamp(reference_time, timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+    return {
+        "lons": lons[cols].astype(np.float64),
+        "lats": lats[rows].astype(np.float64),
+        "u": u,
+        "v": v,
+        "init": init,
+    }
 
 
 def _decode_wind(path: Path) -> dict[str, Any]:

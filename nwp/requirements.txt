@@ -7,3 +7,4 @@ pyshp>=2.3,<3
 eccodes>=2.42,<3
 scipy>=1.11,<2
 ecmwf-opendata>=0.3.29,<0.4
+h5py>=3.11,<4

@@ -10,11 +10,14 @@ The map presentation follows the supplied reference's clean forecast-chart layou
 |---|---|---|
 | ECMWF IFS 0.1° | ECMWF Open Data | Highest-resolution IFS surface winds; the 0.1° tier may be published later than 0.25°. |
 | ECMWF IFS 0.25° | ECMWF Open Data | Lighter, standard open-data grid; selected by default for quicker uncached loads. |
+| ECMWF ENS · Member 1 0.25° | ECMWF Open Data | One official IFS ENS perturbed member (`stream=enfo`, `type=pf`, `number=1`), not an ensemble mean. The open ensemble-mean product does not provide 10 m U/V vectors. |
+| ARPEGE 0.25° | Météo-France official WCS API | Regional WCS requests fetch only 10 m U/V over the Bay box. Requires a Météo-France API credential; shown disabled until configured. |
 | ECMWF AIFS 0.25° | ECMWF Open Data | Operational deterministic AI forecast. |
 | AIFS ENS · Control 0.25° | ECMWF Open Data | Control member only, **not** an ensemble mean. Clearly labelled to avoid presenting one member as consensus. |
 | GFS 0.25° | NCEP NOMADS | Requests only 10 m UGRD/VGRD and asks NOMADS' GRIB filter for the regional subset. |
 | AIGFS | NCEP NOMADS | Downloads only the 10 m U/V GRIB messages using the official index and HTTP byte ranges, then crops locally. |
 | GEFS 0.5° ENS | NCEP NOMADS | Uses the official precomputed ensemble-mean 10 m U/V fields; no local member averaging. |
+| NAEFS 0.5° ENS Mean | NCEP NOMADS | Official bias-corrected NAEFS mean; NOMADS returns only the 10 m U/V fields within the Bay box. |
 | AIGEFS AI ENS | NCEP NOMADS | AI ensemble-mean 10 m wind messages fetched through official GRIB indexes and byte ranges. |
 | HGEFS HYBRID ENS | NCEP NOMADS | Hybrid ensemble-mean 10 m wind messages; shorter published forecast-hour range. |
 | GDPS 15 km | ECCC MSC Datamart (HPFX) | Official global deterministic 10 m U/V, cropped to the Bay after decode. |
@@ -22,14 +25,15 @@ The map presentation follows the supplied reference's clean forecast-chart layou
 | GEPS 0.5° ENS | ECCC MSC Datamart (HPFX) | Downloads the two all-member 10 m U/V files; computes the mean of control plus 20 perturbed members locally. |
 | DWD ICON 13 km | DWD Open Data | Global triangular-grid 10 m winds; remapped to the map grid using DWD CLAT/CLON coordinates. |
 | DWD AICON 13 km | DWD Open Data | Official global AI forecast; uses the ICON CLAT/CLON coordinates as specified by DWD, then regrids for display. |
+| MOGREPS-G 20 km ENS Mean | Met Office public AWS/ASDI | Reads the two 10 m NetCDF variables, converts each member's wind speed/direction to U/V, and averages all 18 vectors. The public AWS copy has about 24-hour latency. |
 
-All added products are official global fields that cover the Bay of Bengal. Fetching is limited to 10 m U/V wind products (and the DWD ICON coordinate fields needed for native-grid remapping). Regional cropping follows decode; ECCC GEPS is the exception to single-message products because the official all-member GRIB files contain all 21 ensemble members, which are averaged locally to avoid mislabeling a single member. Forecast lead-hour choices are configured per model family and validated on the server.
+All added products cover the Bay of Bengal and expose only the selected model's 10 m wind data to the renderer. NOAA NAEFS and ARPEGE use regional WCS/filter requests. MOGREPS-G publishes 10 m speed and direction rather than vector components in the public NetCDF files; Baywind converts each of the 18 members to U/V and takes the vector mean, reading only the Bay crop after downloading the two required NetCDF files. The ECMWF ENS selector fetches one official perturbed member (`enfo`/`pf`, member 1), explicitly not an ensemble mean; the open mean product currently lacks 10 m U/V vectors. Retrieving all 50 members to calculate a local mean would add substantial first-image latency and is intentionally not done. Forecast lead-hour choices are configured per model family and validated on the server.
 
-Performance safeguards: repeated PNG and decoded-field requests use the existing 90-minute cache. The service records fetch/decode/save/render timings in response headers and logs. Independent U/V files from ECCC, DWD, and NOAA byte-range products use a shared maximum of two concurrent requests; cycle fallback remains sequential (ECCC uses its dated retention tree when a fallback run belongs to a previous UTC date). ECMWF continues to use one `ecmwf-opendata` retrieval for both 10u and 10v, with no parallel ECMWF calls or added cycle probing. NOAA regional filters and indexed byte ranges continue to request only the required 10 m U/V fields.
+Performance safeguards: repeated PNG and decoded-field requests use the existing 90-minute cache; model selection remains lazy, and only the selected model/lead is fetched. The service records fetch/decode/save/render timings in response headers and logs. Independent U/V downloads stay under the shared two-request cap; NOAA regional filters and indexed byte ranges request only the required 10 m U/V fields. ECMWF IFS and IFS ENS each use one combined `ecmwf-opendata` retrieval for 10u+10v. ARPEGE requests the Bay-bounded 10 m U/V coverages; its small capabilities response is cached for five minutes. MOGREPS-G downloads just the two required NetCDF parameter files concurrently, then caches the cropped vector mean; its official public AWS copy is delayed by about 24 hours, so it is not presented as a current-cycle feed.
 
 ## Run locally
 
-Requires Python 3.12. The `eccodes` wheel in `requirements.txt` bundles ecCodes for GRIB decoding; SciPy is used only when remapping DWD's native unstructured grids. No API keys or third-party weather services are needed for the integrated providers.
+Requires Python 3.12. The `eccodes` wheel in `requirements.txt` bundles ecCodes for GRIB decoding; `h5py` reads the official MOGREPS-G NetCDF files, and SciPy is used only when remapping DWD's native unstructured grids. All public feeds work without a key except ARPEGE, which requires an API subscription/credential from Météo-France. Set `METEOFRANCE_API_KEY` (or `METEOFRANCE_BEARER_TOKEN`) in the server environment; do not commit credentials to the repository. Without it, ARPEGE remains visible but disabled in the model selector.
 
 ```bash
 docker build -t baywind .
@@ -54,7 +58,9 @@ The existing map design is retained with a 10 × 8 inch figure (`figsize=(10, 8)
 ## Data and attribution
 
 - **ECMWF:** `https://data.ecmwf.int/forecasts/` (ECMWF Open Data; CC BY 4.0).
-- **NOAA/NCEP:** `https://nomads.ncep.noaa.gov/` (GFS and ensemble products).
+- **NOAA/NCEP:** `https://nomads.ncep.noaa.gov/` (GFS, GEFS, NAEFS, and other ensemble products).
+- **Météo-France:** `https://portail-api.meteofrance.fr/` (ARPEGE official open API; requires a subscribed API credential; follow its Open Data licence and attribution terms).
+- **Met Office:** `https://metoffice-global-ensemble-model-data.s3.eu-west-2.amazonaws.com/` (MOGREPS-G public AWS/ASDI data; follow the Met Office licence/attribution requirements and note the public copy's delay).
 - **Environment and Climate Change Canada:** `https://hpfx.collab.science.gc.ca/` (MSC Datamart/HPFX; GDPS, GDPS-GEML and GEPS). Follow the MSC data licence and service-usage policy.
 - **Deutscher Wetterdienst:** `https://opendata.dwd.de/weather/nwp/` (ICON and AICON). Follow DWD's Open Data terms and attribution requirements.
 - Geographic outlines are Natural Earth 1:50m shapefiles bundled with the project; weather fields come only from the official providers listed above.
@@ -79,7 +85,7 @@ render.yaml             Render Blueprint service
 - Image is newly rendered from GRIB vectors; this is not a pixel-for-pixel copy of WeatherBell's proprietary map or branding.
 - Forecast wind speed is computed from the selected model's 10 m U/V components. Streamline direction is integrated from those same components.
 - The longitude/latitude crop is 70°E–110°E, 0°–30°N. Adjust `DOMAIN` in `weather.py` and `WEST/EAST/SOUTH/NORTH` in `renderer.py` together if you want a different extent.
-- NOAA GFS/GEFS products are subset at NOMADS. ECMWF, ECCC GDPS/GEML, and DWD ICON/AICON provide global files; the app requests only 10 m U/V products, then crops or remaps to the selected regional grid. It does not download unrelated forecast variables.
+- NOAA GFS/GEFS/NAEFS products are subset at NOMADS. ARPEGE uses regional WCS subsetting. ECMWF and ECCC/DWD use only 10 m U/V products; MOGREPS-G's public NetCDF distribution is global, so the app downloads only the two 10 m wind variables and crops them to the Bay before calculation.
 - DWD AICON starts at forecast hour +3 (there is no PT0 forecast file); DWD ICON provides hourly steps through +78 h and then 3-hourly steps. The catalog exposes the corresponding model-specific lead hours.
 - Google WeatherNext access and a live GraphCastGFS source are not configured; no NOAA product is mislabeled as a Google model.
-- No secrets, API keys, or WeatherBell credentials are required for the integrated official data sources.
+- Do not commit credentials. ARPEGE is the only newly added selector item that requires a secret (`METEOFRANCE_API_KEY` or `METEOFRANCE_BEARER_TOKEN`); the other new sources use public open-data endpoints.

@@ -241,7 +241,8 @@
       for (const model of catalog) {
         const option = document.createElement('option');
         option.value = model.id;
-        option.textContent = `${model.name} — ${model.resolution}`;
+        option.disabled = model.enabled === false;
+        option.textContent = `${model.name} — ${model.resolution}${model.enabled === false ? ' (API key required)' : ''}`;
         els.model.appendChild(option);
       }
       // Default to the lighter 0.25° IFS file for faster uncached loads;
