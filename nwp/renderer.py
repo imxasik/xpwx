@@ -312,11 +312,6 @@ def render_map(
             zorder=12,
             bbox={"boxstyle": "round,pad=0.34", "facecolor": "#ffffff", "edgecolor": "#45515c", "linewidth": 0.55, "alpha": 0.88},
         )
-        attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
-        fig.text(0.085, 0.018, f"{level_label} wind speed · {unit_label} · Streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
-    else:
-        attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
-        fig.text(0.085, 0.018, f"{level_label} wind streamlines  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
 
     output = BytesIO()
     fig.savefig(output, format="png", dpi=dpi, facecolor="white", bbox_inches=None)
@@ -540,7 +535,135 @@ def render_scalar_map(fields: dict[str, Any], model: dict[str, Any], step: int, 
     attribution = "ECMWF Open Data · CC BY 4.0" if model.get("source_label") == "ECMWF Open Data" else model.get("source_label", "Official forecast data")
     interval_text = fields.get("interval", "")
     footer_label = layer_label + (f" · {interval_text}" if interval_text else "")
-   # fig.text(0.085, 0.018, f"{footer_label} · {unit_label}  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
+    fig.text(0.085, 0.018, f"{footer_label} · {unit_label}  |  Source: {attribution}", ha="left", va="center", fontsize=6.3, color="#313638")
+    output = BytesIO()
+    fig.savefig(output, format="png", dpi=dpi, facecolor="white", bbox_inches=None)
+    plt.close(fig)
+    return output.getvalue()
+
+
+TRACK_LINE_COLORS = ["#214f7b", "#00858a", "#7551a5", "#b45c24", "#247a4a", "#b13d67"]
+TRACK_CATEGORY_COLORS = {
+    "TD": "#74a9cf", "TS": "#25a36f", "CAT 1": "#f1d34f", "CAT 2": "#f5a137",
+    "CAT 3": "#ed7136", "CAT 4": "#d94459", "CAT 5": "#8e45bd",
+}
+
+
+def render_track_map(track_sets: list[dict[str, Any]], models: list[dict[str, Any]], dpi: int = 150) -> bytes:
+    """Render a dedicated full-run cyclone track chart; never overlay another parameter map."""
+    if not track_sets or len(track_sets) != len(models):
+        raise ValueError("At least one matching official model track is required.")
+    init = _init_time(track_sets[0].get("init", ""))
+    init_label = init.strftime("%Hz %d %b %Y")
+    fig = plt.figure(figsize=(10, 8), dpi=dpi, facecolor="white")
+    ax = fig.add_axes([0.035, 0.145, 0.93, 0.80])
+    ax.set_facecolor("#fbfbf8")
+    ax.set_xlim(WEST, EAST)
+    ax.set_ylim(SOUTH, NORTH)
+    ax.set_xticks(np.arange(70, 111, 5))
+    ax.set_yticks(np.arange(0, 31, 5))
+    ax.grid(True, color="#6f777c", alpha=0.40, linewidth=0.42, zorder=1)
+    ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+    for spine in ax.spines.values():
+        spine.set_color("#292d2f")
+        spine.set_linewidth(0.55)
+    _add_shapefile_lines(ax, "ne_50m_admin_0_boundary_lines_land.shp", "#25292b", 0.48, 4)
+    _add_shapefile_lines(ax, "ne_50m_coastline.shp", "#171a1b", 0.62, 5)
+    for lon in range(75, 110, 5):
+        ax.text(lon, NORTH - 0.12, f"{lon}°E", ha="center", va="top", fontsize=7.4, color="#202426", zorder=8)
+    ax.text(EAST - 0.12, NORTH - 0.12, f"{int(EAST)}°E", ha="right", va="top", fontsize=7.4, color="#202426", zorder=8)
+    for lat in range(5, 30, 5):
+        ax.text(EAST - 0.12, lat, f"{lat}°N", ha="right", va="center", fontsize=7.4, color="#202426", zorder=8)
+
+    model_handles = []
+    summaries = []
+    # Date labels are offset around their marker and connected back with a fine leader.
+    offsets = [(7, 8), (7, -10), (-7, 8), (-7, -10)]
+    for model_index, (series, model) in enumerate(zip(track_sets, models)):
+        points = series.get("points", [])
+        if not points:
+            continue
+        line_color = TRACK_LINE_COLORS[model_index % len(TRACK_LINE_COLORS)]
+        lons = [float(point["lon"]) for point in points]
+        lats = [float(point["lat"]) for point in points]
+        ax.plot(lons, lats, color="white", linewidth=3.1, alpha=0.9, zorder=6, solid_capstyle="round")
+        ax.plot(lons, lats, color=line_color, linewidth=1.55, zorder=7, solid_capstyle="round", label=model["name"])
+        series_init_label = _init_time(series.get("init", "")).strftime("%Hz %d %b %Y")
+        model_handles.append(plt.Line2D([0], [0], color=line_color, linewidth=2.0,
+                                        label=f"{model['name']} · {series_init_label} · +{series.get('horizon', points[-1]['step'])} h"))
+        for point_index, point in enumerate(points):
+            x, y = float(point["lon"]), float(point["lat"])
+            category = str(point.get("category", "TD"))
+            ax.scatter([x], [y], s=29, facecolor=TRACK_CATEGORY_COLORS.get(category, "#74a9cf"),
+                       edgecolor="white", linewidth=0.8, zorder=9)
+            dx, dy = offsets[(point_index + model_index) % len(offsets)]
+            ha = "left" if dx > 0 else "right"
+            ann = ax.annotate(str(point.get("label", "")), xy=(x, y), xytext=(dx, dy),
+                              textcoords="offset points", ha=ha, va="center", fontsize=6.8,
+                              color="#172d47", zorder=10,
+                              arrowprops={"arrowstyle": "-", "color": line_color, "lw": 0.45,
+                                          "shrinkA": 1.5, "shrinkB": 2.4})
+            ann.set_path_effects([path_effects.Stroke(linewidth=1.8, foreground="white"), path_effects.Normal()])
+        peak = series.get("peak") or max(points, key=lambda item: float(item.get("wind_kt", 0)))
+        peak_time = _init_time(peak.get("time", series.get("init", "")))
+        peak_date = peak_time.strftime("%d %b %Y")
+        peak_wind = int(np.floor(float(peak.get("wind_kt", 0)) + 0.5))
+        peak_mslp = int(np.floor(float(peak.get("mslp_hpa", 0)) + 0.5))
+        summaries.append(f"{model['name']}: {peak_wind} kn | {peak_mslp} hPa | {peak.get('category','TD')} | {peak_date}")
+
+    if model_handles:
+        ax.legend(handles=model_handles, loc="upper left", frameon=True, framealpha=0.88,
+                  facecolor="white", edgecolor="#cad3dc", fontsize=6.5, borderpad=0.45,
+                  handlelength=2.0, labelspacing=0.32)
+
+    # Brand mark, no callout boxes or pressure labels on the map itself.
+    ax.text(EAST - 0.45, SOUTH + 0.52, "@XP WEATHER", transform=ax.transData,
+            ha="right", va="bottom", fontsize=8.3, fontweight="bold", color="white", zorder=12,
+            bbox={"boxstyle": "round,pad=0.34", "facecolor": "#14243a", "edgecolor": "#ffffff", "linewidth": 0.6, "alpha": 0.88})
+
+    header_left = [("CYCLONE TRACK", True), ("•", True),
+                   ((models[0]["name"] if len(models) == 1 else f"{len(models)} model tracks"), False)]
+    header_right = [("Init:", True), (init_label if len(track_sets) == 1 else "See model legend", False),
+                    ("•", True), ("Full available run", False)]
+    def measure(parts: list[tuple[str, bool]], size: float) -> tuple[list[float], float]:
+        widths = [TextPath((0, 0), text, prop=FontProperties(family="DejaVu Sans", size=size,
+                  weight="bold" if bold else "normal")).get_extents().width / (72 * fig.get_figwidth())
+                  for text, bold in parts]
+        return widths, sum(widths) + 0.008 * (len(widths)-1)
+    r_widths, r_total = measure(header_right, 8.3)
+    l_size = 8.3
+    l_widths, l_total = measure(header_left, l_size)
+    while l_total > 0.93 - 0.035 - r_total - 0.02 and l_size > 6.8:
+        l_size -= 0.25
+        l_widths, l_total = measure(header_left, l_size)
+    x = 0.035
+    for (text, bold), width in zip(header_left, l_widths):
+        fig.text(x, 0.979, text, ha="left", va="top", fontsize=l_size,
+                 fontweight="bold" if bold else "normal", color="#141719")
+        x += width + 0.008
+    x = 0.965 - r_total
+    for (text, bold), width in zip(header_right, r_widths):
+        fig.text(x, 0.979, text, ha="left", va="top", fontsize=8.3,
+                 fontweight="bold" if bold else "normal", color="#141719")
+        x += width + 0.008
+    fig.add_artist(plt.Line2D([0.035, 0.965], [0.961, 0.961], transform=fig.transFigure,
+                              color="#6d7172", linewidth=0.45))
+
+    summary_size = 7.0 if len(summaries) <= 2 else 6.2
+    row_step = 0.013
+    for index, summary in enumerate(summaries):
+        y = 0.123 - index * row_step
+        fig.text(0.055, y, summary, ha="left", va="center", fontsize=summary_size,
+                 fontweight="bold", color=TRACK_LINE_COLORS[index % len(TRACK_LINE_COLORS)])
+    category_order = ["TD", "TS", "CAT 1", "CAT 2", "CAT 3", "CAT 4", "CAT 5"]
+    legend_x = 0.22
+    legend_y = max(0.035, 0.043 - max(0, len(summaries)-2) * 0.003)
+    for category in category_order:
+        fig.text(legend_x, legend_y, "●", ha="center", va="center", fontsize=9.0,
+                 color=TRACK_CATEGORY_COLORS[category])
+        fig.text(legend_x + 0.009, legend_y, category, ha="left", va="center", fontsize=6.5,
+                 color="#39495a")
+        legend_x += 0.082
     output = BytesIO()
     fig.savefig(output, format="png", dpi=dpi, facecolor="white", bbox_inches=None)
     plt.close(fig)

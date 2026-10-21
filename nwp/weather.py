@@ -628,7 +628,7 @@ def get_track_series(model_id: str) -> dict[str, Any]:
     track_models = {"ifs_025", "aifs", "gfs", "aigfs", "dwd_icon", "dwd_aicon"}
     if model_id not in track_models:
         raise ValueError("Cyclone tracks are available for ECMWF IFS, AIFS, GFS, AIGFS, ICON, and AI ICON only.")
-    cache = CACHE_ROOT / f"track-v3-{model_id}.json"
+    cache = CACHE_ROOT / f"track-v5-{model_id}.json"
     if _valid_cache(cache):
         try:
             with cache.open(encoding="utf-8") as handle:
@@ -636,7 +636,10 @@ def get_track_series(model_id: str) -> dict[str, Any]:
         except (OSError, ValueError):
             pass
     model = MODEL_CATALOG[model_id]
-    max_step = min(240, max(model["steps"]))
+    # Respect the full selected run where published, with explicit product caps
+    # required for the IFS and GFS track products.
+    track_caps = {"ifs_025": 240, "gfs": 240}
+    max_step = min(track_caps.get(model_id, max(model["steps"])), max(model["steps"]))
     steps = list(range(0, max_step + 1, 24))
     if model_id == "dwd_aicon":
         steps = [3] + [step for step in steps if step > 0]
@@ -645,14 +648,25 @@ def get_track_series(model_id: str) -> dict[str, Any]:
     points = []
     run = None
     previous = None
+    end_note = ""
     for step in steps:
         if step not in model["steps"]:
             continue
-        wind = get_forecast(model_id, step)
-        pressure = get_scalar_forecast(model_id, step, "mslp")
+        try:
+            wind = get_forecast(model_id, step)
+            pressure = get_scalar_forecast(model_id, step, "mslp")
+        except Exception as exc:
+            if points:
+                # The selected run's last complete wind/pressure pair defines
+                # its actual available horizon; do not fall back to a newer or
+                # older initialization when the next lead is absent.
+                end_note = f"Stopped at the last complete sample because the next lead was unavailable: {exc}"
+                break
+            raise
         init = str(wind.get("init") or "")
         if init != str(pressure.get("init") or init):
             if points:
+                end_note = "Stopped before wind and pressure changed to different model initializations."
                 break
             raise RuntimeError("Wind and pressure were returned from different model initializations; refusing to mix cyclone-track data.")
         if run is None:
@@ -660,6 +674,7 @@ def get_track_series(model_id: str) -> dict[str, Any]:
         elif init != run:
             # Some providers publish different horizons by cycle. Keep the
             # coherent section of the selected run instead of blending cycles.
+            end_note = "Stopped at the end of the coherent model run; later leads belonged to a different cycle."
             break
         lons = np.asarray(pressure["lons"], dtype=np.float64)
         lats = np.asarray(pressure["lats"], dtype=np.float64)
@@ -712,9 +727,11 @@ def get_track_series(model_id: str) -> dict[str, Any]:
         raise RuntimeError("The selected official model did not provide enough complete forecast hours for a cyclone track.")
     peak = max(points,key=lambda item:item["wind_kt"])
     horizon = int(points[-1]["step"])
+    note = f"24-hour track samples through +{horizon} h; peak is the strongest sampled point, not a full-resolution intensity scan."
+    if end_note:
+        note += " " + end_note
     payload = {"model": model_id, "model_name": model["name"], "init": run, "points": points,
-               "peak": peak, "horizon": horizon,
-               "note": f"24-hour track samples through +{horizon} h; peak is the strongest sampled point, not a full-resolution intensity scan."}
+               "peak": peak, "horizon": horizon, "note": note}
     temp = cache.with_suffix(".tmp")
     temp.write_text(json.dumps(payload,separators=(",",":")),encoding="utf-8")
     temp.replace(cache)

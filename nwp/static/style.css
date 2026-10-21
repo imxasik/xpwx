@@ -119,25 +119,21 @@ h1 span{color:#64809f;font-weight:430}
 @media(max-width:950px){.page-shell{width:calc(100% - 40px)}.topbar{padding:0 20px}.workspace{grid-template-columns:245px minmax(0,1fr);gap:12px}.control-panel{padding:18px 14px}.map-frame{min-height:360px}}
 @media(max-width:720px){.topbar{height:62px}.topbar-right{gap:10px}.open-pill{font-size:8px}.utc-clock{padding-left:10px;font-size:8px}.page-shell{width:calc(100% - 28px);padding-top:25px}.intro-row{align-items:flex-start;gap:12px;flex-direction:column;margin-bottom:17px}h1{font-size:25px}.domain-chip{height:30px}.workspace{grid-template-columns:1fr}.control-panel{min-height:0}.panel-title{margin-bottom:17px}.map-frame{min-height:0;aspect-ratio:1.05}.page-footer{flex-direction:column;line-height:1.5}.map-toolbar{padding:0 11px}.map-ident{font-size:9px}}
 @media(max-width:420px){.brand-copy small{font-size:7px}.brand-mark{width:34px;height:34px}.brand-copy strong{font-size:12px}.open-pill{display:none}.map-toolbar{height:43px}.map-caption{height:48px;padding:0 11px}}
-.track-title{margin-bottom:10px!important}
-.track-toggle-row{height:48px}
-.track-icon{background:#f1effb;color:#7259ae}
-.track-select-wrap{margin-top:9px}
-.track-note{margin:8px 1px 0;color:#8491a0;font-size:9px;line-height:1.45}
-.track-overlay{position:absolute;z-index:7;pointer-events:none;overflow:visible}
-.track-overlay[hidden]{display:none}
-.track-line-casing{fill:none;stroke:#fff;stroke-width:5;stroke-linecap:round;stroke-linejoin:round;opacity:.84}
-.track-line{fill:none;stroke:#163455;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round;opacity:.9}
-.track-connector{stroke:#243b56;stroke-width:1.25;opacity:.86}
-.track-date-label{font:700 13px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#172d47;paint-order:stroke;stroke:#fff;stroke-width:4px;stroke-linejoin:round}
-.track-marker{stroke:#fff;stroke-width:2.4;filter:drop-shadow(0 1px 2px rgba(14,30,50,.45))}
-.track-status{min-height:31px;padding:8px 15px;border-top:1px solid #edf0f3;background:#fafbfd;color:#455b74;font-size:9px;font-weight:650;letter-spacing:.01em;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+#forecast-controls[hidden],#regular-layer-controls[hidden],#track-model-controls[hidden]{display:none!important}
+.track-model-controls{margin-top:13px;padding-top:1px}
+.track-note{margin:0 1px 10px;color:#7d8a98;font-size:9px;line-height:1.5}
+.track-model-row{min-height:44px;display:flex;align-items:center;gap:9px;border-bottom:1px solid #f0f2f5;cursor:pointer}
+.track-model-row:last-child{border-bottom:0}
+.track-model-mark{width:9px;height:9px;flex:0 0 9px;border:2px solid currentColor;border-radius:50%}
+.track-model-mark.ifs{color:#214f7b}.track-model-mark.aifs{color:#00858a}.track-model-mark.gfs{color:#7551a5}.track-model-mark.aigfs{color:#b45c24}.track-model-mark.icon{color:#247a4a}.track-model-mark.aicon{color:#b13d67}
+.track-model-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}
+.track-model-copy strong{font-size:10px;font-weight:680;color:#29384a}
+.track-model-copy small{font-size:8px;color:#8c98a5}
+.track-model-toggle{margin-left:auto}
+.track-status{min-height:31px;padding:8px 15px;border-top:1px solid #edf0f3;background:#fafbfd;color:#455b74;font-size:9px;font-weight:650;letter-spacing:.01em;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere}
 .track-status[hidden]{display:none}
 .track-status.is-error{color:#b6403e}
+.track-status.is-warning{color:#8a6a2d}
 .track-status.is-loading{color:#8a6a2d}
-@media(max-width:950px){.control-panel{min-height:0}}
 @media(max-width:720px){.track-status{padding:8px 11px;font-size:8px}}
-.track-key{display:flex;align-items:center;gap:5px;margin:8px 1px 0}
-.track-key span{min-width:20px;height:17px;padding:0 4px;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;color:#152536;font-size:7px;font-weight:800;letter-spacing:.02em}
-.track-key [data-cat="td"]{background:#d8e9f4}.track-key [data-cat="ts"]{background:#d6f0e4}.track-key [data-cat="1"]{background:#f8edb6}.track-key [data-cat="2"]{background:#f8dcc0}.track-key [data-cat="3"]{background:#f7c9b8}.track-key [data-cat="4"]{background:#f0c3cb}.track-key [data-cat="5"]{background:#e1d0ef}
-.track-peak-summary{font:700 8px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#172d47;paint-order:stroke;stroke:#fff;stroke-width:2px;stroke-linejoin:round}

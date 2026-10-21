@@ -35,6 +35,7 @@
 
     <section class="workspace" aria-label="Forecast map and controls">
       <aside class="control-panel">
+        <div id="forecast-controls">
         <div class="panel-title"><span class="section-number">01</span><div><h2>Forecast setup</h2><p>Choose model and lead time</p></div></div>
 
         <label class="control-label" for="model-select">MODEL</label>
@@ -54,13 +55,15 @@
           <button id="play-button" class="play-button" type="button"><svg class="play-icon" viewBox="0 0 20 20"><path d="m6 4 10 6-10 6z"/></svg><span>Animate forecast</span></button>
           <button id="next-step" class="icon-button" type="button" aria-label="Next forecast time"><svg viewBox="0 0 20 20"><path d="m8 4 6 6-6 6"/></svg></button>
         </div>
+        </div>
 
         <div class="divider"></div>
-        <div class="panel-title compact"><span class="section-number">02</span><div><h2>Map layers</h2><p>Surface, upper-air and scalar fields</p></div></div>
+        <div class="panel-title compact"><span class="section-number">02</span><div><h2>Parameter</h2><p>Choose a forecast field or track map</p></div></div>
         <div class="select-wrap select-small">
           <select id="field-select" aria-label="Map parameter"></select>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 6 5 5 5-5"/></svg>
         </div>
+        <div id="regular-layer-controls">
         <label class="layer-row" for="speed-toggle">
           <span class="layer-icon speed-icon"><svg viewBox="0 0 24 24"><path d="M4 18h16M6 14h12M9 10h6M11 6h2"/></svg></span>
           <span class="layer-text"><strong>Wind speed</strong><small>Shaded field</small></span>
@@ -85,28 +88,15 @@
         </div>
 
         <div class="source-note"><span class="source-icon">i</span><p id="field-note">Only the selected model, forecast hour, and parameter are fetched. Field availability depends on the official source.</p></div>
-
-        <div class="divider"></div>
-        <div class="panel-title compact track-title"><span class="section-number">03</span><div><h2>Cyclone track</h2><p>Optional model track overlay</p></div></div>
-        <label class="layer-row track-toggle-row" for="track-toggle">
-          <span class="layer-icon track-icon"><svg viewBox="0 0 24 24"><circle cx="6" cy="17" r="2"/><circle cx="12" cy="11" r="2"/><circle cx="18" cy="6" r="2"/><path d="m7.5 15.5 3-3M13.5 9.5l3-2"/></svg></span>
-          <span class="layer-text"><strong>Show cyclone track</strong><small>24-hour forecast positions</small></span>
-          <input class="switch" id="track-toggle" type="checkbox">
-        </label>
-        <div class="select-wrap select-small track-select-wrap">
-          <select id="track-model-select" aria-label="Cyclone track model">
-            <option value="ifs_025">ECMWF IFS · 0.25°</option>
-            <option value="aifs">ECMWF AIFS</option>
-            <option value="gfs">NOAA GFS</option>
-            <option value="aigfs">NOAA AIGFS</option>
-            <option value="dwd_icon">DWD ICON</option>
-            <option value="dwd_aicon">DWD AI ICON</option>
-          </select>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 6 5 5 5-5"/></svg>
         </div>
-        <p class="track-note">Loads on demand. Follows the Bay-sector pressure minimum; peak uses 24-hour samples, with approximate intensity bands.</p>
-        <div class="track-key" aria-label="Approximate intensity categories">
-          <span data-cat="td">TD</span><span data-cat="ts">TS</span><span data-cat="1">CAT 1</span><span data-cat="2">CAT 2</span><span data-cat="3">CAT 3</span><span data-cat="4">CAT 4</span><span data-cat="5">CAT 5</span>
+        <div class="track-model-controls" id="track-model-controls" hidden>
+          <p class="track-note">Select one or more model tracks. ECMWF IFS is selected by default; each track follows its run’s available forecast horizon.</p>
+          <label class="track-model-row"><span class="track-model-mark ifs"></span><span class="track-model-copy"><strong>ECMWF IFS</strong><small>0.25°</small></span><input class="switch track-model-toggle" type="checkbox" value="ifs_025" checked></label>
+          <label class="track-model-row"><span class="track-model-mark aifs"></span><span class="track-model-copy"><strong>ECMWF AIFS</strong><small>AI forecast</small></span><input class="switch track-model-toggle" type="checkbox" value="aifs"></label>
+          <label class="track-model-row"><span class="track-model-mark gfs"></span><span class="track-model-copy"><strong>NOAA GFS</strong><small>0.25°</small></span><input class="switch track-model-toggle" type="checkbox" value="gfs"></label>
+          <label class="track-model-row"><span class="track-model-mark aigfs"></span><span class="track-model-copy"><strong>NOAA AIGFS</strong><small>AI forecast</small></span><input class="switch track-model-toggle" type="checkbox" value="aigfs"></label>
+          <label class="track-model-row"><span class="track-model-mark icon"></span><span class="track-model-copy"><strong>DWD ICON</strong><small>Global</small></span><input class="switch track-model-toggle" type="checkbox" value="dwd_icon"></label>
+          <label class="track-model-row"><span class="track-model-mark aicon"></span><span class="track-model-copy"><strong>DWD AI ICON</strong><small>AI forecast</small></span><input class="switch track-model-toggle" type="checkbox" value="dwd_aicon"></label>
         </div>
       </aside>
 
@@ -120,7 +110,6 @@
         </div>
         <div class="map-frame" id="map-frame">
           <img id="forecast-image" alt="10 metre wind speed and streamlines forecast over the Bay of Bengal" hidden>
-          <svg class="track-overlay" id="track-overlay" viewBox="0 0 1000 800" preserveAspectRatio="none" aria-hidden="true" hidden><g id="track-graphics"></g></svg>
           <div class="map-placeholder" id="map-placeholder">
             <div class="placeholder-mark"><svg viewBox="0 0 40 40"><path d="M5 13h19a4 4 0 1 0-4-4M4 20h27a4 4 0 1 1-4 4M7 27h14a4 4 0 1 0-4 4"/></svg></div>
             <strong>Preparing the latest forecast</strong>

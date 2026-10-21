@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 from io import BytesIO
 import os
 import threading
@@ -9,7 +10,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, make_response, render_template, request, send_file
 
-from renderer import render_map, render_scalar_map
+from renderer import render_map, render_scalar_map, render_track_map
 from weather import FIELD_DEFINITIONS, MODEL_CATALOG, get_forecast, get_scalar_forecast, get_track_series, get_upperair_forecast, model_fields
 
 app = Flask(__name__)
@@ -17,7 +18,7 @@ app.config["JSON_SORT_KEYS"] = False
 PNG_CACHE_DIR = Path(os.environ.get("BAYWIND_CACHE_DIR", "/tmp/baywind-cache"))
 PNG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PNG_CACHE_TTL = int(os.environ.get("BAYWIND_CACHE_TTL", "5400"))
-RENDER_VERSION = 12  # adds source-gated 200 hPa wind and 200–850 hPa shear
+RENDER_VERSION = 13  # dedicated track maps and upper-air fields
 _RENDER_LOCK = threading.RLock()
 
 
@@ -53,9 +54,99 @@ def models():
             }
             for model_id, item in MODEL_CATALOG.items()
         ],
-        "layers": ["10 m wind speed", "Streamlines", "200 hPa wind", "200–850 hPa wind shear", "Cyclone track overlay"],
+        "layers": ["10 m wind speed", "Streamlines", "200 hPa wind", "200–850 hPa wind shear", "Cyclone Track"],
         "units": ["knots", "m/s", "km/h"],
     })
+
+
+TRACK_MODEL_IDS = ("ifs_025", "aifs", "gfs", "aigfs", "dwd_icon", "dwd_aicon")
+
+
+@app.get("/api/track.png")
+def track_png():
+    """Dedicated cyclone track parameter image. Track lines never overlay field maps."""
+    raw_models = request.args.get("models", request.args.get("model", "ifs_025"))
+    model_ids = list(dict.fromkeys(part.strip() for part in raw_models.split(",") if part.strip()))
+    if not model_ids or any(model_id not in TRACK_MODEL_IDS for model_id in model_ids):
+        return jsonify({"error": "Select one or more supported cyclone-track models."}), 400
+    try:
+        dpi = int(request.args.get("dpi", "150"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "DPI must be 120, 150, or 300."}), 400
+    if dpi not in {120, 150, 300}:
+        return jsonify({"error": "DPI must be 120, 150, or 300."}), 400
+
+    cache_key = "-".join(model_ids)
+    image_name = f"baywind-cyclone-track-{cache_key}-{dpi}dpi.png"
+    image_cache = PNG_CACHE_DIR / f"track-v2-{cache_key}-d{dpi}.png"
+    metadata_cache = image_cache.with_suffix(".json")
+    def cached_track_map():
+        try:
+            fresh = image_cache.exists() and metadata_cache.exists() and (
+                datetime.now(timezone.utc).timestamp() - image_cache.stat().st_mtime < PNG_CACHE_TTL
+            )
+            if not fresh:
+                return None
+            cached_png = image_cache.read_bytes()
+            cached_metadata = json.loads(metadata_cache.read_text(encoding="utf-8"))
+            if (not isinstance(cached_metadata, dict) or cached_metadata.get("requested") != model_ids
+                    or not isinstance(cached_metadata.get("tracks"), list)):
+                return None
+            return cached_png, cached_metadata
+        except (OSError, ValueError, TypeError):
+            return None
+
+    try:
+        cached = cached_track_map()
+        if cached is not None:
+            png, metadata = cached
+        else:
+            with _RENDER_LOCK:
+                cached = cached_track_map()
+                if cached is not None:
+                    png, metadata = cached
+                else:
+                    track_sets, model_specs, unavailable = [], [], []
+                    for model_id in model_ids:
+                        try:
+                            track_sets.append(get_track_series(model_id))
+                            model_specs.append({"id": model_id, "name": MODEL_CATALOG[model_id]["name"]})
+                        except Exception as model_exc:
+                            app.logger.warning("Track unavailable for %s: %s", model_id, model_exc)
+                            unavailable.append(MODEL_CATALOG[model_id]["name"])
+                    if not track_sets:
+                        detail = ", ".join(unavailable) or "selected models"
+                        raise RuntimeError(f"No selected cyclone tracks are available right now ({detail}). Try again when a new official model cycle is published.")
+                    png = render_track_map(track_sets, model_specs, dpi=dpi)
+                    metadata = {
+                        "requested": model_ids,
+                        "tracks": [{"model": item["model"], "init": item["init"], "horizon": item["horizon"]} for item in track_sets],
+                        "unavailable": unavailable,
+                    }
+                    temp_png = image_cache.with_name(image_cache.stem + f"-img-{threading.get_ident()}.tmp")
+                    temp_meta = metadata_cache.with_name(metadata_cache.stem + f"-meta-{threading.get_ident()}.tmp")
+                    temp_png.write_bytes(png)
+                    temp_meta.write_text(json.dumps(metadata), encoding="utf-8")
+                    temp_meta.replace(metadata_cache)
+                    temp_png.replace(image_cache)
+    except Exception as exc:
+        app.logger.exception("Cyclone track map generation failed for %s", cache_key)
+        return jsonify({"error": str(exc) or "Could not generate the selected cyclone track map."}), 502
+
+    response = make_response(send_file(BytesIO(png), mimetype="image/png", download_name=image_name))
+    response.headers["Cache-Control"] = "public, max-age=900"
+    response.headers["X-Model-Name"] = "Cyclone Track"
+    tracks_meta = metadata["tracks"]
+    response.headers["X-Model-Run"] = tracks_meta[0]["init"] if len(tracks_meta) == 1 else "Multiple model cycles"
+    response.headers["X-Valid-Time"] = "Full selected forecast runs"
+    response.headers["X-Track-Horizons"] = _safe_header("; ".join(
+        f"{MODEL_CATALOG[item['model']]['name']} +{item['horizon']} h" for item in tracks_meta
+    ))
+    response.headers["X-Track-Count"] = str(len(tracks_meta))
+    if metadata.get("unavailable"):
+        response.headers["X-Track-Unavailable"] = _safe_header(", ".join(metadata["unavailable"]))
+    response.headers["X-Render-DPI"] = str(dpi)
+    return response
 
 
 @app.get("/api/track.json")
